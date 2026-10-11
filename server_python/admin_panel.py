@@ -502,10 +502,10 @@ class TalknexChatAdminApp(tk.Tk):
         if decrypted_text and decrypted_text != "📷 Fotoğraf" and decrypted_text != "🎥 Video":
             text_lbl = tk.Label(
                 bubble,
-                text=decrypted_text,
+                text=f"✏️ Güncel Mesaj: {decrypted_text}" if msg.get("is_edited") else decrypted_text,
                 bg=bubble_bg,
                 fg="#E9EDEF",
-                font=("Segoe UI", 10),
+                font=("Segoe UI", 10, "bold" if msg.get("is_edited") else "normal"),
                 wraplength=480,
                 justify=tk.LEFT,
             )
@@ -515,17 +515,33 @@ class TalknexChatAdminApp(tk.Tk):
         if msg.get("is_edited") and msg.get("original_content"):
             orig_raw = msg["original_content"]
             orig_dec = decrypt_text(orig_raw, msg["sender_id"], msg["receiver_id"])
-            orig_box = tk.Frame(bubble, bg="#111B21", padx=8, pady=4)
-            orig_box.pack(fill=tk.X, pady=(2, 4))
+            orig_box = tk.Frame(bubble, bg="#111B21", padx=8, pady=6, highlightbackground="#E67E22", highlightthickness=1)
+            orig_box.pack(fill=tk.X, pady=(4, 4))
             tk.Label(
                 orig_box,
-                text=f"📌 Orijinal İlk Mesaj: {orig_dec}",
+                text="🔍 ADLİ DENETİM (DÜZENLEME GEÇMİŞİ):",
+                bg="#111B21",
+                fg="#E67E22",
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w")
+            tk.Label(
+                orig_box,
+                text=f"1️⃣ Orijinal İlk Hali :  \"{orig_dec}\"",
                 bg="#111B21",
                 fg="#F39C12",
-                font=("Segoe UI", 9, "italic"),
+                font=("Segoe UI", 9, "bold"),
                 wraplength=460,
                 justify=tk.LEFT,
-            ).pack(anchor="w")
+            ).pack(anchor="w", pady=(2, 1))
+            tk.Label(
+                orig_box,
+                text=f"2️⃣ Düzenlenmiş Hali:  \"{decrypted_text}\"",
+                bg="#111B21",
+                fg="#2ECC71",
+                font=("Segoe UI", 9, "bold"),
+                wraplength=460,
+                justify=tk.LEFT,
+            ).pack(anchor="w", pady=(1, 2))
 
         # 5. TIMESTAMP & E2EE SHIELD
         footer_frame = tk.Frame(bubble, bg=bubble_bg)

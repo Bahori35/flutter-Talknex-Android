@@ -705,8 +705,11 @@ async def send_message(sid, data):
             sender_name = sender_row.get("display_name") or sender_row.get("username") or "Biri"
     conn.close()
 
+    client_temp_id = data.get("clientTempId")
+
     saved_message = {
         "id": msg_id,
+        "clientTempId": client_temp_id,
         "senderId": sender_id,
         "senderName": sender_name,
         "receiverId": receiver_id,

@@ -157,6 +157,20 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
     };
+
+    // Listen for server confirmation of sent message to replace temporary ID with DB ID
+    _socketService.onMessageSent = (tempId, realId) {
+      if (mounted) {
+        setState(() {
+          _messages = _messages.map((m) {
+            if (m.id == tempId) {
+              return m.copyWith(id: realId);
+            }
+            return m;
+          }).toList();
+        });
+      }
+    };
   }
 
   void _loadMessages() async {
@@ -254,6 +268,7 @@ class _ChatScreenState extends State<ChatScreen> {
       content: encryptedContent,
       type: type.name,
       mediaUrl: mediaUrl,
+      clientTempId: newMessage.id,
     );
 
     // 2. Add unencrypted plaintext message to sender's local list so UI is immediate and smooth
@@ -1403,13 +1418,25 @@ class _ChatScreenState extends State<ChatScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (isEdited && !isDeleted) ...[
-                      const Text(
-                        'düzenlendi • ',
-                        style: TextStyle(
-                          color: Colors.white54,
-                          fontSize: 10,
-                          fontStyle: FontStyle.italic,
-                        ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.edit_rounded,
+                            size: 11,
+                            color: isMe ? Colors.white70 : AppColors.accent,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'düzenlendi • ',
+                            style: TextStyle(
+                              color: isMe ? Colors.white70 : AppColors.accent,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                     Text(

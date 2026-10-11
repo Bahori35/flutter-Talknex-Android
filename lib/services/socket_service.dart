@@ -18,6 +18,7 @@ typedef OnLiveLocationUpdate = void Function(Map<String, dynamic> data);
 typedef OnLiveLocationStopped = void Function(Map<String, dynamic> data);
 typedef OnMessageDeleted = void Function(String messageId);
 typedef OnMessageEdited = void Function(String messageId, String newContent);
+typedef OnMessageSent = void Function(String tempId, String realId);
 
 class SocketService {
   static final SocketService _instance = SocketService._internal();
@@ -39,6 +40,7 @@ class SocketService {
   OnLiveLocationStopped? onLiveLocationStopped;
   OnMessageDeleted? onMessageDeleted;
   OnMessageEdited? onMessageEdited;
+  OnMessageSent? onMessageSent;
 
 
   // Initialize and connect socket to Python server
@@ -189,6 +191,17 @@ class SocketService {
       }
     });
 
+    socket!.on('message_sent', (data) {
+      debugPrint('[SOCKET] Message Sent confirmed: $data');
+      if (onMessageSent != null && data != null) {
+        final tempId = data['clientTempId']?.toString() ?? '';
+        final realId = data['id']?.toString() ?? '';
+        if (tempId.isNotEmpty && realId.isNotEmpty) {
+          onMessageSent!(tempId, realId);
+        }
+      }
+    });
+
     socket!.onDisconnect((_) => debugPrint('[SOCKET] Disconnected'));
   }
 
@@ -252,6 +265,7 @@ class SocketService {
     required String content,
     String type = 'text',
     String? mediaUrl,
+    String? clientTempId,
   }) {
     if (socket != null && socket!.connected) {
       socket!.emit('send_message', {
@@ -260,6 +274,7 @@ class SocketService {
         'content': content,
         'type': type,
         if (mediaUrl != null) 'mediaUrl': mediaUrl,
+        if (clientTempId != null) 'clientTempId': clientTempId,
       });
     }
   }
