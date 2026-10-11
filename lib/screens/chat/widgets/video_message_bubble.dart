@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../constants/app_colors.dart';
 import '../../../services/encryption_service.dart';
@@ -127,81 +128,79 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
       }
     }
 
-    // 3. For remote URL: download first or initialize controller once and cache locally
+    // 3. For remote URL: download encrypted file, decrypt locally and initialize controller
     try {
-      // Try to save remote file into persistent app directory so subsequent opens read from disk
-      VideoPlayerController controller;
-      
-      try {
-        final dir = await getApplicationDocumentsDirectory();
-        final cacheDir = Directory(p.join(dir.path, 'video_cache'));
-        if (!cacheDir.existsSync()) {
-          cacheDir.createSync(recursive: true);
-        }
-        final cachedTargetFile = File(p.join(cacheDir.path, '${url.hashCode}.mp4'));
-        
-        if (cachedTargetFile.existsSync() && cachedTargetFile.lengthSync() > 0) {
-          controller = VideoPlayerController.file(cachedTargetFile);
-          await controller.initialize();
-          _cachedFilePaths[url] = cachedTargetFile.path;
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('vfile_${url.hashCode}', cachedTargetFile.path);
-        } else {
-          // Download encrypted file from server, then decrypt locally
-          final uri = Uri.parse(url);
-          final rawEncryptedFile = File(p.join(cacheDir.path, '${url.hashCode}.enc'));
-          final res = await HttpClient().getUrl(uri).then((req) => req.close());
-          if (res.statusCode == 200) {
-            final sink = rawEncryptedFile.openWrite();
-            await res.pipe(sink);
-            await EndToEndEncryptionService.decryptFile(
-              rawEncryptedFile,
-              widget.senderId,
-              widget.receiverId,
-              cachedTargetFile.path,
-            );
-            try {
-              if (await rawEncryptedFile.exists()) await rawEncryptedFile.delete();
-            } catch (_) {}
+      final dir = await getApplicationDocumentsDirectory();
+      final cacheDir = Directory(p.join(dir.path, 'video_cache'));
+      if (!cacheDir.existsSync()) {
+        cacheDir.createSync(recursive: true);
+      }
+      final cachedTargetFile = File(p.join(cacheDir.path, '${url.hashCode}.mp4'));
 
-            controller = VideoPlayerController.file(cachedTargetFile);
-            await controller.initialize();
-            _cachedFilePaths[url] = cachedTargetFile.path;
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('vfile_${url.hashCode}', cachedTargetFile.path);
-          } else {
-            // Fallback
-            controller = VideoPlayerController.networkUrl(uri);
-            await controller.initialize();
+      // Check if target mp4 is already cached and valid
+      if (cachedTargetFile.existsSync() && cachedTargetFile.lengthSync() > 100) {
+        localFilePath = cachedTargetFile.path;
+      } else {
+        // Download encrypted file (.enc) from server
+        final uri = Uri.parse(url);
+        final rawEncryptedFile = File(p.join(cacheDir.path, '${url.hashCode}.enc'));
+        
+        final response = await http.get(uri).timeout(const Duration(seconds: 30));
+        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+          await rawEncryptedFile.writeAsBytes(response.bodyBytes, flush: true);
+
+          // Decrypt to MP4
+          await EndToEndEncryptionService.decryptFile(
+            rawEncryptedFile,
+            widget.senderId,
+            widget.receiverId,
+            cachedTargetFile.path,
+          );
+
+          try {
+            if (await rawEncryptedFile.exists()) await rawEncryptedFile.delete();
+          } catch (_) {}
+
+          if (cachedTargetFile.existsSync() && cachedTargetFile.lengthSync() > 100) {
+            localFilePath = cachedTargetFile.path;
           }
         }
-      } catch (err) {
-        debugPrint('[VIDEO CACHE/DECRYPT ERR] $err');
-        final uri = Uri.parse(url);
-        controller = VideoPlayerController.networkUrl(uri);
+      }
+
+      if (localFilePath != null && File(localFilePath).existsSync() && File(localFilePath).lengthSync() > 100) {
+        final controller = VideoPlayerController.file(File(localFilePath));
         await controller.initialize();
-      }
+        _cachedFilePaths[url] = localFilePath;
+        _persistentControllers[url] = controller;
 
-      _controller = controller;
-      _persistentControllers[url] = controller;
-
-      if (controller.value.duration.inSeconds > 1) {
-        await controller.seekTo(const Duration(seconds: 1));
-      }
-
-      final durText = _formatDuration(controller.value.duration);
-      _cachedDurations[url] = durText;
-
-      try {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('vdur_${url.hashCode}', durText);
-      } catch (_) {}
+        await prefs.setString('vfile_${url.hashCode}', localFilePath);
 
-      if (mounted) {
-        setState(() {
-          _durationText = durText;
-          _isProcessing = false;
-        });
+        // Seek slightly ahead so the first frame renders as a preview thumbnail
+        if (controller.value.duration.inMilliseconds > 300) {
+          await controller.seekTo(const Duration(milliseconds: 300));
+        }
+
+        final durText = _formatDuration(controller.value.duration);
+        _cachedDurations[url] = durText;
+        await prefs.setString('vdur_${url.hashCode}', durText);
+
+        if (mounted) {
+          setState(() {
+            _controller = controller;
+            _durationText = durText;
+            _isProcessing = false;
+            _hasError = false;
+          });
+        }
+      } else {
+        // Could not decrypt or download valid video
+        if (mounted) {
+          setState(() {
+            _hasError = true;
+            _isProcessing = false;
+          });
+        }
       }
     } catch (e) {
       debugPrint('[VIDEO THUMB INITIALIZE ERR] $e');

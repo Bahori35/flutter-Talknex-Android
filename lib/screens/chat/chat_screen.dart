@@ -312,11 +312,25 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       if (mediaUrl != null && mounted) {
-        // Cache original decrypted local file for sender
+        // Cache original decrypted local file for sender permanently
         try {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString(isVideo ? 'vfile_${mediaUrl.hashCode}' : 'ifile_${mediaUrl.hashCode}', file.path);
-        } catch (_) {}
+          if (isVideo) {
+            final appDocDir = await getApplicationDocumentsDirectory();
+            final videoCacheDir = Directory(p.join(appDocDir.path, 'video_cache'));
+            if (!videoCacheDir.existsSync()) videoCacheDir.createSync(recursive: true);
+            final persistentCopy = File(p.join(videoCacheDir.path, '${mediaUrl.hashCode}.mp4'));
+            if (!persistentCopy.existsSync()) {
+              await File(file.path).copy(persistentCopy.path);
+            }
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('vfile_${mediaUrl.hashCode}', persistentCopy.path);
+          } else {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('ifile_${mediaUrl.hashCode}', file.path);
+          }
+        } catch (e) {
+          debugPrint('[SENDER LOCAL CACHE ERR] $e');
+        }
         _sendMessage(
           customContent: isVideo ? '🎥 Video' : '📷 Fotoğraf',
           type: isVideo ? MessageType.video : MessageType.image,

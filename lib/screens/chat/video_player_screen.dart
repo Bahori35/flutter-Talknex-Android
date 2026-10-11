@@ -1,11 +1,13 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import '../../constants/app_colors.dart';
+import '../../services/encryption_service.dart';
 
 class VideoPlayerScreen extends StatefulWidget {
   final String videoUrl;
@@ -26,7 +28,7 @@ class VideoPlayerScreen extends StatefulWidget {
 }
 
 class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
-  late VideoPlayerController _videoPlayerController;
+  VideoPlayerController? _videoPlayerController;
   ChewieController? _chewieController;
   bool _hasError = false;
   String _errorMessage = '';
@@ -46,7 +48,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       try {
         final prefs = await SharedPreferences.getInstance();
         final savedPath = prefs.getString('vfile_${url.hashCode}');
-        if (savedPath != null && File(savedPath).existsSync()) {
+        if (savedPath != null && File(savedPath).existsSync() && File(savedPath).lengthSync() > 100) {
           localVideoFile = File(savedPath);
         }
       } catch (_) {}
@@ -55,29 +57,55 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       if (localVideoFile == null) {
         try {
           final dir = await getApplicationDocumentsDirectory();
-          final cacheFile = File(p.join(dir.path, 'video_cache', '${url.hashCode}.mp4'));
-          if (cacheFile.existsSync() && cacheFile.lengthSync() > 0) {
+          final cacheDir = Directory(p.join(dir.path, 'video_cache'));
+          if (!cacheDir.existsSync()) cacheDir.createSync(recursive: true);
+
+          final cacheFile = File(p.join(cacheDir.path, '${url.hashCode}.mp4'));
+          if (cacheFile.existsSync() && cacheFile.lengthSync() > 100) {
             localVideoFile = cacheFile;
+          } else {
+            // Download & decrypt directly
+            final uri = Uri.parse(url);
+            final rawEncryptedFile = File(p.join(cacheDir.path, '${url.hashCode}.enc'));
+            final res = await http.get(uri).timeout(const Duration(seconds: 30));
+            if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+              await rawEncryptedFile.writeAsBytes(res.bodyBytes, flush: true);
+              await EndToEndEncryptionService.decryptFile(
+                rawEncryptedFile,
+                widget.senderId,
+                widget.receiverId,
+                cacheFile.path,
+              );
+              try {
+                if (await rawEncryptedFile.exists()) await rawEncryptedFile.delete();
+              } catch (_) {}
+              if (cacheFile.existsSync() && cacheFile.lengthSync() > 100) {
+                localVideoFile = cacheFile;
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString('vfile_${url.hashCode}', cacheFile.path);
+              }
+            }
           }
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('[PLAYER DOWNLOAD/DECRYPT ERR] $e');
+        }
       }
 
-      // 3. Initialize from local file (0 network usage) or stream via network
-      if (localVideoFile != null && localVideoFile.existsSync()) {
+      // 3. Initialize from local file or show clear error if unavailable
+      if (localVideoFile != null && localVideoFile.existsSync() && localVideoFile.lengthSync() > 100) {
         _videoPlayerController = VideoPlayerController.file(localVideoFile);
       } else {
-        final uri = Uri.parse(url);
-        _videoPlayerController = VideoPlayerController.networkUrl(uri);
+        throw Exception('Video dosyası indirilemedi veya çözülemedi.');
       }
 
-      await _videoPlayerController.initialize();
+      await _videoPlayerController!.initialize();
 
       _chewieController = ChewieController(
-        videoPlayerController: _videoPlayerController,
+        videoPlayerController: _videoPlayerController!,
         autoPlay: true,
         looping: false,
-        aspectRatio: _videoPlayerController.value.aspectRatio > 0
-            ? _videoPlayerController.value.aspectRatio
+        aspectRatio: _videoPlayerController!.value.aspectRatio > 0
+            ? _videoPlayerController!.value.aspectRatio
             : 16 / 9,
         materialProgressColors: ChewieProgressColors(
           playedColor: AppColors.accent,
@@ -123,7 +151,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   @override
   void dispose() {
     _chewieController?.dispose();
-    _videoPlayerController.dispose();
+    _videoPlayerController?.dispose();
     super.dispose();
   }
 
