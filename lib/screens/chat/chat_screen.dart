@@ -631,6 +631,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
+  }
+
   void _showMessageActionDialog(MessageModel message, bool isMe) {
     if (message.isDeleted) return; // Already deleted
 
