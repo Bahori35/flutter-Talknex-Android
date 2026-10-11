@@ -422,39 +422,61 @@ class SyncContactsRequest(BaseModel):
 
 @app.post("/api/users/sync-contacts")
 def sync_contacts(req: SyncContactsRequest):
-    if not req.contacts:
-        return []
-
     # Map normalized phone number -> local contact name
     normalized_map = {}
-    for entry in req.contacts:
-        norm = normalize_phone(entry.phone)
-        if norm:
-            normalized_map[norm] = entry.name.strip() if entry.name and entry.name.strip() else ""
-
-    if not normalized_map:
-        return []
+    if req.contacts:
+        for entry in req.contacts:
+            norm = normalize_phone(entry.phone)
+            if norm:
+                normalized_map[norm] = entry.name.strip() if entry.name and entry.name.strip() else ""
 
     conn = get_db_connection()
     with conn.cursor() as cursor:
         cursor.execute(
-            "SELECT id, username, display_name AS displayName, photo_url AS photoUrl, phone_number AS phoneNumber, status, is_online AS isOnline, last_seen AS lastSeen FROM users WHERE id != %s AND phone_number != ''",
+            "SELECT id, username, display_name AS displayName, photo_url AS photoUrl, phone_number AS phoneNumber, status, is_online AS isOnline, last_seen AS lastSeen FROM users WHERE id != %s",
             (req.userId,)
         )
         all_users = cursor.fetchall()
+
+        # Find user IDs of everyone req.userId has exchanged messages with
+        cursor.execute(
+            """SELECT DISTINCT CASE 
+                   WHEN sender_id = %s THEN receiver_id 
+                   ELSE sender_id 
+               END AS partner_id 
+               FROM messages 
+               WHERE sender_id = %s OR receiver_id = %s""",
+            (req.userId, req.userId, req.userId)
+        )
+        chat_partner_rows = cursor.fetchall()
+        chat_partner_ids = {row["partner_id"] for row in chat_partner_rows if row.get("partner_id")}
     conn.close()
 
     matched_users = []
+    added_ids = set()
+
     for u in all_users:
+        uid = u["id"]
+        uid_str = str(uid)
+        u["isOnline"] = uid_str in active_sockets
+
         user_norm = normalize_phone(u.get("phoneNumber") or "")
-        if user_norm and user_norm in normalized_map:
-            uid_str = str(u["id"])
-            u["isOnline"] = uid_str in active_sockets
+        in_contacts = user_norm and user_norm in normalized_map
+        in_chat_history = uid in chat_partner_ids
+
+        if in_contacts or in_chat_history:
             # If the user saved this contact with a local phonebook name, use that name!
-            local_name = normalized_map[user_norm]
-            if local_name:
-                u["displayName"] = local_name
-            matched_users.append(u)
+            if in_contacts:
+                local_name = normalized_map[user_norm]
+                if local_name:
+                    u["displayName"] = local_name
+            # Otherwise keep their own displayName or username
+            elif not u.get("displayName"):
+                u["displayName"] = u.get("phoneNumber") or u.get("username") or "Kullanıcı"
+
+            if uid not in added_ids:
+                matched_users.append(u)
+                added_ids.add(uid)
 
     return matched_users
 

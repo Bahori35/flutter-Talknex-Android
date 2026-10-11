@@ -79,6 +79,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             senderDisplayName = senderObj.displayName;
           } catch (_) {}
 
+          // If sender is not in our loaded list, reload users to display them immediately
+          if (!_phoneContacts.any((u) => u.uid == message.senderId)) {
+            _loadUsers();
+          }
+
           _notificationService.showMessageNotification(
             id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
             senderName: senderDisplayName,
@@ -352,9 +357,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         });
       }
 
+      List<Map<String, String>> contactList = [];
       if (permission) {
         List<Contact> contacts = await FlutterContacts.getContacts(withProperties: true, withPhoto: false);
-        List<Map<String, String>> contactList = [];
         for (var contact in contacts) {
           for (var phone in contact.phones) {
             final num = phone.number.trim();
@@ -366,42 +371,27 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             }
           }
         }
+      }
 
-        final myUid = int.tryParse(currentUser.uid) ?? 0;
-        final matched = await _chatService.syncContacts(
-          userId: myUid,
-          contacts: contactList,
-        );
+      final myUid = int.tryParse(currentUser.uid) ?? 0;
+      final matched = await _chatService.syncContacts(
+        userId: myUid,
+        contacts: contactList,
+      );
 
-        if (mounted) {
-          setState(() {
-            _phoneContacts = matched;
-            _isSyncingContacts = false;
-          });
-          if (!silent) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('${matched.length} rehber kişisi uygulamada bulundu!'),
-                backgroundColor: AppColors.primaryLight,
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          }
-        }
-      } else {
-        if (mounted) {
-          setState(() {
-            _isSyncingContacts = false;
-          });
-          if (!silent) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Rehber izni verilmedi. Ayarlardan izin verebilirsiniz.'),
-                backgroundColor: AppColors.callRed,
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          }
+      if (mounted) {
+        setState(() {
+          _phoneContacts = matched;
+          _isSyncingContacts = false;
+        });
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${matched.length} kişi bulundu!'),
+              backgroundColor: AppColors.primaryLight,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
         }
       }
     } catch (e) {
