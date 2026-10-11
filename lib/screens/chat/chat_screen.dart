@@ -1290,7 +1290,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final bool isLocation = message.type == MessageType.location;
     final bool isDoc = message.type == MessageType.doc;
     final bool hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
-    final bool isImage = message.type == MessageType.image || (hasMedia && !isDoc && !isLocation && !message.mediaUrl!.endsWith('.mp4'));
+    final bool isVideo = message.type == MessageType.video ||
+        (hasMedia && !isDoc && !isLocation && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
+    final bool isImage = (message.type == MessageType.image || (hasMedia && !isDoc && !isLocation && !isVideo));
 
     final bool isDeleted = message.isDeleted;
     final bool isEdited = message.isEdited;
@@ -1354,8 +1356,16 @@ class _ChatScreenState extends State<ChatScreen> {
                 ] else if (hasMedia) ...[
                   ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                    child: isImage
-                        ? GestureDetector(
+                    child: isVideo
+                        ? VideoMessageBubble(
+                            videoUrl: message.mediaUrl!,
+                            title: message.content.isNotEmpty && message.content != '🎥 Video'
+                                ? message.content
+                                : 'Video Mesajı',
+                            senderId: message.senderId,
+                            receiverId: message.receiverId,
+                          )
+                        : GestureDetector(
                             onTap: () => _openFullScreenImage(message.mediaUrl!),
                             child: DecryptedImageWidget(
                               imageUrl: message.mediaUrl!,
@@ -1365,14 +1375,6 @@ class _ChatScreenState extends State<ChatScreen> {
                               height: 200,
                               fit: BoxFit.cover,
                             ),
-                          )
-                        : VideoMessageBubble(
-                            videoUrl: message.mediaUrl!,
-                            title: message.content.isNotEmpty && message.content != '🎥 Video'
-                                ? message.content
-                                : 'Video Mesajı',
-                            senderId: message.senderId,
-                            receiverId: message.receiverId,
                           ),
                   ),
                   if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')

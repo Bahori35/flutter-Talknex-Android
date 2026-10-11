@@ -111,6 +111,9 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
       try {
         final fileController = VideoPlayerController.file(File(localFilePath));
         await fileController.initialize();
+        if (fileController.value.duration.inMilliseconds > 300) {
+          await fileController.seekTo(const Duration(milliseconds: 300));
+        }
         _persistentControllers[url] = fileController;
         final dur = cachedDuration ?? _formatDuration(fileController.value.duration);
         _cachedDurations[url] = dur;
@@ -120,6 +123,7 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
             _controller = fileController;
             _durationText = dur;
             _isProcessing = false;
+            _hasError = false;
           });
         }
         return;
