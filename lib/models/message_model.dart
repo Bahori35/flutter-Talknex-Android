@@ -13,6 +13,9 @@ class MessageModel {
   final bool isDelivered;
   final bool isRead;
   final String? mediaUrl;
+  final bool isDeleted;
+  final bool isEdited;
+  final String? originalContent;
 
   MessageModel({
     required this.id,
@@ -25,6 +28,9 @@ class MessageModel {
     this.isDelivered = false,
     this.isRead = false,
     this.mediaUrl,
+    this.isDeleted = false,
+    this.isEdited = false,
+    this.originalContent,
   });
 
   Map<String, dynamic> toMap() {
@@ -39,6 +45,9 @@ class MessageModel {
       'isDelivered': isDelivered,
       'isRead': isRead,
       'mediaUrl': mediaUrl,
+      'isDeleted': isDeleted,
+      'isEdited': isEdited,
+      'originalContent': originalContent,
     };
   }
 
@@ -66,6 +75,9 @@ class MessageModel {
       isDelivered: map['isDelivered'] == 1 || map['isDelivered'] == true || map['isRead'] == 1 || map['isRead'] == true,
       isRead: map['isRead'] == 1 || map['isRead'] == true,
       mediaUrl: map['mediaUrl'],
+      isDeleted: map['isDeleted'] == 1 || map['isDeleted'] == true,
+      isEdited: map['isEdited'] == 1 || map['isEdited'] == true,
+      originalContent: map['originalContent'],
     );
   }
 
@@ -80,6 +92,9 @@ class MessageModel {
     bool? isDelivered,
     bool? isRead,
     String? mediaUrl,
+    bool? isDeleted,
+    bool? isEdited,
+    String? originalContent,
   }) {
     return MessageModel(
       id: id ?? this.id,
@@ -92,6 +107,9 @@ class MessageModel {
       isDelivered: isDelivered ?? this.isDelivered,
       isRead: isRead ?? this.isRead,
       mediaUrl: mediaUrl ?? this.mediaUrl,
+      isDeleted: isDeleted ?? this.isDeleted,
+      isEdited: isEdited ?? this.isEdited,
+      originalContent: originalContent ?? this.originalContent,
     );
   }
 }

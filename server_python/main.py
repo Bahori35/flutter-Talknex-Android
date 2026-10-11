@@ -166,6 +166,26 @@ def init_db():
             except Exception:
                 pass
 
+            try:
+                cursor.execute("ALTER TABLE messages ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE;")
+            except Exception:
+                pass
+
+            try:
+                cursor.execute("ALTER TABLE messages ADD COLUMN is_edited BOOLEAN DEFAULT FALSE;")
+            except Exception:
+                pass
+
+            try:
+                cursor.execute("ALTER TABLE messages ADD COLUMN original_content TEXT NULL;")
+            except Exception:
+                pass
+
+            try:
+                cursor.execute("ALTER TABLE messages ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;")
+            except Exception:
+                pass
+
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS call_logs (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -443,7 +463,10 @@ def get_messages(user1: int, user2: int):
     conn = get_db_connection()
     with conn.cursor() as cursor:
         cursor.execute(
-            """SELECT id, sender_id AS senderId, receiver_id AS receiverId, content, message_type AS type, is_delivered AS isDelivered, is_read AS isRead, media_url AS mediaUrl, created_at AS timestamp 
+            """SELECT id, sender_id AS senderId, receiver_id AS receiverId, content, message_type AS type, 
+                      is_delivered AS isDelivered, is_read AS isRead, media_url AS mediaUrl, 
+                      is_deleted AS isDeleted, is_edited AS isEdited, original_content AS originalContent,
+                      created_at AS timestamp 
                FROM messages 
                WHERE (sender_id = %s AND receiver_id = %s) OR (sender_id = %s AND receiver_id = %s) 
                ORDER BY created_at ASC""",
@@ -749,6 +772,73 @@ async def message_read(sid, data):
     sender_sid = active_sockets.get(str(sender_id))
     if sender_sid:
         await sio.emit("messages_read", {"senderId": str(sender_id), "receiverId": str(receiver_id), "messageId": msg_id}, to=sender_sid)
+
+
+@sio.event
+async def delete_message(sid, data):
+    msg_id = data.get("messageId")
+    sender_id = data.get("senderId")
+    receiver_id = data.get("receiverId")
+    print(f"[SOCKET] delete_message: #{msg_id} (Gonderen #{sender_id} -> Alici #{receiver_id})")
+
+    if not msg_id:
+        return
+
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            # Soft delete: mark is_deleted = 1, KEEP row in database for admin/forensics!
+            cursor.execute("UPDATE messages SET is_deleted = 1 WHERE id = %s", (msg_id,))
+        conn.close()
+    except Exception as e:
+        print(f"[DB ERR delete_message] {e}")
+
+    # Broadcast to receiver and sender so it live updates both screens
+    payload = {"messageId": str(msg_id), "senderId": str(sender_id), "receiverId": str(receiver_id)}
+    receiver_sid = active_sockets.get(str(receiver_id))
+    if receiver_sid:
+        await sio.emit("message_deleted", payload, to=receiver_sid)
+    await sio.emit("message_deleted", payload, to=sid)
+
+
+@sio.event
+async def edit_message(sid, data):
+    msg_id = data.get("messageId")
+    sender_id = data.get("senderId")
+    receiver_id = data.get("receiverId")
+    new_content = data.get("newContent") or ""
+    print(f"[SOCKET] edit_message: #{msg_id}")
+
+    if not msg_id or not new_content:
+        return
+
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            # Preserve original content on first edit for forensic audit
+            cursor.execute("SELECT content, original_content FROM messages WHERE id = %s", (msg_id,))
+            row = cursor.fetchone()
+            if row:
+                old_content = row["content"]
+                orig_content = row.get("original_content") or old_content
+                cursor.execute(
+                    "UPDATE messages SET content = %s, original_content = %s, is_edited = 1 WHERE id = %s",
+                    (new_content, orig_content, msg_id),
+                )
+        conn.close()
+    except Exception as e:
+        print(f"[DB ERR edit_message] {e}")
+
+    payload = {
+        "messageId": str(msg_id),
+        "senderId": str(sender_id),
+        "receiverId": str(receiver_id),
+        "content": new_content,
+    }
+    receiver_sid = active_sockets.get(str(receiver_id))
+    if receiver_sid:
+        await sio.emit("message_edited", payload, to=receiver_sid)
+    await sio.emit("message_edited", payload, to=sid)
 
 
 @sio.event

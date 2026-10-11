@@ -16,6 +16,8 @@ typedef OnCallEnded = void Function();
 typedef OnUserStatusChange = void Function(String userId, bool isOnline);
 typedef OnLiveLocationUpdate = void Function(Map<String, dynamic> data);
 typedef OnLiveLocationStopped = void Function(Map<String, dynamic> data);
+typedef OnMessageDeleted = void Function(String messageId);
+typedef OnMessageEdited = void Function(String messageId, String newContent);
 
 class SocketService {
   static final SocketService _instance = SocketService._internal();
@@ -35,6 +37,8 @@ class SocketService {
   OnUserStatusChange? onUserStatusChange;
   OnLiveLocationUpdate? onLiveLocationUpdate;
   OnLiveLocationStopped? onLiveLocationStopped;
+  OnMessageDeleted? onMessageDeleted;
+  OnMessageEdited? onMessageEdited;
 
 
   // Initialize and connect socket to Python server
@@ -165,6 +169,26 @@ class SocketService {
       }
     });
 
+    socket!.on('message_deleted', (data) {
+      debugPrint('[SOCKET] Message Deleted: $data');
+      if (onMessageDeleted != null && data != null) {
+        final msgId = data['messageId']?.toString() ?? '';
+        onMessageDeleted!(msgId);
+      }
+    });
+
+    socket!.on('message_edited', (data) {
+      debugPrint('[SOCKET] Message Edited: $data');
+      if (onMessageEdited != null && data != null) {
+        final msgId = data['messageId']?.toString() ?? '';
+        final rawContent = data['content']?.toString() ?? '';
+        final senderId = data['senderId']?.toString() ?? '';
+        final receiverId = data['receiverId']?.toString() ?? '';
+        final dec = EndToEndEncryptionService.decryptText(rawContent, senderId, receiverId);
+        onMessageEdited!(msgId, dec);
+      }
+    });
+
     socket!.onDisconnect((_) => debugPrint('[SOCKET] Disconnected'));
   }
 
@@ -286,6 +310,34 @@ class SocketService {
   void emitEndCall(String targetUserId) {
     socket?.emit('end_call', {
       'targetUserId': targetUserId,
+    });
+  }
+
+  // Delete message (Soft delete, keeps audit trail for admin)
+  void deleteMessage({
+    required String messageId,
+    required String senderId,
+    required String receiverId,
+  }) {
+    socket?.emit('delete_message', {
+      'messageId': messageId,
+      'senderId': senderId,
+      'receiverId': receiverId,
+    });
+  }
+
+  // Edit message (Updates message, keeps original content for admin audit)
+  void editMessage({
+    required String messageId,
+    required String senderId,
+    required String receiverId,
+    required String newContent,
+  }) {
+    socket?.emit('edit_message', {
+      'messageId': messageId,
+      'senderId': senderId,
+      'receiverId': receiverId,
+      'newContent': newContent,
     });
   }
 }

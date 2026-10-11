@@ -408,7 +408,8 @@ class TalknexChatAdminApp(tk.Tk):
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, sender_id, receiver_id, content, message_type, media_url, created_at
+                    SELECT id, sender_id, receiver_id, content, message_type, media_url, 
+                           is_deleted, is_edited, original_content, updated_at, created_at
                     FROM messages
                     WHERE (sender_id = %s AND receiver_id = %s) OR (sender_id = %s AND receiver_id = %s)
                     ORDER BY created_at ASC
@@ -460,21 +461,44 @@ class TalknexChatAdminApp(tk.Tk):
         bubble = tk.Frame(row_frame, bg=bubble_bg, padx=10, pady=8)
         bubble.pack(side=align, padx=outer_padx)
 
-        # 1. SENDER NAME (Small header)
+        # 1. SENDER NAME (Small header) with Status Badges
+        header_row = tk.Frame(bubble, bg=bubble_bg)
+        header_row.pack(fill=tk.X, pady=(0, 2))
+
         sender_lbl = tk.Label(
-            bubble,
+            header_row,
             text=f"Kullanıcı #{msg['sender_id']}",
             bg=bubble_bg,
             fg="#25D366" if is_sender else "#53BDEB",
             font=("Segoe UI", 8, "bold"),
         )
-        sender_lbl.pack(anchor="w", pady=(0, 2))
+        sender_lbl.pack(side=tk.LEFT)
+
+        if msg.get("is_deleted"):
+            del_badge = tk.Label(
+                header_row,
+                text=" ⚠️ KULLANICI BU MESAJI SİLDİ! ",
+                bg="#E74C3C",
+                fg="#FFFFFF",
+                font=("Segoe UI", 8, "bold"),
+            )
+            del_badge.pack(side=tk.RIGHT, padx=4)
+
+        if msg.get("is_edited"):
+            edit_badge = tk.Label(
+                header_row,
+                text=" ✏️ DÜZENLENDİ ",
+                bg="#E67E22",
+                fg="#FFFFFF",
+                font=("Segoe UI", 8, "bold"),
+            )
+            edit_badge.pack(side=tk.RIGHT, padx=4)
 
         # 2. MEDIA DISPLAY (If Photo or Video)
         if media_url:
             self._render_media_inside_bubble(bubble, media_url, msg_type, msg["sender_id"], msg["receiver_id"], bubble_bg)
 
-        # 3. TEXT CONTENT
+        # 3. TEXT CONTENT (Show Current Decrypted Text)
         if decrypted_text and decrypted_text != "📷 Fotoğraf" and decrypted_text != "🎥 Video":
             text_lbl = tk.Label(
                 bubble,
@@ -487,7 +511,23 @@ class TalknexChatAdminApp(tk.Tk):
             )
             text_lbl.pack(anchor="w", pady=(2, 2))
 
-        # 4. TIMESTAMP & E2EE SHIELD
+        # 4. IF EDITED: SHOW ORIGINAL CONTENT (FORENSIC AUDIT)
+        if msg.get("is_edited") and msg.get("original_content"):
+            orig_raw = msg["original_content"]
+            orig_dec = decrypt_text(orig_raw, msg["sender_id"], msg["receiver_id"])
+            orig_box = tk.Frame(bubble, bg="#111B21", padx=8, pady=4)
+            orig_box.pack(fill=tk.X, pady=(2, 4))
+            tk.Label(
+                orig_box,
+                text=f"📌 Orijinal İlk Mesaj: {orig_dec}",
+                bg="#111B21",
+                fg="#F39C12",
+                font=("Segoe UI", 9, "italic"),
+                wraplength=460,
+                justify=tk.LEFT,
+            ).pack(anchor="w")
+
+        # 5. TIMESTAMP & E2EE SHIELD
         footer_frame = tk.Frame(bubble, bg=bubble_bg)
         footer_frame.pack(anchor="e", pady=(2, 0))
 

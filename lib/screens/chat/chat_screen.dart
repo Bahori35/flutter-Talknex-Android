@@ -127,6 +127,34 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
     };
+
+    // Listen for message deletion
+    _socketService.onMessageDeleted = (deletedId) {
+      if (mounted) {
+        setState(() {
+          _messages = _messages.map((m) {
+            if (m.id == deletedId) {
+              return m.copyWith(isDeleted: true, content: 'Bu mesaj silindi');
+            }
+            return m;
+          }).toList();
+        });
+      }
+    };
+
+    // Listen for message editing
+    _socketService.onMessageEdited = (editedId, newText) {
+      if (mounted) {
+        setState(() {
+          _messages = _messages.map((m) {
+            if (m.id == editedId) {
+              return m.copyWith(isEdited: true, content: newText);
+            }
+            return m;
+          }).toList();
+        });
+      }
+    };
   }
 
   void _loadMessages() async {
@@ -599,6 +627,167 @@ class _ChatScreenState extends State<ChatScreen> {
           Text(
             label,
             style: const TextStyle(color: AppColors.textPrimary, fontSize: 12, fontWeight: FontWeight.w500),
+          ),
+        ],
+      ),
+    );
+  void _showMessageActionDialog(MessageModel message, bool isMe) {
+    if (message.isDeleted) return; // Already deleted
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Wrap(
+            children: [
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 10),
+                alignment: Alignment.center,
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              if (isMe && message.type == MessageType.text)
+                ListTile(
+                  leading: const Icon(Icons.edit_rounded, color: AppColors.accent),
+                  title: const Text('Mesajı Düzenle', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showEditMessageDialog(message);
+                  },
+                ),
+              if (isMe)
+                ListTile(
+                  leading: const Icon(Icons.delete_outline_rounded, color: AppColors.callRed),
+                  title: const Text('Herkesten Sil', style: TextStyle(color: AppColors.callRed, fontWeight: FontWeight.w600)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _confirmDeleteMessage(message);
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.close_rounded, color: Colors.white54),
+                title: const Text('İptal', style: TextStyle(color: Colors.white54)),
+                onTap: () => Navigator.pop(ctx),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _confirmDeleteMessage(MessageModel message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text('Mesaj Silinsin mi?', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'Bu mesaj sizden ve karşı taraftan kaldırılacak. (Güvenlik ve adli denetim kayıtları saklanır)',
+          style: TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Vazgeç', style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.callRed),
+            onPressed: () {
+              Navigator.pop(ctx);
+              // Emit live delete via socket
+              _socketService.deleteMessage(
+                messageId: message.id,
+                senderId: widget.currentUser.uid,
+                receiverId: widget.peerUser.uid,
+              );
+              // Update local state immediately
+              setState(() {
+                _messages = _messages.map((m) {
+                  if (m.id == message.id) {
+                    return m.copyWith(isDeleted: true, content: 'Bu mesaj silindi');
+                  }
+                  return m;
+                }).toList();
+              });
+            },
+            child: const Text('Herkesten Sil', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditMessageDialog(MessageModel message) {
+    final editController = TextEditingController(text: message.content);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text('Mesajı Düzenle', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: editController,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'Yeni mesaj...',
+            hintStyle: TextStyle(color: Colors.white38),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.accent)),
+            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.accent, width: 2)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('İptal', style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+            onPressed: () {
+              final newText = editController.text.trim();
+              if (newText.isEmpty || newText == message.content) {
+                Navigator.pop(ctx);
+                return;
+              }
+              Navigator.pop(ctx);
+
+              // Encrypt updated content for transmission
+              final encNew = EndToEndEncryptionService.encryptText(
+                newText,
+                widget.currentUser.uid,
+                widget.peerUser.uid,
+              );
+
+              // Emit live edit via socket
+              _socketService.editMessage(
+                messageId: message.id,
+                senderId: widget.currentUser.uid,
+                receiverId: widget.peerUser.uid,
+                newContent: encNew,
+              );
+
+              // Update local list
+              setState(() {
+                _messages = _messages.map((m) {
+                  if (m.id == message.id) {
+                    return m.copyWith(isEdited: true, content: newText);
+                  }
+                  return m;
+                }).toList();
+              });
+            },
+            child: const Text('Kaydet', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -1085,106 +1274,144 @@ class _ChatScreenState extends State<ChatScreen> {
     final bool hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool isImage = message.type == MessageType.image || (hasMedia && !isDoc && !isLocation && !message.mediaUrl!.endsWith('.mp4'));
 
+    final bool isDeleted = message.isDeleted;
+    final bool isEdited = message.isEdited;
+
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 3.5),
-        padding: EdgeInsets.all(hasMedia && !isDoc && !isLocation ? 4 : 10),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.78,
-        ),
-        decoration: BoxDecoration(
-          gradient: isMe ? AppColors.bubbleGradient : null,
-          color: isMe ? null : AppColors.peerMessageBubble,
-          border: isMe ? null : Border.all(color: AppColors.cardBorder),
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isMe ? 16 : 3),
-            bottomRight: Radius.circular(isMe ? 3 : 16),
+      child: GestureDetector(
+        onLongPress: () => _showMessageActionDialog(message, isMe),
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 3.5),
+          padding: EdgeInsets.all(hasMedia && !isDoc && !isLocation ? 4 : 10),
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.78,
           ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              blurRadius: 4,
-              offset: const Offset(0, 2),
+          decoration: BoxDecoration(
+            gradient: isMe ? (isDeleted ? null : AppColors.bubbleGradient) : null,
+            color: isDeleted 
+                ? (isMe ? Colors.white10 : Colors.white12) 
+                : (isMe ? null : AppColors.peerMessageBubble),
+            border: Border.all(
+              color: isDeleted ? Colors.white24 : (isMe ? Colors.transparent : AppColors.cardBorder),
             ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            if (isLocation) ...[
-              _buildLocationWidget(message),
-            ] else if (isDoc) ...[
-              _buildDocumentWidget(message),
-            ] else if (hasMedia) ...[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: isImage
-                    ? GestureDetector(
-                        onTap: () => _openFullScreenImage(message.mediaUrl!),
-                        child: DecryptedImageWidget(
-                          imageUrl: message.mediaUrl!,
-                          senderId: message.senderId,
-                          receiverId: message.receiverId,
-                          width: double.infinity,
-                          height: 200,
-                          fit: BoxFit.cover,
-                        ),
-                      )
-                    : VideoMessageBubble(
-                        videoUrl: message.mediaUrl!,
-                        title: message.content.isNotEmpty && message.content != '🎥 Video'
-                            ? message.content
-                            : 'Video Mesajı',
-                        senderId: message.senderId,
-                        receiverId: message.receiverId,
-                      ),
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(isMe ? 16 : 3),
+              bottomRight: Radius.circular(isMe ? 3 : 16),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 4,
+                offset: const Offset(0, 2),
               ),
-              if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
-                  child: Text(
-                    message.content,
-                    style: const TextStyle(color: Colors.white, fontSize: 14.5),
-                  ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (isDeleted) ...[
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.block_rounded, color: Colors.white54, size: 16),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Bu mesaj silindi',
+                      style: TextStyle(
+                        color: Colors.white60,
+                        fontSize: 13.5,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
                 ),
-            ] else ...[
-              Text(
-                message.content,
-                style: TextStyle(
-                  color: isMe ? Colors.white : AppColors.textPrimary,
-                  fontSize: 14.5,
-                  height: 1.35,
+              ] else ...[
+                if (isLocation) ...[
+                  _buildLocationWidget(message),
+                ] else if (isDoc) ...[
+                  _buildDocumentWidget(message),
+                ] else if (hasMedia) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: isImage
+                        ? GestureDetector(
+                            onTap: () => _openFullScreenImage(message.mediaUrl!),
+                            child: DecryptedImageWidget(
+                              imageUrl: message.mediaUrl!,
+                              senderId: message.senderId,
+                              receiverId: message.receiverId,
+                              width: double.infinity,
+                              height: 200,
+                              fit: BoxFit.cover,
+                            ),
+                          )
+                        : VideoMessageBubble(
+                            videoUrl: message.mediaUrl!,
+                            title: message.content.isNotEmpty && message.content != '🎥 Video'
+                                ? message.content
+                                : 'Video Mesajı',
+                            senderId: message.senderId,
+                            receiverId: message.receiverId,
+                          ),
+                  ),
+                  if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
+                      child: Text(
+                        message.content,
+                        style: const TextStyle(color: Colors.white, fontSize: 14.5),
+                      ),
+                    ),
+                ] else ...[
+                  Text(
+                    message.content,
+                    style: TextStyle(
+                      color: isMe ? Colors.white : AppColors.textPrimary,
+                      fontSize: 14.5,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ],
+              const SizedBox(height: 4),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (isEdited && !isDeleted) ...[
+                      const Text(
+                        'düzenlendi • ',
+                        style: TextStyle(
+                          color: Colors.white54,
+                          fontSize: 10,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                    Text(
+                      DateFormat('HH:mm').format(message.timestamp),
+                      style: TextStyle(
+                        color: isMe ? Colors.white70 : AppColors.textSecondary,
+                        fontSize: 11,
+                      ),
+                    ),
+                    if (isMe && !isDeleted) ...[
+                      const SizedBox(width: 4),
+                      Icon(
+                        (message.isRead || message.isDelivered) ? Icons.done_all_rounded : Icons.done_rounded,
+                        size: 15,
+                        color: message.isRead ? AppColors.accent : Colors.white70,
+                      ),
+                    ],
+                  ],
                 ),
               ),
             ],
-            const SizedBox(height: 4),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    DateFormat('HH:mm').format(message.timestamp),
-                    style: TextStyle(
-                      color: isMe ? Colors.white70 : AppColors.textSecondary,
-                      fontSize: 11,
-                    ),
-                  ),
-                  if (isMe) ...[
-                    const SizedBox(width: 4),
-                    Icon(
-                      (message.isRead || message.isDelivered) ? Icons.done_all_rounded : Icons.done_rounded,
-                      size: 15,
-                      color: message.isRead ? AppColors.accent : Colors.white70,
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

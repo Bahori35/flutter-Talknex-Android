@@ -71,6 +71,8 @@ class CustomChatService {
             isDelivered: json['isDelivered'] == 1 || json['isDelivered'] == true || json['isRead'] == 1 || json['isRead'] == true,
             isRead: json['isRead'] == 1 || json['isRead'] == true,
             mediaUrl: json['mediaUrl'],
+            isDeleted: json['isDeleted'] == 1 || json['isDeleted'] == true || json['is_deleted'] == 1 || json['is_deleted'] == true,
+            isEdited: json['isEdited'] == 1 || json['isEdited'] == true || json['is_edited'] == 1 || json['is_edited'] == true,
           );
         }).toList();
       }
