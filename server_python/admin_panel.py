@@ -1,5 +1,6 @@
 import os
 import sys
+import io
 import json
 import base64
 import hashlib
@@ -27,17 +28,14 @@ UPLOADS_DIR = os.path.join(CURRENT_DIR, "uploads")
 
 # ----------------- CRYPTO ENGINE (AES-256-CBC) -----------------
 def get_conversation_key(user1_id, user2_id):
-    """Generates the deterministic 256-bit AES key for the user pair."""
     pair = sorted([str(user1_id).strip(), str(user2_id).strip()])
     combined = f"{pair[0]}_e2ee_{pair[1]}_{APP_SALT}".encode("utf-8")
     return hashlib.sha256(combined).digest()
 
 
 def decrypt_text(cipher_text: str, user1_id, user2_id) -> str:
-    """Decrypts text formatted as ENC::<base64_iv>::<base64_ciphertext>."""
     if not cipher_text or not cipher_text.startswith("ENC::"):
         return cipher_text
-
     try:
         parts = cipher_text.split("::")
         if len(parts) < 3:
@@ -48,25 +46,21 @@ def decrypt_text(cipher_text: str, user1_id, user2_id) -> str:
 
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
         decryptor = cipher.decryptor()
-        padded_plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        padded = decryptor.update(ciphertext) + decryptor.finalize()
 
-        # Unpad PKCS7
-        pad_len = padded_plaintext[-1]
+        pad_len = padded[-1]
         if 1 <= pad_len <= 16:
-            plaintext = padded_plaintext[:-pad_len]
+            plaintext = padded[:-pad_len]
         else:
-            plaintext = padded_plaintext
-
+            plaintext = padded
         return plaintext.decode("utf-8", errors="replace")
-    except Exception as e:
-        return f"[Şifre Çözülemedi: {e}] {cipher_text}"
+    except Exception:
+        return cipher_text
 
 
 def decrypt_file_bytes(encrypted_bytes: bytes, user1_id, user2_id) -> bytes:
-    """Decrypts binary file bytes (IV 16 bytes + AES-CBC ciphertext)."""
     if len(encrypted_bytes) <= 16:
         return encrypted_bytes
-
     try:
         iv = encrypted_bytes[:16]
         ciphertext = encrypted_bytes[16:]
@@ -84,7 +78,7 @@ def decrypt_file_bytes(encrypted_bytes: bytes, user1_id, user2_id) -> bytes:
         return encrypted_bytes
 
 
-# ----------------- DATABASE HELPERS -----------------
+# ----------------- DATABASE -----------------
 def get_db():
     return pymysql.connect(
         host=DB_HOST,
@@ -97,496 +91,515 @@ def get_db():
     )
 
 
-# ----------------- ADMIN GUI APPLICATION -----------------
-class TalknexAdminApp(tk.Tk):
+# ----------------- TALKNEX WHATSAPP-LIKE ADMIN GUI -----------------
+class TalknexChatAdminApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Talknex - Güvenlik & Denetim Admin Paneli (E2EE Çözücü)")
-        self.geometry("1240x800")
-        self.minsize(1050, 650)
-        self.configure(bg="#1E1E2F")
+        self.title("Talknex - WhatsApp Canlı Sohbet ve Medya Denetim Paneli")
+        self.geometry("1260x860")
+        self.minsize(1080, 700)
+        self.configure(bg="#0B141A")
 
         self.users = []
-        self.selected_user = None
-        self.current_messages = []
-        self.preview_image_tk = None
+        self.active_user = None
+        self.active_peer = None
+        self.cached_images = {}  # Keep references to avoid GC
 
         self._setup_styles()
-        self._build_layout()
+        self._build_ui()
         self.load_users()
 
     def _setup_styles(self):
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
 
-        # Dark theme colors
-        self.style.configure(
-            "TFrame", background="#1E1E2F"
-        )
-        self.style.configure(
-            "Card.TFrame", background="#27293D", relief="flat"
-        )
-        self.style.configure(
-            "TLabel", background="#1E1E2F", foreground="#E1E1E6", font=("Segoe UI", 10)
-        )
-        self.style.configure(
-            "Header.TLabel", background="#27293D", foreground="#FFFFFF", font=("Segoe UI", 14, "bold")
-        )
-        self.style.configure(
-            "SubHeader.TLabel", background="#27293D", foreground="#00D2D3", font=("Segoe UI", 11, "bold")
-        )
-        self.style.configure(
-            "TButton", font=("Segoe UI", 10, "bold"), background="#00D2D3", foreground="#000000"
-        )
-        self.style.map("TButton", background=[("active", "#01A3A4")])
-
-        # Treeview styling
         self.style.configure(
             "Treeview",
-            background="#2E3047",
-            foreground="#FFFFFF",
-            fieldbackground="#2E3047",
-            rowheight=28,
-            font=("Segoe UI", 9),
+            background="#111B21",
+            foreground="#E9EDEF",
+            fieldbackground="#111B21",
+            rowheight=48,
+            font=("Segoe UI", 10),
         )
         self.style.configure(
             "Treeview.Heading",
-            background="#1E1E2F",
-            foreground="#00D2D3",
+            background="#202C33",
+            foreground="#00A884",
             font=("Segoe UI", 10, "bold"),
         )
         self.style.map(
             "Treeview",
-            background=[("selected", "#00D2D3")],
-            foreground=[("selected", "#000000")],
+            background=[("selected", "#00A884")],
+            foreground=[("selected", "#FFFFFF")],
         )
 
-    def _build_layout(self):
-        # Top Header Bar
-        header_frame = tk.Frame(self, bg="#27293D", height=60, padx=20, pady=10)
-        header_frame.pack(fill=tk.X)
+    def _build_ui(self):
+        # 1. TOP STATUS / TITLE BAR (WhatsApp Dark Theme: #202C33)
+        top_bar = tk.Frame(self, bg="#202C33", height=58, padx=16)
+        top_bar.pack(fill=tk.X)
 
-        title_lbl = tk.Label(
-            header_frame,
-            text="🛡️ Talknex Adli Bilişim & Admin Denetim Paneli",
-            bg="#27293D",
-            fg="#FFFFFF",
-            font=("Segoe UI", 16, "bold"),
+        logo_lbl = tk.Label(
+            top_bar,
+            text="📱 Talknex Denetim Arayüzü",
+            bg="#202C33",
+            fg="#00A884",
+            font=("Segoe UI", 14, "bold"),
         )
-        title_lbl.pack(side=tk.LEFT)
+        logo_lbl.pack(side=tk.LEFT, pady=12)
 
-        subtitle_lbl = tk.Label(
-            header_frame,
-            text="Yetkili Güvenlik & Denetim Birimi (E2EE Veri Çözme Modülü)",
-            bg="#27293D",
-            fg="#00D2D3",
-            font=("Segoe UI", 10),
+        desc_lbl = tk.Label(
+            top_bar,
+            text="(Uçtan Uca Şifre Çözücü Aktif • Emniyet & Güvenlik Birimi)",
+            bg="#202C33",
+            fg="#8696A0",
+            font=("Segoe UI", 9),
         )
-        subtitle_lbl.pack(side=tk.LEFT, padx=15)
+        desc_lbl.pack(side=tk.LEFT, padx=12, pady=12)
 
         refresh_btn = tk.Button(
-            header_frame,
+            top_bar,
             text="🔄 Yenile",
-            bg="#00D2D3",
-            fg="#000000",
+            bg="#00A884",
+            fg="#FFFFFF",
             font=("Segoe UI", 9, "bold"),
             relief=tk.FLAT,
             padx=12,
             pady=4,
             command=self.load_users,
         )
-        refresh_btn.pack(side=tk.RIGHT)
+        refresh_btn.pack(side=tk.RIGHT, pady=12)
 
-        # Main Paned Window (Split horizontal)
-        main_paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg="#1E1E2F", sashwidth=4)
-        main_paned.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        # 2. MAIN 3-COLUMN SPLIT
+        # Column 1: Primary Users list (Sender / Target User)
+        # Column 2: Peer Users list (Conversations)
+        # Column 3: Chat Screen (Real WhatsApp-like UI)
+        main_container = tk.Frame(self, bg="#0B141A")
+        main_container.pack(fill=tk.BOTH, expand=True)
 
-        # LEFT PANE: Users List & Filter
-        left_frame = tk.Frame(main_paned, bg="#27293D", padx=10, pady=10)
-        main_paned.add(left_frame, width=380)
+        # --- LEFT PANEL: HEDEF KULLANICI SEÇİMİ (300px) ---
+        left_panel = tk.Frame(main_container, bg="#111B21", width=320, padx=8, pady=8)
+        left_panel.pack(side=tk.LEFT, fill=tk.Y)
+        left_panel.pack_propagate(False)
 
-        user_title = tk.Label(
-            left_frame,
-            text="👥 Kayıtlı Kullanıcılar",
-            bg="#27293D",
+        tk.Label(
+            left_panel,
+            text="👤 İNCELENECEK KİŞİ",
+            bg="#111B21",
+            fg="#00A884",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", pady=(4, 6))
+
+        # Search bar
+        self.search_user_var = tk.StringVar()
+        self.search_user_var.trace("w", lambda *args: self._filter_users())
+        search_box = tk.Entry(
+            left_panel,
+            textvariable=self.search_user_var,
+            bg="#202C33",
             fg="#FFFFFF",
-            font=("Segoe UI", 12, "bold"),
-        )
-        user_title.pack(anchor="w", pady=(0, 6))
-
-        # Search User Input
-        search_frame = tk.Frame(left_frame, bg="#27293D")
-        search_frame.pack(fill=tk.X, pady=(0, 8))
-
-        self.user_search_var = tk.StringVar()
-        self.user_search_var.trace("w", lambda *args: self._filter_users())
-        search_entry = tk.Entry(
-            search_frame,
-            textvariable=self.user_search_var,
-            bg="#1E1E2F",
-            fg="#FFFFFF",
-            insertbackground="#FFFFFF",
+            insertbackground="#00A884",
             font=("Segoe UI", 10),
             relief=tk.FLAT,
         )
-        search_entry.pack(fill=tk.X, ipady=4)
+        search_box.pack(fill=tk.X, ipady=4, pady=(0, 8))
 
-        # Treeview Users
-        cols = ("id", "username", "display_name", "phone")
-        self.user_tree = ttk.Treeview(left_frame, columns=cols, show="headings", selectmode="browse")
+        self.user_tree = ttk.Treeview(left_panel, columns=("id", "info"), show="headings", selectmode="browse")
         self.user_tree.heading("id", text="ID")
-        self.user_tree.heading("username", text="Kullanıcı Adı")
-        self.user_tree.heading("display_name", text="İsim")
-        self.user_tree.heading("phone", text="Telefon")
-
+        self.user_tree.heading("info", text="Kullanıcı / Numara")
         self.user_tree.column("id", width=45, anchor="center")
-        self.user_tree.column("username", width=110)
-        self.user_tree.column("display_name", width=110)
-        self.user_tree.column("phone", width=100)
-
-        user_scroll = ttk.Scrollbar(left_frame, orient="vertical", command=self.user_tree.yview)
-        self.user_tree.configure(yscrollcommand=user_scroll.set)
-
-        self.user_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        user_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.user_tree.column("info", width=240)
+        self.user_tree.pack(fill=tk.BOTH, expand=True)
         self.user_tree.bind("<<TreeviewSelect>>", self._on_user_selected)
 
-        # RIGHT PANE: Chat Messages & Media Inspector
-        right_frame = tk.Frame(main_paned, bg="#27293D", padx=12, pady=10)
-        main_paned.add(right_frame)
+        # --- MIDDLE PANEL: SOHBET ETTİĞİ KİŞİLER (260px) ---
+        middle_panel = tk.Frame(main_container, bg="#111B21", width=280, padx=8, pady=8)
+        middle_panel.pack(side=tk.LEFT, fill=tk.Y)
+        middle_panel.pack_propagate(False)
 
-        # Right Header / Info Bar
-        info_header = tk.Frame(right_frame, bg="#27293D")
-        info_header.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(
+            middle_panel,
+            text="💬 KONUŞTUĞU KİŞİLER",
+            bg="#111B21",
+            fg="#00A884",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", pady=(4, 6))
 
-        self.chat_title_lbl = tk.Label(
-            info_header,
-            text="Lütfen sol listeden bir kullanıcı seçin",
-            bg="#27293D",
-            fg="#00D2D3",
-            font=("Segoe UI", 13, "bold"),
+        self.peer_tree = ttk.Treeview(middle_panel, columns=("id", "info"), show="headings", selectmode="browse")
+        self.peer_tree.heading("id", text="ID")
+        self.peer_tree.heading("info", text="Sohbet Edilen Kişi")
+        self.peer_tree.column("id", width=40, anchor="center")
+        self.peer_tree.column("info", width=220)
+        self.peer_tree.pack(fill=tk.BOTH, expand=True)
+        self.peer_tree.bind("<<TreeviewSelect>>", self._on_peer_selected)
+
+        # --- RIGHT PANEL: WHATSAPP CANLI SOHBET EKRANI ---
+        right_panel = tk.Frame(main_container, bg="#0B141A")
+        right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Chat Top Bar (WhatsApp Style Header)
+        self.chat_header = tk.Frame(right_panel, bg="#202C33", height=56, padx=16)
+        self.chat_header.pack(fill=tk.X)
+
+        self.chat_header_title = tk.Label(
+            self.chat_header,
+            text="İncelemek istediğiniz sohbeti seçin",
+            bg="#202C33",
+            fg="#E9EDEF",
+            font=("Segoe UI", 12, "bold"),
         )
-        self.chat_title_lbl.pack(side=tk.LEFT)
+        self.chat_header_title.pack(side=tk.LEFT, pady=10)
 
-        # Decrypt & Export Buttons
+        self.chat_header_sub = tk.Label(
+            self.chat_header,
+            text="",
+            bg="#202C33",
+            fg="#8696A0",
+            font=("Segoe UI", 9),
+        )
+        self.chat_header_sub.pack(side=tk.LEFT, padx=10, pady=10)
+
         export_btn = tk.Button(
-            info_header,
-            text="📑 Raporu Dışa Aktar (TXT)",
-            bg="#3498DB",
+            self.chat_header,
+            text="📑 Raporu İndir",
+            bg="#00A884",
             fg="#FFFFFF",
             font=("Segoe UI", 9, "bold"),
             relief=tk.FLAT,
             padx=10,
-            pady=3,
             command=self.export_report,
         )
-        export_btn.pack(side=tk.RIGHT, padx=4)
+        export_btn.pack(side=tk.RIGHT, pady=10)
 
-        # Message Listview
-        msg_cols = ("id", "direction", "peer", "type", "content_decrypted", "media", "date")
-        self.msg_tree = ttk.Treeview(right_frame, columns=msg_cols, show="headings", selectmode="browse")
-        self.msg_tree.heading("id", text="#")
-        self.msg_tree.heading("direction", text="Yön")
-        self.msg_tree.heading("peer", text="Muhatap")
-        self.msg_tree.heading("type", text="Tür")
-        self.msg_tree.heading("content_decrypted", text="Çözülen Mesaj İçeriği (Plaintext)")
-        self.msg_tree.heading("media", text="Medya Durumu")
-        self.msg_tree.heading("date", text="Tarih")
+        # Chat Scrollable Canvas
+        self.canvas_container = tk.Frame(right_panel, bg="#0B141A")
+        self.canvas_container.pack(fill=tk.BOTH, expand=True)
 
-        self.msg_tree.column("id", width=50, anchor="center")
-        self.msg_tree.column("direction", width=75, anchor="center")
-        self.msg_tree.column("peer", width=120)
-        self.msg_tree.column("type", width=65, anchor="center")
-        self.msg_tree.column("content_decrypted", width=340)
-        self.msg_tree.column("media", width=110, anchor="center")
-        self.msg_tree.column("date", width=130, anchor="center")
+        self.canvas = tk.Canvas(self.canvas_container, bg="#0B141A", highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.canvas_container, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
-        msg_scroll = ttk.Scrollbar(right_frame, orient="vertical", command=self.msg_tree.yview)
-        self.msg_tree.configure(yscrollcommand=msg_scroll.set)
+        self.scrollable_chat_frame = tk.Frame(self.canvas, bg="#0B141A")
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_chat_frame, anchor="nw")
 
-        self.msg_tree.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        msg_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.msg_tree.bind("<<TreeviewSelect>>", self._on_message_selected)
-
-        # Bottom Inspector Area (Media Viewer & Details)
-        self.inspector_frame = tk.Frame(right_frame, bg="#1E1E2F", height=180, padx=12, pady=10)
-        self.inspector_frame.pack(fill=tk.X)
-
-        self.details_label = tk.Label(
-            self.inspector_frame,
-            text="Mesaj Detayı & Şifre Durumu: (Bir mesaj seçin)",
-            bg="#1E1E2F",
-            fg="#FFFFFF",
-            font=("Segoe UI", 10, "bold"),
-            justify=tk.LEFT,
+        self.scrollable_chat_frame.bind(
+            "<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         )
-        self.details_label.pack(anchor="w")
-
-        self.raw_cipher_text = tk.Text(
-            self.inspector_frame,
-            height=3,
-            bg="#2E3047",
-            fg="#A4B0BE",
-            font=("Consolas", 9),
-            relief=tk.FLAT,
+        self.canvas.bind(
+            "<Configure>", lambda e: self.canvas.itemconfig(self.canvas_window, width=e.width)
         )
-        self.raw_cipher_text.pack(fill=tk.X, pady=4)
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
 
-        # Media Action Buttons
-        self.media_btn_frame = tk.Frame(self.inspector_frame, bg="#1E1E2F")
-        self.media_btn_frame.pack(anchor="w", pady=(4, 0))
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.view_media_btn = tk.Button(
-            self.media_btn_frame,
-            text="🖼️ Şifreli Medyayı Çöz ve Aç",
-            bg="#2ED573",
-            fg="#000000",
-            font=("Segoe UI", 9, "bold"),
-            relief=tk.FLAT,
-            padx=10,
-            command=self.open_selected_media,
-        )
-        self.view_media_btn.pack(side=tk.LEFT, padx=(0, 8))
-
-        self.save_media_btn = tk.Button(
-            self.media_btn_frame,
-            text="💾 Çözülmüş Medyayı Diske Kaydet",
-            bg="#FFA502",
-            fg="#000000",
-            font=("Segoe UI", 9, "bold"),
-            relief=tk.FLAT,
-            padx=10,
-            command=self.save_selected_media,
-        )
-        self.save_media_btn.pack(side=tk.LEFT)
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def load_users(self):
         self.user_tree.delete(*self.user_tree.get_children())
+        self.peer_tree.delete(*self.peer_tree.get_children())
         self.users.clear()
         try:
             conn = get_db()
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT id, username, display_name, phone_number, is_online, created_at FROM users ORDER BY id ASC"
+                    "SELECT id, username, display_name, phone_number, is_online FROM users ORDER BY id ASC"
                 )
                 self.users = cursor.fetchall()
             conn.close()
 
             for u in self.users:
+                name = u.get("display_name") or u.get("username")
+                phone = f" • {u['phone_number']}" if u.get("phone_number") else ""
+                online_dot = "🟢 " if u.get("is_online") else "⚪ "
                 self.user_tree.insert(
                     "",
                     tk.END,
                     iid=str(u["id"]),
-                    values=(
-                        u["id"],
-                        u.get("username", ""),
-                        u.get("display_name", ""),
-                        u.get("phone_number", ""),
-                    ),
+                    values=(u["id"], f"{online_dot}{name}{phone}"),
                 )
         except Exception as e:
-            messagebox.showerror("Veritabanı Hatası", f"Kullanıcılar alınırken hata oluştu:\n{e}")
+            messagebox.showerror("Hata", f"Kullanıcılar alınamadı: {e}")
 
     def _filter_users(self):
-        query = self.user_search_var.get().strip().lower()
+        q = self.search_user_var.get().strip().lower()
         self.user_tree.delete(*self.user_tree.get_children())
         for u in self.users:
-            uname = str(u.get("username", "")).lower()
-            dname = str(u.get("display_name", "")).lower()
-            phone = str(u.get("phone_number", "")).lower()
-            if query in uname or query in dname or query in phone:
+            name = (u.get("display_name") or u.get("username") or "").lower()
+            phone = str(u.get("phone_number") or "").lower()
+            if q in name or q in phone:
+                dname = u.get("display_name") or u.get("username")
+                online_dot = "🟢 " if u.get("is_online") else "⚪ "
                 self.user_tree.insert(
                     "",
                     tk.END,
                     iid=str(u["id"]),
-                    values=(u["id"], u.get("username", ""), u.get("display_name", ""), u.get("phone_number", "")),
+                    values=(u["id"], f"{online_dot}{dname}"),
                 )
 
     def _on_user_selected(self, event):
-        selected_items = self.user_tree.selection()
-        if not selected_items:
+        sel = self.user_tree.selection()
+        if not sel:
             return
-        user_id = selected_items[0]
-        self.selected_user = next((u for u in self.users if str(u["id"]) == str(user_id)), None)
-        if not self.selected_user:
+        user_id = int(sel[0])
+        self.active_user = next((u for u in self.users if u["id"] == user_id), None)
+        if not self.active_user:
             return
 
-        uname = self.selected_user.get("display_name") or self.selected_user.get("username")
-        self.chat_title_lbl.config(
-            text=f"📂 Kullanıcı İnceleme: {uname} (ID: {self.selected_user['id']})"
-        )
-        self.load_messages_for_user(self.selected_user["id"])
+        self.load_peers_for_user(user_id)
 
-    def load_messages_for_user(self, user_id):
-        self.msg_tree.delete(*self.msg_tree.get_children())
-        self.current_messages.clear()
-        self.raw_cipher_text.delete("1.0", tk.END)
+    def load_peers_for_user(self, user_id):
+        self.peer_tree.delete(*self.peer_tree.get_children())
+        try:
+            conn = get_db()
+            with conn.cursor() as cursor:
+                # Find all users who exchanged messages with user_id
+                cursor.execute(
+                    """
+                    SELECT DISTINCT 
+                        CASE WHEN sender_id = %s THEN receiver_id ELSE sender_id END AS peer_id
+                    FROM messages
+                    WHERE sender_id = %s OR receiver_id = %s
+                    """,
+                    (user_id, user_id, user_id),
+                )
+                peer_rows = cursor.fetchall()
+            conn.close()
+
+            peer_ids = [r["peer_id"] for r in peer_rows]
+            for pid in peer_ids:
+                p_user = next((u for u in self.users if u["id"] == pid), None)
+                if p_user:
+                    pname = p_user.get("display_name") or p_user.get("username")
+                    self.peer_tree.insert(
+                        "",
+                        tk.END,
+                        iid=str(pid),
+                        values=(pid, f"💬 {pname}"),
+                    )
+        except Exception as e:
+            messagebox.showerror("Hata", f"Sohbetler alınamadı: {e}")
+
+    def _on_peer_selected(self, event):
+        sel = self.peer_tree.selection()
+        if not sel or not self.active_user:
+            return
+        peer_id = int(sel[0])
+        self.active_peer = next((u for u in self.users if u["id"] == peer_id), None)
+        if not self.active_peer:
+            return
+
+        # Update Chat Header
+        active_name = self.active_user.get("display_name") or self.active_user.get("username")
+        peer_name = self.active_peer.get("display_name") or self.active_peer.get("username")
+        self.chat_header_title.config(text=f"{active_name} ↔ {peer_name}")
+        self.chat_header_sub.config(text=f"(ID #{self.active_user['id']} ile ID #{self.active_peer['id']} arasındaki sohbet)")
+
+        self.render_chat_messages(self.active_user["id"], peer_id)
+
+    def render_chat_messages(self, user1_id, user2_id):
+        # Clear existing bubbles
+        for child in self.scrollable_chat_frame.winfo_children():
+            child.destroy()
+        self.cached_images.clear()
 
         try:
             conn = get_db()
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT m.id, m.sender_id, m.receiver_id, m.content, m.message_type, 
-                           m.media_url, m.created_at,
-                           u1.username AS sender_uname, u1.display_name AS sender_dname,
-                           u2.username AS receiver_uname, u2.display_name AS receiver_dname
-                    FROM messages m
-                    JOIN users u1 ON m.sender_id = u1.id
-                    JOIN users u2 ON m.receiver_id = u2.id
-                    WHERE m.sender_id = %s OR m.receiver_id = %s
-                    ORDER BY m.created_at DESC
+                    SELECT id, sender_id, receiver_id, content, message_type, media_url, created_at
+                    FROM messages
+                    WHERE (sender_id = %s AND receiver_id = %s) OR (sender_id = %s AND receiver_id = %s)
+                    ORDER BY created_at ASC
                     """,
-                    (user_id, user_id),
+                    (user1_id, user2_id, user2_id, user1_id),
                 )
-                self.current_messages = cursor.fetchall()
+                messages = cursor.fetchall()
             conn.close()
 
-            for msg in self.current_messages:
-                is_sender = (msg["sender_id"] == user_id)
-                direction = "GÖNDERİLEN ➡️" if is_sender else "GELEN ⬅️"
-                peer_name = (
-                    f"{msg['receiver_dname'] or msg['receiver_uname']} (#{msg['receiver_id']})"
-                    if is_sender
-                    else f"{msg['sender_dname'] or msg['sender_uname']} (#{msg['sender_id']})"
+            if not messages:
+                no_msg = tk.Label(
+                    self.scrollable_chat_frame,
+                    text="Bu iki kullanıcı arasında henüz mesaj bulunmuyor.",
+                    bg="#0B141A",
+                    fg="#8696A0",
+                    font=("Segoe UI", 11),
                 )
+                no_msg.pack(pady=40)
+                return
 
-                # DECRYPT E2EE CONTENT
-                raw_content = msg.get("content") or ""
-                decrypted_content = decrypt_text(
-                    raw_content, msg["sender_id"], msg["receiver_id"]
-                )
+            for msg in messages:
+                is_sender = (msg["sender_id"] == user1_id)
+                self._create_message_bubble(msg, is_sender, user1_id, user2_id)
 
-                media_status = "Yok"
-                if msg.get("media_url"):
-                    media_status = "🔒 Şifreli Dosya"
-
-                self.msg_tree.insert(
-                    "",
-                    tk.END,
-                    iid=str(msg["id"]),
-                    values=(
-                        msg["id"],
-                        direction,
-                        peer_name,
-                        msg.get("message_type", "text"),
-                        decrypted_content,
-                        media_status,
-                        str(msg.get("created_at", ""))[:19],
-                    ),
-                )
+            # Auto scroll to bottom
+            self.after(100, lambda: self.canvas.yview_moveto(1.0))
         except Exception as e:
-            messagebox.showerror("Hata", f"Mesajlar yüklenemedi:\n{e}")
+            messagebox.showerror("Hata", f"Mesajlar yüklenemedi: {e}")
 
-    def _on_message_selected(self, event):
-        selected_items = self.msg_tree.selection()
-        if not selected_items:
-            return
-        msg_id = selected_items[0]
-        msg = next((m for m in self.current_messages if str(m["id"]) == str(msg_id)), None)
-        if not msg:
-            return
+    def _create_message_bubble(self, msg, is_sender, user1_id, user2_id):
+        # WhatsApp bubble colors:
+        # Sender (right): #005C4B
+        # Receiver (left): #202C33
+        bubble_bg = "#005C4B" if is_sender else "#202C33"
+        align = tk.RIGHT if is_sender else tk.LEFT
+        outer_padx = (80, 16) if is_sender else (16, 80)
 
         raw_content = msg.get("content") or ""
-        is_encrypted = raw_content.startswith("ENC::")
-        decrypted = decrypt_text(raw_content, msg["sender_id"], msg["receiver_id"])
+        decrypted_text = decrypt_text(raw_content, msg["sender_id"], msg["receiver_id"])
+        media_url = msg.get("media_url")
+        msg_type = msg.get("message_type") or "text"
+        time_str = str(msg.get("created_at") or "")[11:16]
 
-        status_text = (
-            f"Mesaj #{msg['id']} | Gönderen: #{msg['sender_id']} ➡️ Alıcı: #{msg['receiver_id']} | "
-            f"Şifreleme: {'AES-256 E2EE (Korumalı)' if is_encrypted else 'Düz Metin'}"
+        # Row Frame
+        row_frame = tk.Frame(self.scrollable_chat_frame, bg="#0B141A")
+        row_frame.pack(fill=tk.X, pady=4, padx=12)
+
+        # Bubble Container
+        bubble = tk.Frame(row_frame, bg=bubble_bg, padx=10, pady=8)
+        bubble.pack(side=align, padx=outer_padx)
+
+        # 1. SENDER NAME (Small header)
+        sender_lbl = tk.Label(
+            bubble,
+            text=f"Kullanıcı #{msg['sender_id']}",
+            bg=bubble_bg,
+            fg="#25D366" if is_sender else "#53BDEB",
+            font=("Segoe UI", 8, "bold"),
         )
-        if msg.get("media_url"):
-            status_text += f" | Medya: {msg['media_url']}"
+        sender_lbl.pack(anchor="w", pady=(0, 2))
 
-        self.details_label.config(text=status_text)
-        self.raw_cipher_text.delete("1.0", tk.END)
-        self.raw_cipher_text.insert(
-            tk.END,
-            f"[SUNUCUDA SAKLANAN HAM ŞİFRELİ VERİ (CIPHERTEXT)]:\n{raw_content}\n\n[ÇÖZÜLMÜŞ METİN]: {decrypted}",
+        # 2. MEDIA DISPLAY (If Photo or Video)
+        if media_url:
+            self._render_media_inside_bubble(bubble, media_url, msg_type, msg["sender_id"], msg["receiver_id"], bubble_bg)
+
+        # 3. TEXT CONTENT
+        if decrypted_text and decrypted_text != "📷 Fotoğraf" and decrypted_text != "🎥 Video":
+            text_lbl = tk.Label(
+                bubble,
+                text=decrypted_text,
+                bg=bubble_bg,
+                fg="#E9EDEF",
+                font=("Segoe UI", 10),
+                wraplength=480,
+                justify=tk.LEFT,
+            )
+            text_lbl.pack(anchor="w", pady=(2, 2))
+
+        # 4. TIMESTAMP & E2EE SHIELD
+        footer_frame = tk.Frame(bubble, bg=bubble_bg)
+        footer_frame.pack(anchor="e", pady=(2, 0))
+
+        shield_lbl = tk.Label(
+            footer_frame,
+            text="🔒 Çözüldü",
+            bg=bubble_bg,
+            fg="#00D2D3",
+            font=("Segoe UI", 7),
         )
+        shield_lbl.pack(side=tk.LEFT, padx=(0, 4))
 
-    def _get_local_media_file(self, media_url):
-        if not media_url:
-            return None
+        time_lbl = tk.Label(
+            footer_frame,
+            text=time_str,
+            bg=bubble_bg,
+            fg="#8696A0",
+            font=("Segoe UI", 8),
+        )
+        time_lbl.pack(side=tk.LEFT)
+
+    def _render_media_inside_bubble(self, bubble, media_url, msg_type, sender_id, receiver_id, bubble_bg):
         filename = media_url.split("/")[-1]
         local_path = os.path.join(UPLOADS_DIR, filename)
-        if os.path.exists(local_path):
-            return local_path
-        return None
 
-    def open_selected_media(self):
-        selected_items = self.msg_tree.selection()
-        if not selected_items:
-            messagebox.showinfo("Bilgi", "Lütfen bir mesaj seçin.")
-            return
-        msg = next((m for m in self.current_messages if str(m["id"]) == str(selected_items[0])), None)
-        if not msg or not msg.get("media_url"):
-            messagebox.showinfo("Bilgi", "Seçilen mesajda medya dosyası bulunmuyor.")
-            return
-
-        local_path = self._get_local_media_file(msg["media_url"])
-        if not local_path:
-            messagebox.showerror("Hata", f"Medya dosyası sunucu uploads klasöründe bulunamadı:\n{msg['media_url']}")
+        if not os.path.exists(local_path):
+            missing_lbl = tk.Label(
+                bubble,
+                text=f"⚠️ Dosya Bulunamadı ({filename})",
+                bg=bubble_bg,
+                fg="#E74C3C",
+                font=("Segoe UI", 9, "italic"),
+            )
+            missing_lbl.pack(pady=4)
             return
 
         with open(local_path, "rb") as f:
             encrypted_bytes = f.read()
 
-        # Decrypt binary file
-        decrypted_bytes = decrypt_file_bytes(encrypted_bytes, msg["sender_id"], msg["receiver_id"])
+        # Decrypt binary file in memory
+        decrypted_bytes = decrypt_file_bytes(encrypted_bytes, sender_id, receiver_id)
 
-        # Create temporary file to view
-        ext = local_path.split(".")[-1].lower()
+        # Case A: IMAGE PREVIEW
+        if msg_type == "image" or filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+            try:
+                pil_img = Image.open(io.BytesIO(decrypted_bytes))
+                pil_img.thumbnail((320, 240))
+                tk_img = ImageTk.PhotoImage(pil_img)
+                self.cached_images[media_url] = tk_img
+
+                img_label = tk.Label(bubble, image=tk_img, bg=bubble_bg, cursor="hand2")
+                img_label.pack(pady=4)
+                # Click to open full screen native
+                img_label.bind("<Button-1>", lambda e: self._launch_native_viewer(decrypted_bytes, "jpg"))
+            except Exception as e:
+                err_lbl = tk.Label(bubble, text="🖼️ [Fotoğraf Önizleme Hatası]", bg=bubble_bg, fg="#FFA502")
+                err_lbl.pack()
+
+        # Case B: VIDEO / DOCUMENT
+        else:
+            is_video = msg_type == "video" or filename.lower().endswith((".mp4", ".mov", ".mkv"))
+            icon_text = "🎥 VİDEO MESAJI" if is_video else "📄 BELGE / DOSYA"
+            
+            media_card = tk.Frame(bubble, bg="#111B21", padx=12, pady=10)
+            media_card.pack(fill=tk.X, pady=4)
+
+            tk.Label(
+                media_card,
+                text=icon_text,
+                bg="#111B21",
+                fg="#00D2D3",
+                font=("Segoe UI", 9, "bold"),
+            ).pack(anchor="w")
+
+            tk.Label(
+                media_card,
+                text=filename,
+                bg="#111B21",
+                fg="#8696A0",
+                font=("Segoe UI", 8),
+            ).pack(anchor="w", pady=(2, 6))
+
+            play_btn = tk.Button(
+                media_card,
+                text="▶️ Çöz ve Oynat" if is_video else "📂 Çöz ve Aç",
+                bg="#00A884",
+                fg="#FFFFFF",
+                font=("Segoe UI", 8, "bold"),
+                relief=tk.FLAT,
+                command=lambda: self._launch_native_viewer(decrypted_bytes, "mp4" if is_video else "dat"),
+            )
+            play_btn.pack(side=tk.LEFT)
+
+    def _launch_native_viewer(self, decrypted_bytes, ext):
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
             tmp.write(decrypted_bytes)
             tmp_path = tmp.name
-
         try:
-            # Open with native default Windows viewer (Photos, Media Player, etc.)
             os.startfile(tmp_path)
         except Exception as e:
-            messagebox.showerror("Açma Hatası", f"Dosya açılamadı:\n{e}")
-
-    def save_selected_media(self):
-        selected_items = self.msg_tree.selection()
-        if not selected_items:
-            messagebox.showinfo("Bilgi", "Lütfen bir mesaj seçin.")
-            return
-        msg = next((m for m in self.current_messages if str(m["id"]) == str(selected_items[0])), None)
-        if not msg or not msg.get("media_url"):
-            messagebox.showinfo("Bilgi", "Seçilen mesajda medya bulunmuyor.")
-            return
-
-        local_path = self._get_local_media_file(msg["media_url"])
-        if not local_path:
-            messagebox.showerror("Hata", "Dosya sunucuda bulunamadı.")
-            return
-
-        with open(local_path, "rb") as f:
-            encrypted_bytes = f.read()
-
-        decrypted_bytes = decrypt_file_bytes(encrypted_bytes, msg["sender_id"], msg["receiver_id"])
-        ext = local_path.split(".")[-1].lower()
-
-        save_dest = filedialog.asksaveasfilename(
-            title="Çözülmüş Medyayı Kaydet",
-            defaultextension=f".{ext}",
-            filetypes=[("Medya Dosyası", f"*.{ext}"), ("Tüm Dosyalar", "*.*")],
-        )
-        if save_dest:
-            with open(save_dest, "wb") as f:
-                f.write(decrypted_bytes)
-            messagebox.showinfo("Başarılı", f"Dosya başarıyla şifresi çözülmüş olarak kaydedildi:\n{save_dest}")
+            messagebox.showerror("Hata", f"Dosya açılamadı: {e}")
 
     def export_report(self):
-        if not self.selected_user or not self.current_messages:
-            messagebox.showinfo("Bilgi", "Dışa aktarmak için mesajları olan bir kullanıcı seçin.")
+        if not self.active_user or not self.active_peer:
+            messagebox.showinfo("Bilgi", "Lütfen bir sohbet seçin.")
             return
 
-        uname = self.selected_user.get("username")
+        u1 = self.active_user
+        u2 = self.active_peer
         dest = filedialog.asksaveasfilename(
-            title="Adli Bilişim Mesaj Raporunu Kaydet",
-            initialfile=f"Talknex_Rapor_{uname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            title="Sohbet Raporunu Kaydet",
+            initialfile=f"Talknex_Sohbet_{u1['id']}_{u2['id']}.txt",
             defaultextension=".txt",
             filetypes=[("Metin Dosyası", "*.txt")],
         )
@@ -594,33 +607,42 @@ class TalknexAdminApp(tk.Tk):
             return
 
         try:
+            conn = get_db()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, sender_id, receiver_id, content, message_type, media_url, created_at
+                    FROM messages
+                    WHERE (sender_id = %s AND receiver_id = %s) OR (sender_id = %s AND receiver_id = %s)
+                    ORDER BY created_at ASC
+                    """,
+                    (u1["id"], u2["id"], u2["id"], u1["id"]),
+                )
+                msgs = cursor.fetchall()
+            conn.close()
+
             with open(dest, "w", encoding="utf-8") as f:
-                f.write("====================================================================\n")
-                f.write("      TALKNEX ADLİ BİLİŞİM & DENETİM ŞİFRESİ ÇÖZÜLMÜŞ KAYIT RAPORU   \n")
-                f.write("====================================================================\n")
-                f.write(f"Rapor Tarihi  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Hedef Kullanıcı: {self.selected_user.get('display_name')} (@{uname}) (ID: {self.selected_user['id']})\n")
-                f.write(f"Telefon       : {self.selected_user.get('phone_number', '')}\n")
-                f.write(f"Toplam Mesaj  : {len(self.current_messages)}\n")
-                f.write("====================================================================\n\n")
+                f.write("TALKNEX SOHBET DENETİM RAPORU\n")
+                f.write(f"Tarih: {datetime.now()}\n")
+                f.write(f"Kullanıcı 1: {u1.get('display_name')} (ID #{u1['id']})\n")
+                f.write(f"Kullanıcı 2: {u2.get('display_name')} (ID #{u2['id']})\n")
+                f.write("=" * 60 + "\n\n")
 
-                for msg in self.current_messages:
-                    raw = msg.get("content") or ""
-                    dec = decrypt_text(raw, msg["sender_id"], msg["receiver_id"])
-                    f.write(f"[{msg.get('created_at')}] Mesaj #{msg['id']}\n")
-                    f.write(f"  Gönderen : #{msg['sender_id']} ({msg.get('sender_uname')})\n")
-                    f.write(f"  Alıcı    : #{msg['receiver_id']} ({msg.get('receiver_uname')})\n")
-                    f.write(f"  Tür      : {msg.get('message_type')}\n")
-                    f.write(f"  Medya URL: {msg.get('media_url') or 'Yok'}\n")
-                    f.write(f"  Ham Veri : {raw}\n")
-                    f.write(f"  ÇÖZÜLEN  : {dec}\n")
-                    f.write("-" * 65 + "\n")
+                for m in msgs:
+                    raw = m.get("content") or ""
+                    dec = decrypt_text(raw, m["sender_id"], m["receiver_id"])
+                    f.write(f"[{m.get('created_at')}] ID #{m['sender_id']} ➡️ ID #{m['receiver_id']}\n")
+                    f.write(f"  Tür: {m.get('message_type')}\n")
+                    f.write(f"  Mesaj: {dec}\n")
+                    if m.get("media_url"):
+                        f.write(f"  Medya: {m.get('media_url')}\n")
+                    f.write("-" * 40 + "\n")
 
-            messagebox.showinfo("Başarılı", f"Rapor başarıyla kaydedildi:\n{dest}")
+            messagebox.showinfo("Başarılı", f"Rapor kaydedildi:\n{dest}")
         except Exception as e:
-            messagebox.showerror("Hata", f"Rapor kaydedilemedi:\n{e}")
+            messagebox.showerror("Hata", f"Rapor oluşturulamadı: {e}")
 
 
 if __name__ == "__main__":
-    app = TalknexAdminApp()
+    app = TalknexChatAdminApp()
     app.mainloop()
