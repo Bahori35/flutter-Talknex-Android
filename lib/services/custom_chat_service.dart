@@ -6,6 +6,7 @@ import '../models/message_model.dart';
 import '../models/story_model.dart';
 import '../models/call_model.dart';
 import 'custom_auth_service.dart';
+import 'encryption_service.dart';
 
 class CustomChatService {
   static const String baseUrl = CustomAuthService.baseUrl;
@@ -53,11 +54,18 @@ class CustomChatService {
             orElse: () => MessageType.text,
           );
 
+          final rawContent = json['content'] ?? '';
+          final decryptedContent = EndToEndEncryptionService.decryptText(
+            rawContent,
+            json['senderId'].toString(),
+            json['receiverId'].toString(),
+          );
+
           return MessageModel(
             id: json['id'].toString(),
             senderId: json['senderId'].toString(),
             receiverId: json['receiverId'].toString(),
-            content: json['content'] ?? '',
+            content: decryptedContent,
             type: msgType,
             timestamp: DateTime.tryParse(json['timestamp'] ?? '') ?? DateTime.now(),
             isDelivered: json['isDelivered'] == 1 || json['isDelivered'] == true || json['isRead'] == 1 || json['isRead'] == true,

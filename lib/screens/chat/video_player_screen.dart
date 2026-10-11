@@ -10,11 +10,15 @@ import '../../constants/app_colors.dart';
 class VideoPlayerScreen extends StatefulWidget {
   final String videoUrl;
   final String title;
+  final String senderId;
+  final String receiverId;
 
   const VideoPlayerScreen({
     super.key,
     required this.videoUrl,
     this.title = 'Video',
+    this.senderId = '',
+    this.receiverId = '',
   });
 
   @override

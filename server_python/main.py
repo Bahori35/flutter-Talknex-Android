@@ -684,13 +684,15 @@ async def send_message(sid, data):
         
         push_body = content
         if msg_type == "image":
-            push_body = "📷 Fotoğraf" + (f": {content}" if content and content != '📷 Fotoğraf' else "")
+            push_body = "📷 Fotoğraf"
         elif msg_type == "video":
-            push_body = "🎥 Video" + (f": {content}" if content and content != '🎥 Video' else "")
+            push_body = "🎥 Video"
         elif msg_type == "doc":
-            push_body = f"📄 {content}" if content else "📄 Dosya"
+            push_body = "📄 Belge / Dosya"
         elif msg_type == "location":
             push_body = "📍 Konum Paylaştı"
+        elif content.startswith("ENC::"):
+            push_body = "🔒 Yeni bir mesajınız var"
 
         send_fcm_push(
             user_id=target_uid,
@@ -702,7 +704,7 @@ async def send_message(sid, data):
                 "senderId": str(sender_id),
                 "receiverId": str(receiver_id),
                 "senderName": sender_name,
-                "content": push_body,
+                "content": content,
             }
         )
     except Exception as e:

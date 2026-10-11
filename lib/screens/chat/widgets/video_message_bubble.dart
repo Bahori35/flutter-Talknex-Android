@@ -5,16 +5,21 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../constants/app_colors.dart';
+import '../../../services/encryption_service.dart';
 import '../video_player_screen.dart';
 
 class VideoMessageBubble extends StatefulWidget {
   final String videoUrl;
   final String title;
+  final String senderId;
+  final String receiverId;
 
   const VideoMessageBubble({
     super.key,
     required this.videoUrl,
     required this.title,
+    required this.senderId,
+    required this.receiverId,
   });
 
   @override
@@ -142,34 +147,36 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('vfile_${url.hashCode}', cachedTargetFile.path);
         } else {
-          // Initialize via network url once
+          // Download encrypted file from server, then decrypt locally
           final uri = Uri.parse(url);
-          controller = VideoPlayerController.networkUrl(uri);
-          await controller.initialize();
-          
-          // Background download remote video safely to local persistent storage
-          HttpClient().getUrl(uri).then((req) => req.close()).then((res) async {
-            if (res.statusCode == 200) {
-              final tempFile = File('${cachedTargetFile.path}.tmp');
-              final sink = tempFile.openWrite();
-              await res.pipe(sink);
-              if (await tempFile.exists() && await tempFile.length() > 0) {
-                if (await cachedTargetFile.exists()) {
-                  await cachedTargetFile.delete();
-                }
-                await tempFile.rename(cachedTargetFile.path);
-                _cachedFilePaths[url] = cachedTargetFile.path;
-                try {
-                  final prefs = await SharedPreferences.getInstance();
-                  await prefs.setString('vfile_${url.hashCode}', cachedTargetFile.path);
-                } catch (_) {}
-              }
-            }
-          }).catchError((e) {
-            debugPrint('[VIDEO CACHE DOWNLOAD ERR] $e');
-          });
+          final rawEncryptedFile = File(p.join(cacheDir.path, '${url.hashCode}.enc'));
+          final res = await HttpClient().getUrl(uri).then((req) => req.close());
+          if (res.statusCode == 200) {
+            final sink = rawEncryptedFile.openWrite();
+            await res.pipe(sink);
+            await EndToEndEncryptionService.decryptFile(
+              rawEncryptedFile,
+              widget.senderId,
+              widget.receiverId,
+              cachedTargetFile.path,
+            );
+            try {
+              if (await rawEncryptedFile.exists()) await rawEncryptedFile.delete();
+            } catch (_) {}
+
+            controller = VideoPlayerController.file(cachedTargetFile);
+            await controller.initialize();
+            _cachedFilePaths[url] = cachedTargetFile.path;
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('vfile_${url.hashCode}', cachedTargetFile.path);
+          } else {
+            // Fallback
+            controller = VideoPlayerController.networkUrl(uri);
+            await controller.initialize();
+          }
         }
-      } catch (_) {
+      } catch (err) {
+        debugPrint('[VIDEO CACHE/DECRYPT ERR] $err');
         final uri = Uri.parse(url);
         controller = VideoPlayerController.networkUrl(uri);
         await controller.initialize();
@@ -223,6 +230,8 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
             builder: (_) => VideoPlayerScreen(
               videoUrl: widget.videoUrl,
               title: widget.title,
+              senderId: widget.senderId,
+              receiverId: widget.receiverId,
             ),
           ),
         );

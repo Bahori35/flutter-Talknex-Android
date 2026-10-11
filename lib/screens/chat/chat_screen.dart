@@ -22,6 +22,8 @@ import 'location_picker_screen.dart';
 import 'live_location_screen.dart';
 import 'video_player_screen.dart';
 import 'widgets/video_message_bubble.dart';
+import 'widgets/decrypted_image_widget.dart';
+import '../../services/encryption_service.dart';
 
 class ChatScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -208,16 +210,23 @@ class _ChatScreenState extends State<ChatScreen> {
       isRead: false,
     );
 
-    // 1. Emit live via Socket.io to peer & save in MariaDB & trigger single push
+    // Encrypt the message text for transmission & server storage
+    final encryptedContent = EndToEndEncryptionService.encryptText(
+      text,
+      widget.currentUser.uid,
+      widget.peerUser.uid,
+    );
+
+    // 1. Emit encrypted message via Socket.io to peer & save in MariaDB
     _socketService.sendMessage(
       senderId: widget.currentUser.uid,
       receiverId: widget.peerUser.uid,
-      content: text,
+      content: encryptedContent,
       type: type.name,
       mediaUrl: mediaUrl,
     );
 
-    // 2. Add to local list
+    // 2. Add unencrypted plaintext message to sender's local list so UI is immediate and smooth
     setState(() {
       _messages.insert(0, newMessage);
     });
@@ -251,16 +260,35 @@ class _ChatScreenState extends State<ChatScreen> {
         _isUploadingMedia = true;
       });
 
+      File uploadTargetFile = File(file.path);
+      File? tempEncryptedFile;
+      try {
+        tempEncryptedFile = await EndToEndEncryptionService.encryptFile(
+          uploadTargetFile,
+          widget.currentUser.uid,
+          widget.peerUser.uid,
+        );
+        uploadTargetFile = tempEncryptedFile;
+      } catch (e) {
+        debugPrint('[MEDIA ENCRYPTION ERR] $e');
+      }
+
       final authService = Provider.of<CustomAuthService>(context, listen: false);
-      final mediaUrl = await authService.uploadImage(file.path);
+      final mediaUrl = await authService.uploadImage(uploadTargetFile.path);
+
+      // Clean up temporary encrypted upload file
+      if (tempEncryptedFile != null && tempEncryptedFile.existsSync()) {
+        try {
+          await tempEncryptedFile.delete();
+        } catch (_) {}
+      }
 
       if (mediaUrl != null && mounted) {
-        if (isVideo) {
-          try {
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('vfile_${mediaUrl.hashCode}', file.path);
-          } catch (_) {}
-        }
+        // Cache original decrypted local file for sender
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(isVideo ? 'vfile_${mediaUrl.hashCode}' : 'ifile_${mediaUrl.hashCode}', file.path);
+        } catch (_) {}
         _sendMessage(
           customContent: isVideo ? '🎥 Video' : '📷 Fotoğraf',
           type: isVideo ? MessageType.video : MessageType.image,
@@ -589,13 +617,11 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           body: Center(
             child: InteractiveViewer(
-              child: CachedNetworkImage(
+              child: DecryptedImageWidget(
                 imageUrl: imageUrl,
+                senderId: widget.currentUser.uid,
+                receiverId: widget.peerUser.uid,
                 fit: BoxFit.contain,
-                placeholder: (context, url) => const Center(
-                  child: CircularProgressIndicator(color: AppColors.primaryLight),
-                ),
-                errorWidget: (context, url, error) => const Icon(Icons.error, color: Colors.white),
               ),
             ),
           ),
@@ -1098,21 +1124,13 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: isImage
                     ? GestureDetector(
                         onTap: () => _openFullScreenImage(message.mediaUrl!),
-                        child: CachedNetworkImage(
+                        child: DecryptedImageWidget(
                           imageUrl: message.mediaUrl!,
+                          senderId: message.senderId,
+                          receiverId: message.receiverId,
                           width: double.infinity,
                           height: 200,
                           fit: BoxFit.cover,
-                          placeholder: (context, url) => Container(
-                            height: 200,
-                            color: Colors.black12,
-                            child: const Center(child: CircularProgressIndicator(color: AppColors.accent, strokeWidth: 2)),
-                          ),
-                          errorWidget: (context, url, error) => Container(
-                            height: 200,
-                            color: Colors.black12,
-                            child: const Icon(Icons.broken_image, color: Colors.white54, size: 40),
-                          ),
                         ),
                       )
                     : VideoMessageBubble(
@@ -1120,6 +1138,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         title: message.content.isNotEmpty && message.content != '🎥 Video'
                             ? message.content
                             : 'Video Mesajı',
+                        senderId: message.senderId,
+                        receiverId: message.receiverId,
                       ),
               ),
               if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')

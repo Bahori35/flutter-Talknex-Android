@@ -4,6 +4,7 @@ import 'package:socket_io_client/socket_io_client.dart' as IO;
 import '../models/message_model.dart';
 import '../models/call_model.dart';
 import '../models/user_model.dart';
+import 'encryption_service.dart';
 
 typedef OnMessageReceived = void Function(MessageModel message);
 typedef OnMessageDelivered = void Function(Map<String, dynamic> data);
@@ -67,11 +68,18 @@ class SocketService {
           orElse: () => MessageType.text,
         );
 
+        final rawContent = data['content'] ?? '';
+        final decryptedContent = EndToEndEncryptionService.decryptText(
+          rawContent,
+          data['senderId'].toString(),
+          data['receiverId'].toString(),
+        );
+
         final message = MessageModel(
           id: data['id'].toString(),
           senderId: data['senderId'].toString(),
           receiverId: data['receiverId'].toString(),
-          content: data['content'] ?? '',
+          content: decryptedContent,
           type: msgType,
           timestamp: DateTime.tryParse(data['timestamp'] ?? '') ?? DateTime.now(),
           isDelivered: true,
