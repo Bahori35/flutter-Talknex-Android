@@ -161,8 +161,8 @@ class ServerManagerGUI:
                                   font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD, justify=tk.LEFT)
         self.specs_lbl.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
-        # --- MIDDLE: Active Thread Monitoring Grid ---
-        self.cores_card = tk.LabelFrame(body, text=f" İşlemci Çekirdek Dağılımı ({self.total_cores} Thread Canlı Yük) ",
+        # --- MIDDLE: Active Allocated Threads Monitoring Grid ---
+        self.cores_card = tk.LabelFrame(body, text=" Sunucuya Tahsis Edilen Aktif Threadler (Henüz Başlatılmadı) ",
                                         font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD, bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
         self.cores_card.pack(fill=tk.X, pady=(0, 10))
 
@@ -170,28 +170,45 @@ class ServerManagerGUI:
         self.cores_container.pack(fill=tk.X, padx=10, pady=8)
 
         self.core_widgets = []
-        # Create a mini meter for each core (max 24 in grid)
-        display_cores = min(self.total_cores, 32)
-        cols_per_row = 8 if display_cores >= 12 else 4
+        self.active_allocated_threads = 0
+        self.rebuild_core_widgets(0)
 
-        for c_idx in range(display_cores):
+    def rebuild_core_widgets(self, count):
+        # Clear existing
+        for w in self.cores_container.winfo_children():
+            w.destroy()
+        self.core_widgets = []
+        self.active_allocated_threads = count
+
+        if count <= 0:
+            msg = tk.Label(self.cores_container, text="Sunucu başlatıldığında sadece tahsis edilen aktif threadler burada görünecektir.",
+                           font=("Segoe UI", 9, "italic"), fg=FG_MUTED, bg=BG_CARD)
+            msg.pack(anchor="w", padx=6, pady=2)
+            self.cores_card.config(text=" Sunucuya Tahsis Edilen Aktif Threadler (Beklemede) ")
+            return
+
+        self.cores_card.config(text=f" Sunucuya Tahsis Edilen Aktif Threadler ({count} Thread Çalışıyor) ")
+        cols_per_row = 8 if count >= 12 else (4 if count >= 4 else count)
+
+        for c_idx in range(count):
             r = c_idx // cols_per_row
             col = c_idx % cols_per_row
 
-            c_frame = tk.Frame(self.cores_container, bg=BG_CARD, padx=4, pady=2)
-            c_frame.grid(row=r, column=col, sticky="w", padx=4, pady=2)
+            c_frame = tk.Frame(self.cores_container, bg=BG_MAIN, padx=8, pady=4, relief=tk.SOLID, bd=1, highlightbackground=BORDER_COLOR)
+            c_frame.grid(row=r, column=col, sticky="w", padx=5, pady=4)
 
-            c_lbl = tk.Label(c_frame, text=f"T{c_idx+1}: %0", font=("Segoe UI", 8, "bold"), fg=FG_MUTED, bg=BG_CARD, width=8, anchor="w")
+            c_lbl = tk.Label(c_frame, text=f"Thread #{c_idx+1}: %0", font=("Segoe UI", 9, "bold"), fg="#38BDF8", bg=BG_MAIN, width=15, anchor="w")
             c_lbl.pack(side=tk.LEFT)
 
-            c_canv = tk.Canvas(c_frame, width=42, height=10, bg=BG_MAIN, highlightthickness=1, highlightbackground=BORDER_COLOR)
-            c_canv.pack(side=tk.LEFT, padx=(2, 0))
-            c_rect = c_canv.create_rectangle(0, 0, 0, 10, fill=ACCENT_GREEN, width=0)
+            c_canv = tk.Canvas(c_frame, width=65, height=12, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER_COLOR)
+            c_canv.pack(side=tk.LEFT, padx=(4, 0))
+            c_rect = c_canv.create_rectangle(0, 0, 0, 12, fill=ACCENT_GREEN, width=0)
 
             self.core_widgets.append({
                 "label": c_lbl,
                 "canvas": c_canv,
-                "rect": c_rect
+                "rect": c_rect,
+                "thread_id": c_idx
             })
 
         # --- BOTTOM: Live Console Logs ---
@@ -402,6 +419,7 @@ class ServerManagerGUI:
             self.status_badge.config(text="● ÇALIŞIYOR", fg=ACCENT_GREEN)
             self.btn_start.config(state=tk.DISABLED)
             self.btn_stop.config(state=tk.NORMAL)
+            self.rebuild_core_widgets(assigned_threads)
 
             # Start reading logs
             def stream_logs():
@@ -423,6 +441,7 @@ class ServerManagerGUI:
         self.status_badge.config(text="● DURDURULDU", fg=ACCENT_RED)
         self.btn_start.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
+        self.rebuild_core_widgets(0)
         self.log("[BİLGİ] Sunucu süreci kapandı.")
 
     def stop_server(self):
@@ -442,6 +461,7 @@ class ServerManagerGUI:
         self.status_badge.config(text="● DURDURULDU", fg=ACCENT_RED)
         self.btn_start.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
+        self.rebuild_core_widgets(0)
         self.log("[OK] Nginx ve Python Uvicorn tamamen durduruldu.")
 
     def restart_server(self):
