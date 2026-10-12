@@ -1,8 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
 import '../models/message_model.dart';
-import '../models/call_model.dart';
 import '../models/user_model.dart';
 import 'encryption_service.dart';
 
@@ -25,8 +25,13 @@ class SocketService {
   factory SocketService() => _instance;
   SocketService._internal();
 
-  IO.Socket? socket;
+  WebSocket? _socket;
   String? _currentUserId;
+  bool _isConnecting = false;
+  Timer? _reconnectTimer;
+  Timer? _pingTimer;
+
+  bool get isConnected => _socket != null && _socket!.readyState == WebSocket.open;
 
   OnMessageReceived? onMessageReceived;
   OnMessageDelivered? onMessageDelivered;
@@ -42,184 +47,250 @@ class SocketService {
   OnMessageEdited? onMessageEdited;
   OnMessageSent? onMessageSent;
 
-
-  // Initialize and connect socket to Python server
+  // Initialize and connect native WebSocket to Go backend (Port 3000 -> Nginx -> Go)
   void initSocket(String userId) {
-    if (socket != null && socket!.connected && _currentUserId == userId) return;
+    if (isConnected && _currentUserId == userId) return;
 
     _currentUserId = userId;
-    
-    // Connect to Python server Socket.io (Port 3000)
-    socket = IO.io(
-      'http://46.197.188.20:3000',
-      IO.OptionBuilder()
-          .setTransports(['websocket', 'polling'])
-          .enableAutoConnect()
-          .enableReconnection()
-          .build(),
-    );
+    _connect();
+  }
 
-    socket!.onConnect((_) {
-      debugPrint('[SOCKET] Connected to Python server');
-      // Join room with current user ID
-      socket!.emit('join', userId);
-    });
+  void _connect() async {
+    if (_isConnecting) return;
+    _isConnecting = true;
 
-    socket!.on('receive_message', (data) {
-      debugPrint('[SOCKET] Received Message: $data');
-      if (data != null) {
-        final typeStr = data['type']?.toString() ?? 'text';
-        final msgType = MessageType.values.firstWhere(
-          (e) => e.name == typeStr,
-          orElse: () => MessageType.text,
-        );
+    try {
+      _socket?.close();
+      _socket = null;
+    } catch (_) {}
 
-        final rawContent = data['content'] ?? '';
-        final decryptedContent = EndToEndEncryptionService.decryptText(
-          rawContent,
-          data['senderId'].toString(),
-          data['receiverId'].toString(),
-        );
+    final wsUri = Uri.parse('ws://46.197.188.20:3000/ws');
+    debugPrint('[GORILLA WS] Connecting to Go backend: $wsUri');
 
-        final message = MessageModel(
-          id: data['id'].toString(),
-          senderId: data['senderId'].toString(),
-          receiverId: data['receiverId'].toString(),
-          content: decryptedContent,
-          type: msgType,
-          timestamp: DateTime.tryParse(data['timestamp'] ?? '') ?? DateTime.now(),
-          isDelivered: true,
-          isRead: data['isRead'] == 1 || data['isRead'] == true,
-          mediaUrl: data['mediaUrl'],
-        );
+    try {
+      _socket = await WebSocket.connect(
+        wsUri.toString(),
+      ).timeout(const Duration(seconds: 10));
 
-        // Notify sender that message was delivered
-        emitMessageDelivered(
-          senderId: message.senderId,
-          receiverId: message.receiverId,
-          messageId: message.id,
-        );
+      _isConnecting = false;
+      debugPrint('[GORILLA WS] Connected successfully to Go backend!');
 
-        if (onMessageReceived != null) {
-          onMessageReceived!(message);
-        }
+      // Register current user immediately
+      _emit('join', {'userId': _currentUserId});
+
+      // Keepalive ping interval (every 25 seconds)
+      _socket!.pingInterval = const Duration(seconds: 25);
+
+      _socket!.listen(
+        (data) {
+          _handleIncomingData(data);
+        },
+        onError: (err) {
+          debugPrint('[GORILLA WS] Error: $err');
+          _scheduleReconnect();
+        },
+        onDone: () {
+          debugPrint('[GORILLA WS] Disconnected.');
+          _scheduleReconnect();
+        },
+        cancelOnError: true,
+      );
+    } catch (e) {
+      _isConnecting = false;
+      debugPrint('[GORILLA WS] Connection failed: $e');
+      _scheduleReconnect();
+    }
+  }
+
+  void _scheduleReconnect() {
+    _pingTimer?.cancel();
+    _socket = null;
+    if (_currentUserId == null) return;
+
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 3), () {
+      if (!isConnected && _currentUserId != null) {
+        debugPrint('[GORILLA WS] Attempting reconnection...');
+        _connect();
       }
     });
+  }
 
-    socket!.on('messages_delivered', (data) {
-      debugPrint('[SOCKET] Messages Delivered: $data');
-      if (onMessageDelivered != null && data != null) {
-        onMessageDelivered!(Map<String, dynamic>.from(data));
+  void _emit(String event, Map<String, dynamic> data) {
+    if (!isConnected) {
+      debugPrint('[GORILLA WS] Cannot emit "$event": socket not open, buffering reconnect.');
+      if (_currentUserId != null) _connect();
+      return;
+    }
+
+    try {
+      final packet = jsonEncode({
+        'event': event,
+        'data': data,
+      });
+      _socket!.add(packet);
+      debugPrint('[GORILLA WS OUT] $event -> $data');
+    } catch (e) {
+      debugPrint('[GORILLA WS] Emit error: $e');
+    }
+  }
+
+  void _handleIncomingData(dynamic raw) {
+    try {
+      final text = raw is String ? raw : utf8.decode(raw as List<int>);
+      final decoded = jsonDecode(text);
+      if (decoded is! Map<String, dynamic>) return;
+
+      final event = decoded['event']?.toString() ?? '';
+      final data = decoded['data'];
+
+      debugPrint('[GORILLA WS IN] Event: $event, Data: $data');
+
+      switch (event) {
+        case 'receive_message':
+          if (data is Map<String, dynamic>) {
+            final typeStr = data['type']?.toString() ?? 'text';
+            final msgType = MessageType.values.firstWhere(
+              (e) => e.name == typeStr,
+              orElse: () => MessageType.text,
+            );
+
+            final rawContent = data['content'] ?? '';
+            final decryptedContent = EndToEndEncryptionService.decryptText(
+              rawContent,
+              data['senderId'].toString(),
+              data['receiverId'].toString(),
+            );
+
+            final message = MessageModel(
+              id: data['id'].toString(),
+              senderId: data['senderId'].toString(),
+              receiverId: data['receiverId'].toString(),
+              content: decryptedContent,
+              type: msgType,
+              timestamp: DateTime.tryParse(data['timestamp'] ?? '') ?? DateTime.now(),
+              isDelivered: true,
+              isRead: data['isRead'] == 1 || data['isRead'] == true,
+              mediaUrl: data['mediaUrl'],
+            );
+
+            // Acknowledge delivery
+            emitMessageDelivered(
+              senderId: message.senderId,
+              receiverId: message.receiverId,
+              messageId: message.id,
+            );
+
+            if (onMessageReceived != null) {
+              onMessageReceived!(message);
+            }
+          }
+          break;
+
+        case 'messages_delivered':
+          if (onMessageDelivered != null && data is Map<String, dynamic>) {
+            onMessageDelivered!(Map<String, dynamic>.from(data));
+          }
+          break;
+
+        case 'messages_read':
+          if (onMessageRead != null && data is Map<String, dynamic>) {
+            onMessageRead!(Map<String, dynamic>.from(data));
+          }
+          break;
+
+        case 'incoming_call':
+          if (onIncomingCall != null && data is Map<String, dynamic>) {
+            onIncomingCall!(Map<String, dynamic>.from(data));
+          }
+          break;
+
+        case 'call_answered':
+          if (onCallAnswered != null && data is Map<String, dynamic>) {
+            onCallAnswered!(Map<String, dynamic>.from(data));
+          }
+          break;
+
+        case 'ice_candidate':
+          if (onIceCandidate != null && data is Map<String, dynamic>) {
+            onIceCandidate!(Map<String, dynamic>.from(data));
+          }
+          break;
+
+        case 'call_ended':
+          if (onCallEnded != null) {
+            onCallEnded!();
+          }
+          break;
+
+        case 'user_status_change':
+          if (onUserStatusChange != null && data is Map<String, dynamic>) {
+            final userId = data['userId']?.toString() ?? '';
+            final isOnline = data['isOnline'] == true || data['isOnline'] == 1;
+            onUserStatusChange!(userId, isOnline);
+          }
+          break;
+
+        case 'live_location_received':
+          if (onLiveLocationUpdate != null && data is Map<String, dynamic>) {
+            onLiveLocationUpdate!(Map<String, dynamic>.from(data));
+          }
+          break;
+
+        case 'live_location_stopped':
+          if (onLiveLocationStopped != null && data is Map<String, dynamic>) {
+            onLiveLocationStopped!(Map<String, dynamic>.from(data));
+          }
+          break;
+
+        case 'message_deleted':
+          if (onMessageDeleted != null && data is Map<String, dynamic>) {
+            final msgId = data['messageId']?.toString() ?? '';
+            onMessageDeleted!(msgId);
+          }
+          break;
+
+        case 'message_edited':
+          if (onMessageEdited != null && data is Map<String, dynamic>) {
+            final msgId = data['messageId']?.toString() ?? '';
+            final rawContent = data['content']?.toString() ?? '';
+            final senderId = data['senderId']?.toString() ?? '';
+            final receiverId = data['receiverId']?.toString() ?? '';
+            final dec = EndToEndEncryptionService.decryptText(rawContent, senderId, receiverId);
+            onMessageEdited!(msgId, dec);
+          }
+          break;
+
+        case 'message_sent':
+          if (onMessageSent != null && data is Map<String, dynamic>) {
+            final tempId = data['clientTempId']?.toString() ?? '';
+            final realId = data['id']?.toString() ?? '';
+            if (tempId.isNotEmpty && realId.isNotEmpty) {
+              onMessageSent!(tempId, realId);
+            }
+          }
+          break;
       }
-    });
-
-    socket!.on('messages_read', (data) {
-      debugPrint('[SOCKET] Messages Read: $data');
-      if (onMessageRead != null && data != null) {
-        onMessageRead!(Map<String, dynamic>.from(data));
-      }
-    });
-
-    socket!.on('incoming_call', (data) {
-      debugPrint('[SOCKET] Incoming Call: $data');
-      if (onIncomingCall != null && data != null) {
-        onIncomingCall!(Map<String, dynamic>.from(data));
-      }
-    });
-
-    socket!.on('call_answered', (data) {
-      debugPrint('[SOCKET] Call Answered: $data');
-      if (onCallAnswered != null && data != null) {
-        onCallAnswered!(Map<String, dynamic>.from(data));
-      }
-    });
-
-    socket!.on('ice_candidate', (data) {
-      debugPrint('[SOCKET] Ice Candidate: $data');
-      if (onIceCandidate != null && data != null) {
-        onIceCandidate!(Map<String, dynamic>.from(data));
-      }
-    });
-
-    socket!.on('call_ended', (_) {
-      debugPrint('[SOCKET] Call Ended by peer');
-      if (onCallEnded != null) {
-        onCallEnded!();
-      }
-    });
-
-    socket!.on('user_status_change', (data) {
-      debugPrint('[SOCKET] User status change: $data');
-      if (onUserStatusChange != null && data != null) {
-        final userId = data['userId']?.toString() ?? '';
-        final isOnline = data['isOnline'] == true || data['isOnline'] == 1;
-        onUserStatusChange!(userId, isOnline);
-      }
-    });
-
-    socket!.on('live_location_received', (data) {
-      debugPrint('[SOCKET] Live Location Received: $data');
-      if (onLiveLocationUpdate != null && data != null) {
-        onLiveLocationUpdate!(Map<String, dynamic>.from(data));
-      }
-    });
-
-    socket!.on('live_location_stopped', (data) {
-      debugPrint('[SOCKET] Live Location Stopped: $data');
-      if (onLiveLocationStopped != null && data != null) {
-        onLiveLocationStopped!(Map<String, dynamic>.from(data));
-      }
-    });
-
-    socket!.on('message_deleted', (data) {
-      debugPrint('[SOCKET] Message Deleted: $data');
-      if (onMessageDeleted != null && data != null) {
-        final msgId = data['messageId']?.toString() ?? '';
-        onMessageDeleted!(msgId);
-      }
-    });
-
-    socket!.on('message_edited', (data) {
-      debugPrint('[SOCKET] Message Edited: $data');
-      if (onMessageEdited != null && data != null) {
-        final msgId = data['messageId']?.toString() ?? '';
-        final rawContent = data['content']?.toString() ?? '';
-        final senderId = data['senderId']?.toString() ?? '';
-        final receiverId = data['receiverId']?.toString() ?? '';
-        final dec = EndToEndEncryptionService.decryptText(rawContent, senderId, receiverId);
-        onMessageEdited!(msgId, dec);
-      }
-    });
-
-    socket!.on('message_sent', (data) {
-      debugPrint('[SOCKET] Message Sent confirmed: $data');
-      if (onMessageSent != null && data != null) {
-        final tempId = data['clientTempId']?.toString() ?? '';
-        final realId = data['id']?.toString() ?? '';
-        if (tempId.isNotEmpty && realId.isNotEmpty) {
-          onMessageSent!(tempId, realId);
-        }
-      }
-    });
-
-    socket!.onDisconnect((_) => debugPrint('[SOCKET] Disconnected'));
+    } catch (e) {
+      debugPrint('[GORILLA WS] Parse error: $e');
+    }
   }
 
   // Report message delivered
   void emitMessageDelivered({required String senderId, required String receiverId, String? messageId}) {
-    socket?.emit('message_delivered', {
+    _emit('message_delivered', {
       'senderId': senderId,
       'receiverId': receiverId,
-      'messageId': messageId,
+      if (messageId != null) 'messageId': messageId,
     });
   }
 
   // Report message read
   void emitMessageRead({required String senderId, required String receiverId, String? messageId}) {
-    socket?.emit('message_read', {
+    _emit('message_read', {
       'senderId': senderId,
       'receiverId': receiverId,
-      'messageId': messageId,
+      if (messageId != null) 'messageId': messageId,
     });
   }
 
@@ -233,7 +304,7 @@ class SocketService {
     double? speed,
     String? messageId,
   }) {
-    socket?.emit('live_location_update', {
+    _emit('live_location_update', {
       'senderId': senderId,
       'receiverId': receiverId,
       'latitude': latitude,
@@ -250,13 +321,12 @@ class SocketService {
     required String receiverId,
     String? messageId,
   }) {
-    socket?.emit('stop_live_location', {
+    _emit('stop_live_location', {
       'senderId': senderId,
       'receiverId': receiverId,
       if (messageId != null) 'messageId': messageId,
     });
   }
-
 
   // Send real-time chat message
   void sendMessage({
@@ -267,16 +337,14 @@ class SocketService {
     String? mediaUrl,
     String? clientTempId,
   }) {
-    if (socket != null && socket!.connected) {
-      socket!.emit('send_message', {
-        'senderId': senderId,
-        'receiverId': receiverId,
-        'content': content,
-        'type': type,
-        if (mediaUrl != null) 'mediaUrl': mediaUrl,
-        if (clientTempId != null) 'clientTempId': clientTempId,
-      });
-    }
+    _emit('send_message', {
+      'senderId': senderId,
+      'receiverId': receiverId,
+      'content': content,
+      'type': type,
+      if (mediaUrl != null) 'mediaUrl': mediaUrl,
+      if (clientTempId != null) 'clientTempId': clientTempId,
+    });
   }
 
   // Emit WebRTC Call
@@ -286,7 +354,7 @@ class SocketService {
     required Map<String, dynamic> offer,
     required String callType,
   }) {
-    socket?.emit('call_user', {
+    _emit('call_user', {
       'caller': {
         'uid': caller.uid,
         'username': caller.username,
@@ -304,7 +372,7 @@ class SocketService {
     required String callerId,
     required Map<String, dynamic> answer,
   }) {
-    socket?.emit('answer_call', {
+    _emit('answer_call', {
       'callerId': callerId,
       'answer': answer,
     });
@@ -315,7 +383,7 @@ class SocketService {
     required String targetUserId,
     required Map<String, dynamic> candidate,
   }) {
-    socket?.emit('ice_candidate', {
+    _emit('ice_candidate', {
       'targetUserId': targetUserId,
       'candidate': candidate,
     });
@@ -323,36 +391,44 @@ class SocketService {
 
   // Emit End Call
   void emitEndCall(String targetUserId) {
-    socket?.emit('end_call', {
+    _emit('end_call', {
       'targetUserId': targetUserId,
     });
   }
 
-  // Delete message (Soft delete, keeps audit trail for admin)
+  // Delete message
   void deleteMessage({
     required String messageId,
     required String senderId,
     required String receiverId,
   }) {
-    socket?.emit('delete_message', {
+    _emit('delete_message', {
       'messageId': messageId,
       'senderId': senderId,
       'receiverId': receiverId,
     });
   }
 
-  // Edit message (Updates message, keeps original content for admin audit)
+  // Edit message
   void editMessage({
     required String messageId,
     required String senderId,
     required String receiverId,
     required String newContent,
   }) {
-    socket?.emit('edit_message', {
+    _emit('edit_message', {
       'messageId': messageId,
       'senderId': senderId,
       'receiverId': receiverId,
       'newContent': newContent,
     });
+  }
+
+  void disconnect() {
+    _reconnectTimer?.cancel();
+    _pingTimer?.cancel();
+    _currentUserId = null;
+    _socket?.close();
+    _socket = null;
   }
 }

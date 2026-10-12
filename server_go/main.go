@@ -22,11 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
-	socketio "github.com/googollee/go-socket.io"
-	"github.com/googollee/go-socket.io/engineio"
-	"github.com/googollee/go-socket.io/engineio/transport"
-	"github.com/googollee/go-socket.io/engineio/transport/polling"
-	"github.com/googollee/go-socket.io/engineio/transport/websocket"
+	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/api/option"
 )
@@ -44,13 +40,36 @@ var (
 	db        *sql.DB
 	fcmClient *messaging.Client
 
-	// Active Sockets: userID (string) -> socket connection
-	activeSockets sync.Map
+	// Active Gorilla WebSocket Clients: userID (string) -> *WSClient
+	wsClients sync.Map
 	// Pending calls: receiverID (string) -> callData (map[string]interface{})
 	activePendingCalls sync.Map
 
 	uploadDir string
+
+	wsUpgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+		ReadBufferSize:  1024 * 64,
+		WriteBufferSize: 1024 * 64,
+	}
 )
+
+type WSClient struct {
+	conn   *websocket.Conn
+	userID string
+	mu     sync.Mutex
+}
+
+func (c *WSClient) Send(event string, data interface{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn.WriteJSON(gin.H{
+		"event": event,
+		"data":  data,
+	})
+}
 
 func getEnv(key, fallback string) string {
 	if val := os.Getenv(key); val != "" {
@@ -189,359 +208,367 @@ func main() {
 		_ = os.MkdirAll(uploadDir, os.ModePerm)
 	}
 
-	// --- SETUP SOCKET.IO SERVER ---
-	wsTransport := &websocket.Transport{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
-	}
-	pollTransport := &polling.Transport{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
-	}
-	server := socketio.NewServer(&engineio.Options{
-		Transports: []transport.Transport{
-			wsTransport,
-			pollTransport,
-		},
-	})
-
-	server.OnConnect("/", func(s socketio.Conn) error {
-		s.SetContext("")
-		return nil
-	})
-
-	server.OnEvent("/", "join", func(s socketio.Conn, userID interface{}) {
-		uidStr := fmt.Sprintf("%v", userID)
-		s.SetContext(uidStr)
-		activeSockets.Store(uidStr, s)
-		log.Printf("[USER] Kullanici baglandi: ID %s", uidStr)
-
-		// DB Update: is_online = 1
-		_, _ = db.Exec("UPDATE users SET is_online = 1 WHERE id = ?", uidStr)
-		_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE receiver_id = ? AND is_delivered = 0", uidStr)
-
-		server.BroadcastToNamespace("/", "user_status_change", map[string]interface{}{
-			"userId":   uidStr,
-			"isOnline": true,
-		})
-	})
-
-	server.OnEvent("/", "send_message", func(s socketio.Conn, data map[string]interface{}) {
-		senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
-		receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
-		content := fmt.Sprintf("%v", data["content"])
-		msgType := "text"
-		if t, ok := data["type"].(string); ok && t != "" {
-			msgType = t
-		}
-		mediaURL := ""
-		if m, ok := data["mediaUrl"].(string); ok {
-			mediaURL = m
-		}
-		clientTempID := ""
-		if c, ok := data["clientTempId"].(string); ok {
-			clientTempID = c
-		}
-
-		receiverVal, isReceiverOnline := activeSockets.Load(strconv.Itoa(receiverID))
-		isDelivered := isReceiverOnline
-
-		// Insert Message
-		res, err := db.Exec(
-			"INSERT INTO messages (sender_id, receiver_id, content, message_type, media_url, is_delivered, is_read) VALUES (?, ?, ?, ?, ?, ?, 0)",
-			senderID, receiverID, content, msgType, mediaURL, isDelivered,
-		)
+	// --- SETUP GORILLA WEBSOCKET HANDLER ---
+	handleWebSocket := func(c *gin.Context) {
+		conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
-			log.Printf("[DB ERR send_message]: %v", err)
+			log.Printf("[WS HATA] Upgrade basarisiz: %v", err)
 			return
 		}
 
-		msgID, _ := res.LastInsertId()
+		client := &WSClient{conn: conn}
+		defer func() {
+			conn.Close()
+			if client.userID != "" {
+				wsClients.Delete(client.userID)
+				log.Printf("[WS USER] Kullanici ayrildi: ID %s", client.userID)
+				_, _ = db.Exec("UPDATE users SET is_online = 0, last_seen = NOW() WHERE id = ?", client.userID)
 
-		// Sender Display Name
-		var senderName string
-		_ = db.QueryRow("SELECT COALESCE(NULLIF(display_name, ''), username) FROM users WHERE id = ?", senderID).Scan(&senderName)
-		if senderName == "" {
-			senderName = "Biri"
-		}
-
-		savedMessage := map[string]interface{}{
-			"id":           msgID,
-			"clientTempId": clientTempID,
-			"senderId":     senderID,
-			"senderName":   senderName,
-			"receiverId":   receiverID,
-			"content":      content,
-			"type":         msgType,
-			"mediaUrl":     mediaURL,
-			"isDelivered":  isDelivered,
-			"isRead":       false,
-			"timestamp":    time.Now().Format("2006-01-02 15:04:05"),
-		}
-
-		if isReceiverOnline {
-			if rConn, ok := receiverVal.(socketio.Conn); ok {
-				rConn.Emit("receive_message", savedMessage)
-			}
-		}
-		s.Emit("message_sent", savedMessage)
-
-		// FCM Push Notification
-		go func() {
-			pushBody := content
-			switch msgType {
-			case "image":
-				pushBody = "📷 Fotoğraf"
-			case "video":
-				pushBody = "🎥 Video"
-			case "doc":
-				pushBody = "📄 Belge / Dosya"
-			case "location":
-				pushBody = "📍 Canlı Konum"
-			}
-			sendFCMPush(receiverID, senderName, pushBody, map[string]string{
-				"type":        "chat",
-				"senderId":    strconv.Itoa(senderID),
-				"senderName":  senderName,
-				"messageId":   strconv.FormatInt(msgID, 10),
-				"messageType": msgType,
-			})
-		}()
-	})
-
-	server.OnEvent("/", "edit_message", func(s socketio.Conn, data map[string]interface{}) {
-		msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
-		senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
-		receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
-		newContent := fmt.Sprintf("%v", data["newContent"])
-
-		if msgID == 0 || newContent == "" {
-			return
-		}
-
-		// Save original content for forensics on first edit
-		var oldContent, origContent sql.NullString
-		_ = db.QueryRow("SELECT content, original_content FROM messages WHERE id = ?", msgID).Scan(&oldContent, &origContent)
-		firstContent := oldContent.String
-		if origContent.Valid && origContent.String != "" {
-			firstContent = origContent.String
-		}
-
-		_, _ = db.Exec("UPDATE messages SET content = ?, original_content = ?, is_edited = 1 WHERE id = ?", newContent, firstContent, msgID)
-
-		payload := map[string]interface{}{
-			"messageId":  msgID,
-			"senderId":   senderID,
-			"receiverId": receiverID,
-			"content":    newContent,
-			"newContent": newContent,
-			"isEdited":   true,
-		}
-
-		if rVal, ok := activeSockets.Load(strconv.Itoa(receiverID)); ok {
-			if rConn, ok := rVal.(socketio.Conn); ok {
-				rConn.Emit("message_edited", payload)
-			}
-		}
-		s.Emit("message_edited", payload)
-	})
-
-	server.OnEvent("/", "delete_message", func(s socketio.Conn, data map[string]interface{}) {
-		msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
-		senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
-		receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
-
-		if msgID == 0 {
-			return
-		}
-
-		// Soft Delete: Keep row for audit
-		_, _ = db.Exec("UPDATE messages SET is_deleted = 1 WHERE id = ?", msgID)
-
-		payload := map[string]interface{}{
-			"messageId":  strconv.Itoa(msgID),
-			"senderId":   strconv.Itoa(senderID),
-			"receiverId": strconv.Itoa(receiverID),
-		}
-
-		if rVal, ok := activeSockets.Load(strconv.Itoa(receiverID)); ok {
-			if rConn, ok := rVal.(socketio.Conn); ok {
-				rConn.Emit("message_deleted", payload)
-			}
-		}
-		s.Emit("message_deleted", payload)
-	})
-
-	server.OnEvent("/", "message_delivered", func(s socketio.Conn, data map[string]interface{}) {
-		senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
-		receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
-		msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
-
-		if msgID > 0 {
-			_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE id = ?", msgID)
-		} else if senderID > 0 && receiverID > 0 {
-			_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE sender_id = ? AND receiver_id = ?", senderID, receiverID)
-		}
-
-		if sVal, ok := activeSockets.Load(strconv.Itoa(senderID)); ok {
-			if sConn, ok := sVal.(socketio.Conn); ok {
-				sConn.Emit("messages_delivered", map[string]interface{}{
-					"senderId":   strconv.Itoa(senderID),
-					"receiverId": strconv.Itoa(receiverID),
-					"messageId":  msgID,
+				// Broadcast offline status
+				wsClients.Range(func(key, value interface{}) bool {
+					if other, ok := value.(*WSClient); ok && other.userID != client.userID {
+						_ = other.Send("user_status_change", gin.H{
+							"userId":   client.userID,
+							"isOnline": false,
+						})
+					}
+					return true
 				})
 			}
-		}
-	})
+		}()
 
-	server.OnEvent("/", "message_read", func(s socketio.Conn, data map[string]interface{}) {
-		senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
-		receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
-		msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+		// WebSocket Message Loop
+		for {
+			var packet struct {
+				Event string                 `json:"event"`
+				Data  map[string]interface{} `json:"data"`
+			}
 
-		if msgID > 0 {
-			_, _ = db.Exec("UPDATE messages SET is_delivered = 1, is_read = 1 WHERE id = ?", msgID)
-		} else if senderID > 0 && receiverID > 0 {
-			_, _ = db.Exec("UPDATE messages SET is_delivered = 1, is_read = 1 WHERE sender_id = ? AND receiver_id = ?", senderID, receiverID)
-		}
+			if err := conn.ReadJSON(&packet); err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("[WS HATA] Baglanti kapandi: %v", err)
+				}
+				break
+			}
 
-		if sVal, ok := activeSockets.Load(strconv.Itoa(senderID)); ok {
-			if sConn, ok := sVal.(socketio.Conn); ok {
-				sConn.Emit("messages_read", map[string]interface{}{
+			event := packet.Event
+			data := packet.Data
+			if data == nil {
+				data = make(map[string]interface{})
+			}
+
+			switch event {
+			case "join":
+				var uidStr string
+				if rawUID, ok := data["userId"]; ok {
+					uidStr = fmt.Sprintf("%v", rawUID)
+				} else if rawUID, ok := data["uid"]; ok {
+					uidStr = fmt.Sprintf("%v", rawUID)
+				} else if rawUID, ok := data["id"]; ok {
+					uidStr = fmt.Sprintf("%v", rawUID)
+				}
+
+				if uidStr != "" {
+					client.userID = uidStr
+					wsClients.Store(uidStr, client)
+					log.Printf("[WS USER] Kullanici baglandi: ID %s", uidStr)
+
+					_, _ = db.Exec("UPDATE users SET is_online = 1 WHERE id = ?", uidStr)
+					_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE receiver_id = ? AND is_delivered = 0", uidStr)
+
+					// Broadcast online status
+					wsClients.Range(func(key, value interface{}) bool {
+						if other, ok := value.(*WSClient); ok && other.userID != client.userID {
+							_ = other.Send("user_status_change", gin.H{
+								"userId":   uidStr,
+								"isOnline": true,
+							})
+						}
+						return true
+					})
+				}
+
+			case "send_message":
+				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+				receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
+				content := fmt.Sprintf("%v", data["content"])
+				msgType := "text"
+				if t, ok := data["type"].(string); ok && t != "" {
+					msgType = t
+				}
+				mediaURL := ""
+				if m, ok := data["mediaUrl"].(string); ok {
+					mediaURL = m
+				}
+				clientTempID := ""
+				if c, ok := data["clientTempId"].(string); ok {
+					clientTempID = c
+				}
+
+				receiverVal, isReceiverOnline := wsClients.Load(strconv.Itoa(receiverID))
+				isDelivered := isReceiverOnline
+
+				// Insert Message into MariaDB
+				res, err := db.Exec(
+					"INSERT INTO messages (sender_id, receiver_id, content, message_type, media_url, is_delivered, is_read) VALUES (?, ?, ?, ?, ?, ?, 0)",
+					senderID, receiverID, content, msgType, mediaURL, isDelivered,
+				)
+				if err != nil {
+					log.Printf("[DB ERR send_message]: %v", err)
+					continue
+				}
+
+				msgID, _ := res.LastInsertId()
+				log.Printf("[DB SUCCESS] Mesaj kaydedildi: ID %d (Gonderen: %d -> Alici: %d)", msgID, senderID, receiverID)
+
+				// Sender Display Name
+				var senderName string
+				_ = db.QueryRow("SELECT COALESCE(NULLIF(display_name, ''), username) FROM users WHERE id = ?", senderID).Scan(&senderName)
+				if senderName == "" {
+					senderName = "Biri"
+				}
+
+				savedMessage := gin.H{
+					"id":           msgID,
+					"clientTempId": clientTempID,
+					"senderId":     senderID,
+					"senderName":   senderName,
+					"receiverId":   receiverID,
+					"content":      content,
+					"type":         msgType,
+					"mediaUrl":     mediaURL,
+					"isDelivered":  isDelivered,
+					"isRead":       false,
+					"timestamp":    time.Now().Format("2006-01-02 15:04:05"),
+				}
+
+				if isReceiverOnline {
+					if rClient, ok := receiverVal.(*WSClient); ok {
+						_ = rClient.Send("receive_message", savedMessage)
+					}
+				}
+				_ = client.Send("message_sent", savedMessage)
+
+				// FCM Push Notification
+				go func() {
+					pushBody := content
+					switch msgType {
+					case "image":
+						pushBody = "📷 Fotoğraf"
+					case "video":
+						pushBody = "🎥 Video"
+					case "doc":
+						pushBody = "📄 Belge / Dosya"
+					case "location":
+						pushBody = "📍 Canlı Konum"
+					}
+					sendFCMPush(receiverID, senderName, pushBody, map[string]string{
+						"type":        "chat",
+						"senderId":    strconv.Itoa(senderID),
+						"senderName":  senderName,
+						"messageId":   strconv.FormatInt(msgID, 10),
+						"messageType": msgType,
+					})
+				}()
+
+			case "edit_message":
+				msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+				receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
+				newContent := fmt.Sprintf("%v", data["newContent"])
+
+				if msgID == 0 || newContent == "" {
+					continue
+				}
+
+				var oldContent, origContent sql.NullString
+				_ = db.QueryRow("SELECT content, original_content FROM messages WHERE id = ?", msgID).Scan(&oldContent, &origContent)
+				firstContent := oldContent.String
+				if origContent.Valid && origContent.String != "" {
+					firstContent = origContent.String
+				}
+
+				_, _ = db.Exec("UPDATE messages SET content = ?, original_content = ?, is_edited = 1 WHERE id = ?", newContent, firstContent, msgID)
+
+				payload := gin.H{
+					"messageId":  msgID,
+					"senderId":   senderID,
+					"receiverId": receiverID,
+					"content":    newContent,
+					"newContent": newContent,
+					"isEdited":   true,
+				}
+
+				if rVal, ok := wsClients.Load(strconv.Itoa(receiverID)); ok {
+					if rClient, ok := rVal.(*WSClient); ok {
+						_ = rClient.Send("message_edited", payload)
+					}
+				}
+				_ = client.Send("message_edited", payload)
+
+			case "delete_message":
+				msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+				receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
+
+				if msgID == 0 {
+					continue
+				}
+
+				_, _ = db.Exec("UPDATE messages SET is_deleted = 1 WHERE id = ?", msgID)
+
+				payload := gin.H{
+					"messageId":  strconv.Itoa(msgID),
 					"senderId":   strconv.Itoa(senderID),
 					"receiverId": strconv.Itoa(receiverID),
-					"messageId":  msgID,
+				}
+
+				if rVal, ok := wsClients.Load(strconv.Itoa(receiverID)); ok {
+					if rClient, ok := rVal.(*WSClient); ok {
+						_ = rClient.Send("message_deleted", payload)
+					}
+				}
+				_ = client.Send("message_deleted", payload)
+
+			case "message_delivered":
+				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+				receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
+				msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+
+				if msgID > 0 {
+					_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE id = ?", msgID)
+				} else if senderID > 0 && receiverID > 0 {
+					_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE sender_id = ? AND receiver_id = ?", senderID, receiverID)
+				}
+
+				if sVal, ok := wsClients.Load(strconv.Itoa(senderID)); ok {
+					if sClient, ok := sVal.(*WSClient); ok {
+						_ = sClient.Send("messages_delivered", gin.H{
+							"senderId":   strconv.Itoa(senderID),
+							"receiverId": strconv.Itoa(receiverID),
+							"messageId":  msgID,
+						})
+					}
+				}
+
+			case "message_read":
+				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+				receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
+				msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+
+				if msgID > 0 {
+					_, _ = db.Exec("UPDATE messages SET is_delivered = 1, is_read = 1 WHERE id = ?", msgID)
+				} else if senderID > 0 && receiverID > 0 {
+					_, _ = db.Exec("UPDATE messages SET is_delivered = 1, is_read = 1 WHERE sender_id = ? AND receiver_id = ?", senderID, receiverID)
+				}
+
+				if sVal, ok := wsClients.Load(strconv.Itoa(senderID)); ok {
+					if sClient, ok := sVal.(*WSClient); ok {
+						_ = sClient.Send("messages_read", gin.H{
+							"senderId":   strconv.Itoa(senderID),
+							"receiverId": strconv.Itoa(receiverID),
+							"messageId":  msgID,
+						})
+					}
+				}
+
+			case "live_location_update":
+				receiverID := fmt.Sprintf("%v", data["receiverId"])
+				if rVal, ok := wsClients.Load(receiverID); ok {
+					if rClient, ok := rVal.(*WSClient); ok {
+						_ = rClient.Send("live_location_received", data)
+					}
+				}
+
+			case "stop_live_location":
+				receiverID := fmt.Sprintf("%v", data["receiverId"])
+				if rVal, ok := wsClients.Load(receiverID); ok {
+					if rClient, ok := rVal.(*WSClient); ok {
+						_ = rClient.Send("live_location_stopped", data)
+					}
+				}
+
+			case "call_user":
+				receiverID := fmt.Sprintf("%v", data["receiverId"])
+				activePendingCalls.Store(receiverID, data)
+
+				if rVal, ok := wsClients.Load(receiverID); ok {
+					if rClient, ok := rVal.(*WSClient); ok {
+						_ = rClient.Send("incoming_call", data)
+					}
+				}
+
+				go func() {
+					callerData, _ := data["caller"].(map[string]interface{})
+					callerName := "Biri"
+					if callerData != nil {
+						if d, ok := callerData["displayName"].(string); ok && d != "" {
+							callerName = d
+						}
+					}
+					callType := fmt.Sprintf("%v", data["callType"])
+					rIDInt, _ := strconv.Atoi(receiverID)
+					title := "Gelen Sesli Arama"
+					if callType == "video" {
+						title = "Gelen Görüntülü Arama"
+					}
+					sendFCMPush(rIDInt, title, fmt.Sprintf("%s sizi arıyor...", callerName), map[string]string{
+						"type":       "call",
+						"callerName": callerName,
+						"callType":   callType,
+						"callerId":   fmt.Sprintf("%v", callerData["uid"]),
+					})
+				}()
+
+			case "answer_call":
+				callerID := fmt.Sprintf("%v", data["callerId"])
+				activePendingCalls.Range(func(key, value interface{}) bool {
+					activePendingCalls.Delete(key)
+					return true
 				})
-			}
-		}
-	})
 
-	server.OnEvent("/", "live_location_update", func(s socketio.Conn, data map[string]interface{}) {
-		receiverID := fmt.Sprintf("%v", data["receiverId"])
-		if rVal, ok := activeSockets.Load(receiverID); ok {
-			if rConn, ok := rVal.(socketio.Conn); ok {
-				rConn.Emit("live_location_received", data)
-			}
-		}
-	})
+				if cVal, ok := wsClients.Load(callerID); ok {
+					if cClient, ok := cVal.(*WSClient); ok {
+						_ = cClient.Send("call_answered", data)
+					}
+				}
 
-	server.OnEvent("/", "stop_live_location", func(s socketio.Conn, data map[string]interface{}) {
-		receiverID := fmt.Sprintf("%v", data["receiverId"])
-		if rVal, ok := activeSockets.Load(receiverID); ok {
-			if rConn, ok := rVal.(socketio.Conn); ok {
-				rConn.Emit("live_location_stopped", data)
-			}
-		}
-	})
+			case "ice_candidate":
+				targetUserID := fmt.Sprintf("%v", data["targetUserId"])
+				if tVal, ok := wsClients.Load(targetUserID); ok {
+					if tClient, ok := tVal.(*WSClient); ok {
+						_ = tClient.Send("ice_candidate", data)
+					}
+				}
 
-	server.OnEvent("/", "call_user", func(s socketio.Conn, data map[string]interface{}) {
-		receiverID := fmt.Sprintf("%v", data["receiverId"])
-		activePendingCalls.Store(receiverID, data)
+			case "end_call":
+				activePendingCalls.Range(func(key, value interface{}) bool {
+					activePendingCalls.Delete(key)
+					return true
+				})
 
-		if rVal, ok := activeSockets.Load(receiverID); ok {
-			if rConn, ok := rVal.(socketio.Conn); ok {
-				rConn.Emit("incoming_call", data)
-			}
-		}
+				targetUserID := ""
+				if data != nil {
+					targetUserID = fmt.Sprintf("%v", data["targetUserId"])
+				}
 
-		go func() {
-			callerData, _ := data["caller"].(map[string]interface{})
-			callerName := "Biri"
-			if callerData != nil {
-				if d, ok := callerData["displayName"].(string); ok && d != "" {
-					callerName = d
+				if targetUserID != "" {
+					if tVal, ok := wsClients.Load(targetUserID); ok {
+						if tClient, ok := tVal.(*WSClient); ok {
+							_ = tClient.Send("call_ended", gin.H{})
+						}
+					}
+				} else {
+					wsClients.Range(func(key, val interface{}) bool {
+						if other, ok := val.(*WSClient); ok && other.userID != client.userID {
+							_ = other.Send("call_ended", gin.H{})
+						}
+						return true
+					})
 				}
 			}
-			callType := fmt.Sprintf("%v", data["callType"])
-			rIDInt, _ := strconv.Atoi(receiverID)
-			title := "Gelen Sesli Arama"
-			if callType == "video" {
-				title = "Gelen Görüntülü Arama"
-			}
-			sendFCMPush(rIDInt, title, fmt.Sprintf("%s sizi arıyor...", callerName), map[string]string{
-				"type":       "call",
-				"callerName": callerName,
-				"callType":   callType,
-				"callerId":   fmt.Sprintf("%v", callerData["uid"]),
-			})
-		}()
-	})
-
-	server.OnEvent("/", "answer_call", func(s socketio.Conn, data map[string]interface{}) {
-		callerID := fmt.Sprintf("%v", data["callerId"])
-		activePendingCalls.Range(func(key, value interface{}) bool {
-			activePendingCalls.Delete(key)
-			return true
-		})
-
-		if cVal, ok := activeSockets.Load(callerID); ok {
-			if cConn, ok := cVal.(socketio.Conn); ok {
-				cConn.Emit("call_answered", data)
-			}
 		}
-	})
-
-	server.OnEvent("/", "ice_candidate", func(s socketio.Conn, data map[string]interface{}) {
-		targetUserID := fmt.Sprintf("%v", data["targetUserId"])
-		if tVal, ok := activeSockets.Load(targetUserID); ok {
-			if tConn, ok := tVal.(socketio.Conn); ok {
-				tConn.Emit("ice_candidate", data)
-			}
-		}
-	})
-
-	server.OnEvent("/", "end_call", func(s socketio.Conn, data map[string]interface{}) {
-		activePendingCalls.Range(func(key, value interface{}) bool {
-			activePendingCalls.Delete(key)
-			return true
-		})
-
-		targetUserID := ""
-		if data != nil {
-			targetUserID = fmt.Sprintf("%v", data["targetUserId"])
-		}
-
-		if targetUserID != "" {
-			if tVal, ok := activeSockets.Load(targetUserID); ok {
-				if tConn, ok := tVal.(socketio.Conn); ok {
-					tConn.Emit("call_ended", map[string]interface{}{})
-				}
-			}
-		} else {
-			activeSockets.Range(func(key, val interface{}) bool {
-				if sConn, ok := val.(socketio.Conn); ok && sConn.ID() != s.ID() {
-					sConn.Emit("call_ended", map[string]interface{}{})
-				}
-				return true
-			})
-		}
-	})
-
-	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		uidStr := s.Context()
-		if uid, ok := uidStr.(string); ok && uid != "" {
-			activeSockets.Delete(uid)
-			log.Printf("[USER] Kullanici ayrildi: ID %s", uid)
-			_, _ = db.Exec("UPDATE users SET is_online = 0, last_seen = NOW() WHERE id = ?", uid)
-			server.BroadcastToNamespace("/", "user_status_change", map[string]interface{}{
-				"userId":   uid,
-				"isOnline": false,
-			})
-		}
-	})
-
-	server.OnError("/", func(s socketio.Conn, e error) {
-		log.Printf("[SOCKET UYARI]: %v", e)
-	})
-
-	go func() {
-		if err := server.Serve(); err != nil {
-			log.Printf("[SOCKET BILGI]: %v", err)
-		}
-	}()
-	defer server.Close()
+	}
 
 	// --- SETUP GIN ROUTER ---
 	router := gin.Default()
@@ -562,9 +589,9 @@ func main() {
 	// Static uploads directory
 	router.Static("/uploads", uploadDir)
 
-	// Socket.IO Mount
-	router.GET("/socket.io/*any", gin.WrapH(server))
-	router.POST("/socket.io/*any", gin.WrapH(server))
+	// Gorilla WebSocket Mount (Direct /ws & fallback /socket.io/)
+	router.GET("/ws", handleWebSocket)
+	router.GET("/socket.io/*any", handleWebSocket)
 
 	// REST API Routes
 	api := router.Group("/api")
@@ -806,7 +833,7 @@ func main() {
 				u.LastSeen = lSeen.String
 
 				// Check online in memory
-				_, u.IsOnline = activeSockets.Load(strconv.Itoa(u.ID))
+				_, u.IsOnline = wsClients.Load(strconv.Itoa(u.ID))
 
 				userNorm := normalizePhone(u.PhoneNumber)
 				localName, inContacts := normalizedMap[userNorm]
