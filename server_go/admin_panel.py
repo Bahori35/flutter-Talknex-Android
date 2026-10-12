@@ -475,8 +475,10 @@ class TalknexAdminApp(tk.Tk):
         # Decrypt text
         raw_content = msg.get("content") or ""
         decrypted = decrypt_text(raw_content, msg["sender_id"], msg["receiver_id"])
-        msg_type = msg.get("message_type", "text")
-        media_url = msg.g        # 1. Media Preview (Image / Video / Audio)
+        media_url = msg.get("media_url") or ""
+        date_str = str(msg.get("created_at", ""))[:16]
+
+        # 1. Media Preview (Image / Video / Audio)
         if media_url:
             local_path = self._get_local_media_file(media_url)
             if local_path and os.path.exists(local_path):
