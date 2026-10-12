@@ -124,11 +124,7 @@ class ServerManagerGUI:
 
         self.btn_restart = tk.Button(btn_frame, text="🔄 YENİDEN BAŞLAT", font=("Segoe UI", 11, "bold"),
                                      bg=ACCENT_BLUE, fg="#FFFFFF", relief=tk.FLAT, padx=18, pady=8, cursor="hand2", command=self.restart_server)
-        self.btn_restart.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.btn_admin = tk.Button(btn_frame, text="🔍 ADLİ BİLİŞİM PANELİ", font=("Segoe UI", 11, "bold"),
-                                   bg="#7C3AED", fg="#FFFFFF", relief=tk.FLAT, padx=18, pady=8, cursor="hand2", command=self.open_admin_panel)
-        self.btn_admin.pack(side=tk.LEFT)
+        self.btn_restart.pack(side=tk.LEFT)
 
         # --- RIGHT CARD: Hardware & Network Monitor ---
         hw_card = tk.LabelFrame(top_grid, text=" Donanım & Servis Durumu ", font=("Segoe UI", 11, "bold"),
@@ -472,14 +468,6 @@ class ServerManagerGUI:
         self.log("[SİSTEM] Sunucu yeniden başlatılıyor...")
         self.stop_server()
         self.root.after(1000, self.start_server)
-
-    def open_admin_panel(self):
-        admin_script = os.path.join(CURRENT_DIR, "admin_panel.py")
-        if os.path.exists(admin_script):
-            subprocess.Popen([sys.executable, admin_script], cwd=CURRENT_DIR)
-            self.log("[ADLİ PANEL] Adli Bilişim & Şifre Çözücü Paneli açıldı.")
-        else:
-            messagebox.showerror("Hata", f"admin_panel.py bulunamadı:\n{admin_script}")
 
 
 def main():
