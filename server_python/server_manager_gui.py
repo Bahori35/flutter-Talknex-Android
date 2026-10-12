@@ -61,8 +61,16 @@ class ServerManagerGUI:
         title_lbl = tk.Label(header, text="TALKNEX SERVER CONTROL CENTER", font=("Segoe UI", 16, "bold"), fg=FG_TEXT, bg=BG_CARD)
         title_lbl.pack(side=tk.LEFT, padx=20, pady=10)
 
-        self.status_badge = tk.Label(header, text="● DURDURULDU", font=("Segoe UI", 11, "bold"), fg=ACCENT_RED, bg=BG_CARD)
-        self.status_badge.pack(side=tk.RIGHT, padx=20)
+        # Right-side stats container in header
+        hdr_right = tk.Frame(header, bg=BG_CARD)
+        hdr_right.pack(side=tk.RIGHT, padx=20)
+
+        self.users_badge = tk.Label(hdr_right, text="👥 Çevrimiçi: 0  |  Toplam: 0", font=("Segoe UI", 11, "bold"),
+                                    fg="#38BDF8", bg=BG_MAIN, padx=12, pady=4, relief=tk.SOLID, bd=1)
+        self.users_badge.pack(side=tk.LEFT, padx=(0, 15))
+
+        self.status_badge = tk.Label(hdr_right, text="● DURDURULDU", font=("Segoe UI", 11, "bold"), fg=ACCENT_RED, bg=BG_CARD)
+        self.status_badge.pack(side=tk.LEFT)
 
         # Main Body Container
         body = tk.Frame(self.root, bg=BG_MAIN)
@@ -133,22 +141,23 @@ class ServerManagerGUI:
         hw_grid = tk.Frame(hw_card, bg=BG_CARD)
         hw_grid.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
 
-        # CPU Usage
-        self.cpu_lbl = tk.Label(hw_grid, text="İşlemci (CPU): %0", font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD)
+        # Hardware & Network Grid
+        # CPU Usage & Speed
+        self.cpu_lbl = tk.Label(hw_grid, text="İşlemci (CPU): %0 (0.0 GHz)", font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD)
         self.cpu_lbl.grid(row=0, column=0, sticky="w", pady=3)
         self.cpu_bar = ttk.Progressbar(hw_grid, orient="horizontal", length=180, mode="determinate")
         self.cpu_bar.grid(row=0, column=1, padx=10, pady=3)
 
-        # RAM Usage
-        self.ram_lbl = tk.Label(hw_grid, text="Bellek (RAM): %0", font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD)
+        # RAM Usage & Speed
+        self.ram_lbl = tk.Label(hw_grid, text="Bellek (RAM): %0 (0 MHz)", font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD)
         self.ram_lbl.grid(row=1, column=0, sticky="w", pady=3)
         self.ram_bar = ttk.Progressbar(hw_grid, orient="horizontal", length=180, mode="determinate")
         self.ram_bar.grid(row=1, column=1, padx=10, pady=3)
 
-        # Ports Info
-        ports_lbl = tk.Label(hw_grid, text="• Nginx Proxy: Port 3000\n• Uvicorn Backend: Port 3001\n• Toplam Çekirdek: " + str(self.total_cores) + " Thread",
-                             font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD, justify=tk.LEFT)
-        ports_lbl.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        # Ports & Hardware Specs Details
+        self.specs_lbl = tk.Label(hw_grid, text="• Nginx Proxy: Port 3000 | Uvicorn: Port 3001\n• Toplam: " + str(self.total_cores) + " Thread | RAM: 0 GB",
+                                  font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD, justify=tk.LEFT)
+        self.specs_lbl.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         # --- BOTTOM: Live Console Logs ---
         log_frame = tk.LabelFrame(body, text=" Canlı Sunucu Logları ", font=("Segoe UI", 11, "bold"),
@@ -177,24 +186,75 @@ class ServerManagerGUI:
         self.log_text.insert(tk.END, text + "\n")
         self.log_text.see(tk.END)
 
+    def _detect_ram_speed(self):
+        try:
+            out = subprocess.check_output(['wmic', 'memorychip', 'get', 'speed'], text=True, stderr=subprocess.DEVNULL)
+            speeds = [int(s) for s in out.split() if s.isdigit() and int(s) > 0]
+            if speeds:
+                return f"{max(speeds)} MHz"
+        except Exception:
+            pass
+        return ""
+
     def start_system_monitor(self):
+        ram_speed_str = self._detect_ram_speed()
+        total_ram_gb = round(psutil.virtual_memory().total / (1024**3), 1)
+
         def monitor_loop():
+            user_check_counter = 0
+            online_users = 0
+            total_users = 0
+
             while True:
                 try:
-                    cpu = psutil.cpu_percent(interval=1)
-                    ram = psutil.virtual_memory().percent
-                    self.root.after(0, self._update_stats, cpu, ram)
+                    cpu_pct = psutil.cpu_percent(interval=1)
+                    vmem = psutil.virtual_memory()
+                    ram_pct = vmem.percent
+                    ram_used_gb = round(vmem.used / (1024**3), 1)
+
+                    # CPU GHz
+                    freq = psutil.cpu_freq()
+                    ghz_str = f"{(freq.current / 1000):.2f} GHz" if freq and freq.current else ""
+
+                    # User count check every 3 seconds
+                    user_check_counter += 1
+                    if user_check_counter >= 3:
+                        user_check_counter = 0
+                        try:
+                            import pymysql
+                            conn = pymysql.connect(host='localhost', user='root', password='', database='chat_app_db', autocommit=True)
+                            with conn.cursor() as cur:
+                                cur.execute("SELECT COUNT(*) FROM users")
+                                total_users = cur.fetchone()[0]
+                                cur.execute("SELECT COUNT(*) FROM users WHERE is_online = 1")
+                                online_users = cur.fetchone()[0]
+                            conn.close()
+                        except Exception:
+                            pass
+
+                    self.root.after(0, self._update_stats, cpu_pct, ghz_str, ram_pct, ram_used_gb, total_ram_gb, ram_speed_str, online_users, total_users)
                 except Exception:
                     time.sleep(1)
 
         t = threading.Thread(target=monitor_loop, daemon=True)
         t.start()
 
-    def _update_stats(self, cpu, ram):
-        self.cpu_lbl.config(text=f"İşlemci (CPU): %{cpu:.1f}")
+    def _update_stats(self, cpu, ghz, ram, ram_used, total_ram, ram_speed, online, total):
+        # Update CPU label & bar
+        ghz_part = f" ({ghz})" if ghz else ""
+        self.cpu_lbl.config(text=f"İşlemci (CPU): %{cpu:.1f}{ghz_part}")
         self.cpu_bar["value"] = cpu
-        self.ram_lbl.config(text=f"Bellek (RAM): %{ram:.1f}")
+
+        # Update RAM label & bar
+        mhz_part = f" - {ram_speed}" if ram_speed else ""
+        self.ram_lbl.config(text=f"Bellek (RAM): %{ram:.1f} ({ram_used}/{total_ram} GB{mhz_part})")
         self.ram_bar["value"] = ram
+
+        # Update Specs Label
+        self.specs_lbl.config(text=f"• Nginx: Port 3000 | Uvicorn: Port 3001\n• Toplam: {self.total_cores} Thread | Toplam Bellek: {total_ram} GB {ram_speed}")
+
+        # Update Users Badge
+        self.users_badge.config(text=f"👥 Çevrimiçi: {online}  |  Toplam Kayıtlı: {total}")
 
     def get_nginx_exe(self):
         if os.path.exists(os.path.join(NGINX_C_DIR, "nginx.exe")):
