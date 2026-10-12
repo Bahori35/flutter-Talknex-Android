@@ -532,9 +532,13 @@ func main() {
 		}
 	})
 
+	server.OnError("/", func(s socketio.Conn, e error) {
+		log.Printf("[SOCKET UYARI]: %v", e)
+	})
+
 	go func() {
 		if err := server.Serve(); err != nil {
-			log.Fatalf("[SOCKET HATA]: %v", err)
+			log.Printf("[SOCKET BILGI]: %v", err)
 		}
 	}()
 	defer server.Close()
