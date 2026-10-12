@@ -58,11 +58,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     // Listen for live group messages
     _socketService.onGroupMessageReceived = (data) {
       final gId = data['groupId'] is int ? data['groupId'] : int.tryParse(data['groupId']?.toString() ?? '0') ?? 0;
+      final senderIdStr = data['senderId']?.toString() ?? '';
+      // Don't duplicate message if it was sent by current user (optimistic UI already added it)
+      if (senderIdStr == widget.currentUser.uid) return;
+
       if (gId == _group.id && mounted) {
         final rawContent = data['content']?.toString() ?? '';
         final decrypted = EndToEndEncryptionService.decryptText(
           rawContent,
-          data['senderId']?.toString() ?? '',
+          senderIdStr,
           'group_${_group.id}',
         );
         final map = Map<String, dynamic>.from(data);
