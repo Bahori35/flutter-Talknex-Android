@@ -44,6 +44,9 @@ nginx/temp/
 nginx/logs/*.log
 nginx/logs/*.pid
 server_python/uploads/
+server_go/uploads/
+go/
+server_go/*.exe
 
 # Android Studio will place build artifacts here
 /android/app/debug

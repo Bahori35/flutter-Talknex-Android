@@ -103,19 +103,20 @@ class ServerManagerGUI:
                                        insertbackground=FG_TEXT, relief=tk.SOLID, bd=1, justify=tk.CENTER)
         self.thread_entry.pack(side=tk.LEFT, padx=(0, 15))
 
-        # Quick preset buttons
-        tk.Label(opts_frame, text="Hızlı Seçim:", font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD).pack(side=tk.LEFT, padx=(0, 5))
+        # Engine Selector (Go vs Python)
+        engine_frame = tk.Frame(ctrl_card, bg=BG_CARD)
+        engine_frame.pack(fill=tk.X, padx=15, pady=(4, 6))
 
-        def set_preset(val):
-            self.thread_var.set(str(val))
+        tk.Label(engine_frame, text="Sunucu Motoru (Teknoloji):", font=("Segoe UI", 9, "bold"), fg=FG_TEXT, bg=BG_CARD).pack(side=tk.LEFT, padx=(0, 10))
+        self.engine_var = tk.StringVar(value="go")
 
-        for p_val in [2, 4, 8, 12, 16, 24, self.total_cores]:
-            if p_val <= max(self.total_cores, 24):
-                btn_p = tk.Button(opts_frame, text=str(p_val) if p_val != self.total_cores else f"{p_val} (Tümü)",
-                                  font=("Segoe UI", 8, "bold"), bg=BORDER_COLOR, fg=FG_TEXT,
-                                  relief=tk.FLAT, padx=6, pady=1, cursor="hand2",
-                                  command=lambda v=p_val: set_preset(v))
-                btn_p.pack(side=tk.LEFT, padx=2)
+        rb_go = tk.Radiobutton(engine_frame, text="⚡ Go (Golang - Önerilen)", variable=self.engine_var, value="go",
+                               bg=BG_CARD, fg="#38BDF8", selectcolor=BG_MAIN, activebackground=BG_CARD, font=("Segoe UI", 9, "bold"))
+        rb_go.pack(side=tk.LEFT, padx=5)
+
+        rb_py = tk.Radiobutton(engine_frame, text="🐍 Python (Uvicorn)", variable=self.engine_var, value="python",
+                               bg=BG_CARD, fg=FG_MUTED, selectcolor=BG_MAIN, activebackground=BG_CARD, font=("Segoe UI", 9))
+        rb_py.pack(side=tk.LEFT, padx=5)
 
         # Buttons (Start, Stop, Restart)
         btn_frame = tk.Frame(ctrl_card, bg=BG_CARD)
@@ -385,16 +386,29 @@ class ServerManagerGUI:
         except Exception:
             assigned_threads = self.total_cores
 
-        self.log(f"[3/3] Python Uvicorn Backend başlatılıyor -> Hedef: {assigned_threads} CPU Thread...")
-
+        # 2. Start Backend (Go or Python)
+        selected_engine = self.engine_var.get()
         env = os.environ.copy()
         env["PORT"] = "3001"
         env["PYTHONUNBUFFERED"] = "1"
 
+        go_server_exe = os.path.join(PROJECT_ROOT, "server_go", "talknex_server.exe")
+        launch_cmd = []
+        launch_cwd = CURRENT_DIR
+
+        if selected_engine == "go" and os.path.exists(go_server_exe):
+            self.log(f"[3/3] ⚡ Go (Golang) Ultra-Fast Backend başlatılıyor -> Hedef: {assigned_threads} Thread...")
+            launch_cmd = [go_server_exe]
+            launch_cwd = os.path.join(PROJECT_ROOT, "server_go")
+        else:
+            self.log(f"[3/3] 🐍 Python Uvicorn Backend başlatılıyor -> Hedef: {assigned_threads} CPU Thread...")
+            launch_cmd = [sys.executable, "main.py"]
+            launch_cwd = CURRENT_DIR
+
         try:
             self.server_process = subprocess.Popen(
-                [sys.executable, "main.py"],
-                cwd=CURRENT_DIR,
+                launch_cmd,
+                cwd=launch_cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
