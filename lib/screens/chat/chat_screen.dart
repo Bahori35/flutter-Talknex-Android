@@ -690,12 +690,20 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
               if (isMe && message.type == MessageType.text)
-                ListTile(
-                  leading: const Icon(Icons.edit_rounded, color: AppColors.accent),
-                  title: const Text('Mesajı Düzenle', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _showEditMessageDialog(message);
+                Builder(
+                  builder: (context) {
+                    final isWithin15Minutes = DateTime.now().difference(message.timestamp).inMinutes < 15;
+                    if (!isWithin15Minutes) return const SizedBox.shrink();
+
+                    return ListTile(
+                      leading: const Icon(Icons.edit_rounded, color: AppColors.accent),
+                      title: const Text('Mesajı Düzenle', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                      subtitle: const Text('15 dakika içinde düzenlenebilir', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _showEditMessageDialog(message);
+                      },
+                    );
                   },
                 ),
               if (isMe)

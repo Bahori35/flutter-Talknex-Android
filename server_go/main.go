@@ -382,7 +382,19 @@ func main() {
 				}
 
 				var oldContent, origContent sql.NullString
-				_ = db.QueryRow("SELECT content, original_content FROM messages WHERE id = ?", msgID).Scan(&oldContent, &origContent)
+				var createdAt time.Time
+				err := db.QueryRow("SELECT content, original_content, created_at FROM messages WHERE id = ?", msgID).Scan(&oldContent, &origContent, &createdAt)
+				if err != nil {
+					continue
+				}
+
+				// 15 Dakika Düzenleme Süresi Kontrolü
+				if time.Since(createdAt) > 15*time.Minute {
+					log.Printf("[UYARI] Mesaj #%d düzenleme süresi (15 dk) dolduğu için reddedildi.", msgID)
+					_ = client.Send("error", gin.H{"message": "Mesajlar gönderildikten sonra yalnızca 15 dakika içinde düzenlenebilir."})
+					continue
+				}
+
 				firstContent := oldContent.String
 				if origContent.Valid && origContent.String != "" {
 					firstContent = origContent.String

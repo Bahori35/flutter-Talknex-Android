@@ -118,7 +118,7 @@ def get_db():
 class TalknexAdminApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Talknex Adli Bilişim & Canlı Sohbet İzleme Paneli (WhatsApp Arayüzü) 🛡️")
+        self.title("Talknex Bilişim & Canlı Sohbet İzleme Paneli 🛡️")
         self.geometry("1400x860")
         self.minsize(1150, 720)
         self.configure(bg="#0B141A")
@@ -162,11 +162,11 @@ class TalknexAdminApp(tk.Tk):
         top_bar.pack(fill=tk.X, side=tk.TOP)
         top_bar.pack_propagate(False)
 
-        logo_lbl = tk.Label(top_bar, text="🟢 TALKNEX ADLİ BİLİŞİM & CANLI SOHBET İZLEME PANELİ",
+        logo_lbl = tk.Label(top_bar, text="🟢 TALKNEX BİLİŞİM & CANLI SOHBET İZLEME PANELİ",
                             bg="#202C33", fg="#00A884", font=("Segoe UI", 15, "bold"))
         logo_lbl.pack(side=tk.LEFT, pady=4)
 
-        tag_lbl = tk.Label(top_bar, text="WhatsApp / Telegram Tipi Adli Denetim (AES-256 E2EE Otomatik Çözücü)",
+        tag_lbl = tk.Label(top_bar, text="Talknex Denetim (AES-256 E2EE Otomatik Çözücü)",
                            bg="#202C33", fg="#8696A0", font=("Segoe UI", 10))
         tag_lbl.pack(side=tk.LEFT, padx=15, pady=6)
 
@@ -175,7 +175,7 @@ class TalknexAdminApp(tk.Tk):
                                 cursor="hand2", command=self.load_users)
         refresh_btn.pack(side=tk.RIGHT, padx=5)
 
-        export_btn = tk.Button(top_bar, text="📄 Resmi Rapor Al (TXT)", bg="#2A3942", fg="#00A884",
+        export_btn = tk.Button(top_bar, text="📄 Rapor Al (TXT)", bg="#2A3942", fg="#00A884",
                                font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=14, pady=5,
                                cursor="hand2", command=self.export_report)
         export_btn.pack(side=tk.RIGHT, padx=5)
@@ -585,7 +585,7 @@ class TalknexAdminApp(tk.Tk):
         u2_name = (u2.get("display_name") or u2.get("username")) if u2 else f"ID_{self.active_peer_id}"
 
         dest = filedialog.asksaveasfilename(
-            title="Adli Bilişim Sohbet Raporunu Kaydet",
+            title="Bilişim Sohbet Raporunu Kaydet",
             initialfile=f"Talknex_Sohbet_{u1_name}_ve_{u2_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
             defaultextension=".txt",
             filetypes=[("Metin Dosyası", "*.txt")],
