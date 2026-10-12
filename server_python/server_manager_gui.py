@@ -226,6 +226,15 @@ class ServerManagerGUI:
         time.sleep(0.5)
 
         # 1. Start Nginx
+        # Ensure C:\talknex_uploads junction exists to avoid Windows Unicode path issues
+        uploads_source = os.path.join(CURRENT_DIR, "uploads")
+        junction_path = r"C:\talknex_uploads"
+        if not os.path.exists(junction_path):
+            try:
+                subprocess.run(["powershell", "-Command", f"New-Item -ItemType Junction -Path '{junction_path}' -Target '{uploads_source}'"], capture_output=True)
+            except Exception:
+                pass
+
         nginx_dir = self.get_nginx_exe()
         if nginx_dir:
             nginx_exe = os.path.join(nginx_dir, "nginx.exe")
