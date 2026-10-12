@@ -5,6 +5,7 @@ import '../models/user_model.dart';
 import '../models/message_model.dart';
 import '../models/story_model.dart';
 import '../models/call_model.dart';
+import '../models/group_model.dart';
 import 'custom_auth_service.dart';
 import 'encryption_service.dart';
 
@@ -226,6 +227,183 @@ class CustomChatService {
       }
     } catch (e) {
       debugPrint('[CALL LOG] Error fetching logs: $e');
+    }
+    return [];
+  }
+
+  // --- GROUP API METHODS ---
+  Future<List<GroupModel>> getMyGroups(String userId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/groups/my/$userId'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        return data.map((json) => GroupModel.fromJson(json)).toList();
+      }
+    } catch (e) {
+      debugPrint('[GROUP] Error getting groups: $e');
+    }
+    return [];
+  }
+
+  Future<Map<String, dynamic>?> createGroup({
+    required String name,
+    required int createdBy,
+    required List<int> memberIds,
+    String photoUrl = '',
+    String description = '',
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/groups'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'name': name,
+          'createdBy': createdBy,
+          'memberIds': memberIds,
+          'photoUrl': photoUrl,
+          'description': description,
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        final err = jsonDecode(response.body);
+        return {'error': err['error'] ?? 'Grup oluşturulamadı'};
+      }
+    } catch (e) {
+      debugPrint('[GROUP] Create group error: $e');
+      return {'error': e.toString()};
+    }
+  }
+
+  Future<Map<String, dynamic>?> getGroupDetails(int groupId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/groups/$groupId'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      }
+    } catch (e) {
+      debugPrint('[GROUP] Get details error: $e');
+    }
+    return null;
+  }
+
+  Future<bool> updateGroupInfo({
+    required int groupId,
+    required int userId,
+    String? name,
+    String? photoUrl,
+    String? description,
+  }) async {
+    try {
+      final Map<String, dynamic> body = {'userId': userId};
+      if (name != null) body['name'] = name;
+      if (photoUrl != null) body['photoUrl'] = photoUrl;
+      if (description != null) body['description'] = description;
+
+      final response = await http.put(
+        Uri.parse('$baseUrl/groups/$groupId'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      ).timeout(const Duration(seconds: 10));
+
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('[GROUP] Update error: $e');
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> addGroupMembers({
+    required int groupId,
+    required int adminUserId,
+    required List<int> userIds,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/groups/$groupId/members'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'adminUserId': adminUserId,
+          'userIds': userIds,
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      return jsonDecode(response.body);
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  Future<bool> updateMemberRole({
+    required int groupId,
+    required int adminUserId,
+    required int targetUserId,
+    required String newRole,
+  }) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$baseUrl/groups/$groupId/members/role'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'adminUserId': adminUserId,
+          'targetUserId': targetUserId,
+          'newRole': newRole,
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<bool> removeGroupMember({
+    required int groupId,
+    required int targetUserId,
+    required int requesterId,
+  }) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('$baseUrl/groups/$groupId/members/$targetUserId?requesterId=$requesterId'),
+      ).timeout(const Duration(seconds: 10));
+
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<List<GroupMessageModel>> getGroupMessages(int groupId, String currentUserId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/groups/$groupId/messages?userId=$currentUserId'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        return data.map((json) {
+          final rawContent = json['content'] ?? '';
+          // Group messages decrypted
+          final decrypted = EndToEndEncryptionService.decryptText(
+            rawContent,
+            json['senderId'].toString(),
+            'group_$groupId',
+          );
+          final map = Map<String, dynamic>.from(json);
+          map['content'] = decrypted;
+          return GroupMessageModel.fromJson(map);
+        }).toList();
+      }
+    } catch (e) {
+      debugPrint('[GROUP] Get messages error: $e');
     }
     return [];
   }

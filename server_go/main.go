@@ -104,6 +104,41 @@ func initDB() {
 	} else {
 		log.Println("[OK] MariaDB Go yuksek performansli baglantisi hazir!")
 		_, _ = db.Exec("ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_by_users TEXT NULL AFTER is_deleted")
+		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS groups (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			name VARCHAR(150) NOT NULL,
+			photo_url TEXT NULL,
+			description TEXT NULL,
+			created_by INT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			INDEX (created_by)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS group_members (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			group_id INT NOT NULL,
+			user_id INT NOT NULL,
+			role VARCHAR(20) DEFAULT 'member',
+			joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE KEY unique_group_user (group_id, user_id),
+			INDEX (group_id),
+			INDEX (user_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS group_messages (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			group_id INT NOT NULL,
+			sender_id INT NOT NULL,
+			content TEXT NOT NULL,
+			message_type VARCHAR(50) DEFAULT 'text',
+			media_url TEXT NULL,
+			is_deleted TINYINT(1) DEFAULT 0,
+			deleted_by_users TEXT NULL,
+			is_edited TINYINT(1) DEFAULT 0,
+			original_content TEXT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			INDEX (group_id),
+			INDEX (sender_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
 	}
 }
 
@@ -633,6 +668,190 @@ func main() {
 							_ = other.Send("call_ended", gin.H{})
 						}
 						return true
+					})
+				}
+
+			case "send_group_message":
+				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))
+				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+				content := fmt.Sprintf("%v", data["content"])
+				msgType := fmt.Sprintf("%v", data["type"])
+				if msgType == "" || msgType == "<nil>" {
+					msgType = "text"
+				}
+				mediaURL := ""
+				if m, ok := data["mediaUrl"].(string); ok {
+					mediaURL = m
+				}
+				clientTempID := ""
+				if c, ok := data["clientTempId"].(string); ok {
+					clientTempID = c
+				}
+
+				if groupID == 0 || senderID == 0 || content == "" {
+					continue
+				}
+
+				// Check membership
+				var isMember int
+				_ = db.QueryRow("SELECT COUNT(*) FROM group_members WHERE group_id = ? AND user_id = ?", groupID, senderID).Scan(&isMember)
+				if isMember == 0 {
+					_ = client.Send("error", gin.H{"message": "Bu gruba mesaj gönderme yetkiniz yok."})
+					continue
+				}
+
+				res, err := db.Exec(
+					"INSERT INTO group_messages (group_id, sender_id, content, message_type, media_url) VALUES (?, ?, ?, ?, ?)",
+					groupID, senderID, content, msgType, mediaURL,
+				)
+				if err != nil {
+					log.Printf("[DB ERR send_group_message]: %v", err)
+					continue
+				}
+
+				msgID, _ := res.LastInsertId()
+
+				var senderName, senderPhoto string
+				_ = db.QueryRow("SELECT COALESCE(NULLIF(display_name, ''), username), COALESCE(photo_url, '') FROM users WHERE id = ?", senderID).Scan(&senderName, &senderPhoto)
+				if senderName == "" {
+					senderName = "Grup Üyesi"
+				}
+
+				var groupName string
+				_ = db.QueryRow("SELECT name FROM groups WHERE id = ?", groupID).Scan(&groupName)
+
+				savedGroupMsg := gin.H{
+					"id":           msgID,
+					"groupId":      groupID,
+					"clientTempId": clientTempID,
+					"senderId":     senderID,
+					"senderName":   senderName,
+					"senderPhoto":  senderPhoto,
+					"content":      content,
+					"type":         msgType,
+					"mediaUrl":     mediaURL,
+					"isDeleted":    false,
+					"isEdited":     false,
+					"timestamp":    time.Now().Format("2006-01-02 15:04:05"),
+				}
+
+				// Broadcast to all active group members
+				mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", groupID)
+				if mErr == nil {
+					for mRows.Next() {
+						var mUID int
+						_ = mRows.Scan(&mUID)
+						uidStr := strconv.Itoa(mUID)
+						if memVal, ok := wsClients.Load(uidStr); ok {
+							if memClient, ok := memVal.(*WSClient); ok {
+								_ = memClient.Send("receive_group_message", savedGroupMsg)
+							}
+						} else if mUID != senderID {
+							// Push notification to offline member
+							go func(targetID int) {
+								pushText := senderName + ": " + content
+								if msgType == "image" {
+									pushText = senderName + ": 📷 Fotoğraf"
+								} else if msgType == "video" {
+									pushText = senderName + ": 🎥 Video"
+								} else if msgType == "doc" {
+									pushText = senderName + ": 📄 Belge"
+								}
+								sendFCMPush(targetID, groupName, pushText, map[string]string{
+									"type":      "group_chat",
+									"groupId":   strconv.Itoa(groupID),
+									"groupName": groupName,
+									"messageId": strconv.FormatInt(msgID, 10),
+								})
+							}(mUID)
+						}
+					}
+					mRows.Close()
+				}
+				_ = client.Send("group_message_sent", savedGroupMsg)
+
+			case "delete_group_message":
+				msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))
+				deleteMode := fmt.Sprintf("%v", data["mode"]) // "everyone" or "me"
+				if deleteMode == "" || deleteMode == "<nil>" {
+					deleteMode = "everyone"
+				}
+
+				if msgID == 0 || groupID == 0 {
+					continue
+				}
+
+				currentUidStr := client.userID
+				currentUID, _ := strconv.Atoi(currentUidStr)
+
+				var msgSenderID int
+				var createdAt time.Time
+				var deletedBy sql.NullString
+				err := db.QueryRow("SELECT sender_id, created_at, deleted_by_users FROM group_messages WHERE id = ? AND group_id = ?", msgID, groupID).Scan(&msgSenderID, &createdAt, &deletedBy)
+				if err != nil {
+					continue
+				}
+
+				// Check role of requester in group
+				var userRole string
+				_ = db.QueryRow("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?", groupID, currentUID).Scan(&userRole)
+				isAdmin := userRole == "admin"
+				isSender := msgSenderID == currentUID
+
+				if deleteMode == "everyone" {
+					// Either admin can delete anyone's message anytime, OR sender can delete within 15 minutes!
+					canDelete := isAdmin || (isSender && time.Since(createdAt) <= 15*time.Minute)
+					if !canDelete {
+						_ = client.Send("error", gin.H{"message": "Mesajı herkesten silme yetkiniz yok (Yönetici olmalı veya kendi mesajınızı 15 dk içinde silmelisiniz)."})
+						continue
+					}
+
+					_, _ = db.Exec("UPDATE group_messages SET is_deleted = 1 WHERE id = ?", msgID)
+
+					payload := gin.H{
+						"messageId": strconv.Itoa(msgID),
+						"groupId":   strconv.Itoa(groupID),
+						"mode":      "everyone",
+					}
+
+					mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", groupID)
+					if mErr == nil {
+						for mRows.Next() {
+							var mUID int
+							_ = mRows.Scan(&mUID)
+							if memVal, ok := wsClients.Load(strconv.Itoa(mUID)); ok {
+								if memClient, ok := memVal.(*WSClient); ok {
+									_ = memClient.Send("group_message_deleted", payload)
+								}
+							}
+						}
+						mRows.Close()
+					}
+				} else {
+					// Delete for me
+					existingList := strings.Split(deletedBy.String, ",")
+					alreadyInList := false
+					for _, u := range existingList {
+						if strings.TrimSpace(u) == currentUidStr {
+							alreadyInList = true
+							break
+						}
+					}
+					newList := deletedBy.String
+					if !alreadyInList {
+						if newList == "" {
+							newList = currentUidStr
+						} else {
+							newList = newList + "," + currentUidStr
+						}
+						_, _ = db.Exec("UPDATE group_messages SET deleted_by_users = ? WHERE id = ?", newList, msgID)
+					}
+					_ = client.Send("group_message_deleted", gin.H{
+						"messageId": strconv.Itoa(msgID),
+						"groupId":   strconv.Itoa(groupID),
+						"mode":      "me",
+						"deletedBy": currentUidStr,
 					})
 				}
 			}
@@ -1198,6 +1417,357 @@ func main() {
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"hasPendingCall": false, "callData": nil})
+		})
+
+		// 11. GROUPS APIS
+		// A. Create Group (Creator is automatically admin, max 200 members check)
+		api.POST("/groups", func(c *gin.Context) {
+			var req struct {
+				Name        string `json:"name"`
+				PhotoUrl    string `json:"photoUrl"`
+				Description string `json:"description"`
+				CreatedBy   int    `json:"createdBy"`
+				MemberIds   []int  `json:"memberIds"` // Initial member IDs
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz grup bilgisi"})
+				return
+			}
+			if strings.TrimSpace(req.Name) == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Grup ismi bos olamaz"})
+				return
+			}
+
+			// Ensure unique member list including creator
+			uniqueMembers := make(map[int]bool)
+			uniqueMembers[req.CreatedBy] = true
+			for _, m := range req.MemberIds {
+				if m > 0 {
+					uniqueMembers[m] = true
+				}
+			}
+
+			if len(uniqueMembers) > 200 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Bir grupta en fazla 200 kisi olabilir!"})
+				return
+			}
+
+			res, err := db.Exec(
+				"INSERT INTO groups (name, photo_url, description, created_by) VALUES (?, ?, ?, ?)",
+				req.Name, req.PhotoUrl, req.Description, req.CreatedBy,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Grup olusturulamadi"})
+				return
+			}
+			gID, _ := res.LastInsertId()
+
+			// Add creator as admin
+			_, _ = db.Exec("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')", gID, req.CreatedBy)
+
+			// Add other members
+			for mUID := range uniqueMembers {
+				if mUID != req.CreatedBy {
+					_, _ = db.Exec("INSERT IGNORE INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')", gID, mUID)
+				}
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"status":      "success",
+				"groupId":     gID,
+				"name":        req.Name,
+				"memberCount": len(uniqueMembers),
+			})
+		})
+
+		// B. List Groups for a User
+		api.GET("/groups/my/:userId", func(c *gin.Context) {
+			uID := c.Param("userId")
+			rows, err := db.Query(
+				`SELECT g.id, g.name, COALESCE(g.photo_url, ''), COALESCE(g.description, ''), g.created_by, gm.role,
+				        (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count,
+				        COALESCE((SELECT content FROM group_messages WHERE group_id = g.id AND is_deleted = 0 ORDER BY id DESC LIMIT 1), '') AS last_msg,
+				        COALESCE((SELECT created_at FROM group_messages WHERE group_id = g.id AND is_deleted = 0 ORDER BY id DESC LIMIT 1), g.created_at) AS last_time
+				 FROM groups g
+				 JOIN group_members gm ON g.id = gm.group_id
+				 WHERE gm.user_id = ?
+				 ORDER BY last_time DESC`,
+				uID,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gruplar alinamadi"})
+				return
+			}
+			defer rows.Close()
+
+			var list []map[string]interface{}
+			for rows.Next() {
+				var gID, createdBy, memCount int
+				var gName, photoURL, desc, myRole, lastMsg string
+				var lastTime time.Time
+				_ = rows.Scan(&gID, &gName, &photoURL, &desc, &createdBy, &myRole, &memCount, &lastMsg, &lastTime)
+
+				list = append(list, map[string]interface{}{
+					"id":          gID,
+					"name":        gName,
+					"photoUrl":    photoURL,
+					"description": desc,
+					"createdBy":   createdBy,
+					"myRole":      myRole,
+					"memberCount": memCount,
+					"lastMessage": lastMsg,
+					"lastTime":    lastTime.Format("2006-01-02 15:04:05"),
+				})
+			}
+			c.JSON(http.StatusOK, list)
+		})
+
+		// C. Get Group Details & Members
+		api.GET("/groups/:groupId", func(c *gin.Context) {
+			gID := c.Param("groupId")
+			var id, createdBy int
+			var name, photoURL, desc string
+			var createdAt time.Time
+
+			err := db.QueryRow("SELECT id, name, COALESCE(photo_url, ''), COALESCE(description, ''), created_by, created_at FROM groups WHERE id = ?", gID).
+				Scan(&id, &name, &photoURL, &desc, &createdBy, &createdAt)
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Grup bulunamadi"})
+				return
+			}
+
+			// Members
+			mRows, mErr := db.Query(
+				`SELECT u.id, u.username, COALESCE(NULLIF(u.display_name, ''), u.username) AS display_name,
+				        COALESCE(u.photo_url, ''), COALESCE(u.phone_number, ''), gm.role, gm.joined_at
+				 FROM group_members gm
+				 JOIN users u ON gm.user_id = u.id
+				 WHERE gm.group_id = ?
+				 ORDER BY CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END, u.display_name ASC`,
+				gID,
+			)
+			var members []map[string]interface{}
+			if mErr == nil {
+				for mRows.Next() {
+					var uID int
+					var uname, dname, uPic, phone, role string
+					var jAt time.Time
+					_ = mRows.Scan(&uID, &uname, &dname, &uPic, &phone, &role, &jAt)
+					members = append(members, map[string]interface{}{
+						"userId":      uID,
+						"username":    uname,
+						"displayName": dname,
+						"photoUrl":    uPic,
+						"phoneNumber": phone,
+						"role":        role,
+						"joinedAt":    jAt.Format("2006-01-02 15:04:05"),
+					})
+				}
+				mRows.Close()
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"id":          id,
+				"name":        name,
+				"photoUrl":    photoURL,
+				"description": desc,
+				"createdBy":   createdBy,
+				"createdAt":   createdAt.Format("2006-01-02 15:04:05"),
+				"members":     members,
+				"memberCount": len(members),
+			})
+		})
+
+		// D. Update Group Info / Photo (Only admin allowed)
+		api.PUT("/groups/:groupId", func(c *gin.Context) {
+			gID := c.Param("groupId")
+			var req struct {
+				UserId      int     `json:"userId"` // Requester user ID
+				Name        *string `json:"name"`
+				PhotoUrl    *string `json:"photoUrl"`
+				Description *string `json:"description"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz istek"})
+				return
+			}
+
+			var role string
+			err := db.QueryRow("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?", gID, req.UserId).Scan(&role)
+			if err != nil || role != "admin" {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Bu islemi sadece grup yoneticisi yapabilir!"})
+				return
+			}
+
+			if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
+				_, _ = db.Exec("UPDATE groups SET name = ? WHERE id = ?", strings.TrimSpace(*req.Name), gID)
+			}
+			if req.PhotoUrl != nil {
+				_, _ = db.Exec("UPDATE groups SET photo_url = ? WHERE id = ?", *req.PhotoUrl, gID)
+			}
+			if req.Description != nil {
+				_, _ = db.Exec("UPDATE groups SET description = ? WHERE id = ?", *req.Description, gID)
+			}
+
+			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Grup bilgileri güncellendi"})
+		})
+
+		// E. Add Member(s) to Group (Only admin allowed, max 200 limit enforced)
+		api.POST("/groups/:groupId/members", func(c *gin.Context) {
+			gID := c.Param("groupId")
+			var req struct {
+				AdminUserId int   `json:"adminUserId"`
+				UserIds     []int `json:"userIds"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz istek"})
+				return
+			}
+
+			var role string
+			err := db.QueryRow("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?", gID, req.AdminUserId).Scan(&role)
+			if err != nil || role != "admin" {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Sadece grup yoneticisi uye ekleyebilir!"})
+				return
+			}
+
+			var currentCount int
+			_ = db.QueryRow("SELECT COUNT(*) FROM group_members WHERE group_id = ?", gID).Scan(&currentCount)
+
+			addedCount := 0
+			for _, newUID := range req.UserIds {
+				if currentCount+addedCount >= 200 {
+					break
+				}
+				res, insErr := db.Exec("INSERT IGNORE INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')", gID, newUID)
+				if insErr == nil {
+					aff, _ := res.RowsAffected()
+					if aff > 0 {
+						addedCount++
+					}
+				}
+			}
+
+			if currentCount+addedCount >= 200 && len(req.UserIds) > addedCount {
+				c.JSON(http.StatusOK, gin.H{
+					"status":  "partial",
+					"message": "Grup limiti (en fazla 200 kişi) dolduğu için kalan üyeler eklenemedi.",
+					"added":   addedCount,
+				})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"status": "success", "added": addedCount})
+		})
+
+		// F. Update Member Role (Promote to Admin or Demote to Member, only admin allowed)
+		api.PUT("/groups/:groupId/members/role", func(c *gin.Context) {
+			gID := c.Param("groupId")
+			var req struct {
+				AdminUserId  int    `json:"adminUserId"`
+				TargetUserId int    `json:"targetUserId"`
+				NewRole      string `json:"newRole"` // 'admin' or 'member'
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz istek"})
+				return
+			}
+
+			var role string
+			err := db.QueryRow("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?", gID, req.AdminUserId).Scan(&role)
+			if err != nil || role != "admin" {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Sadece yonetici uye rollerini degistirebilir!"})
+				return
+			}
+
+			if req.NewRole != "admin" && req.NewRole != "member" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz rol (admin veya member olmali)"})
+				return
+			}
+
+			_, _ = db.Exec("UPDATE group_members SET role = ? WHERE group_id = ? AND user_id = ?", req.NewRole, gID, req.TargetUserId)
+			c.JSON(http.StatusOK, gin.H{"status": "success", "newRole": req.NewRole})
+		})
+
+		// G. Remove Member or Leave Group
+		api.DELETE("/groups/:groupId/members/:userId", func(c *gin.Context) {
+			gID := c.Param("groupId")
+			targetUID := c.Param("userId")
+			reqUID := c.DefaultQuery("requesterId", targetUID)
+
+			// If removing someone else, requester must be admin
+			if reqUID != targetUID {
+				var role string
+				err := db.QueryRow("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?", gID, reqUID).Scan(&role)
+				if err != nil || role != "admin" {
+					c.JSON(http.StatusForbidden, gin.H{"error": "Baska bir uyeyi yalnizca yonetici gruptan cikarabilir!"})
+					return
+				}
+			}
+
+			_, _ = db.Exec("DELETE FROM group_members WHERE group_id = ? AND user_id = ?", gID, targetUID)
+			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Uye gruptan ayrildi"})
+		})
+
+		// H. Get Group Messages (Filtered by deleted_by_users)
+		api.GET("/groups/:groupId/messages", func(c *gin.Context) {
+			gID := c.Param("groupId")
+			currUID := c.DefaultQuery("userId", "0")
+
+			rows, err := db.Query(
+				`SELECT gm.id, gm.group_id, gm.sender_id, gm.content, gm.message_type, gm.media_url,
+				        gm.is_deleted, gm.deleted_by_users, gm.is_edited, gm.created_at,
+				        COALESCE(NULLIF(u.display_name, ''), u.username) AS sender_name,
+				        COALESCE(u.photo_url, '') AS sender_photo
+				 FROM group_messages gm
+				 JOIN users u ON gm.sender_id = u.id
+				 WHERE gm.group_id = ?
+				 ORDER BY gm.created_at ASC`,
+				gID,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Grup mesajlari alinamadi"})
+				return
+			}
+			defer rows.Close()
+
+			var msgs []map[string]interface{}
+			for rows.Next() {
+				var id, gIDVal, sID, isDel, isEd int
+				var content, mType, sName, sPic string
+				var mURL, delByUsers sql.NullString
+				var cAt time.Time
+
+				_ = rows.Scan(&id, &gIDVal, &sID, &content, &mType, &mURL, &isDel, &delByUsers, &isEd, &cAt, &sName, &sPic)
+
+				if delByUsers.Valid && delByUsers.String != "" {
+					hiddenForMe := false
+					for _, u := range strings.Split(delByUsers.String, ",") {
+						if strings.TrimSpace(u) == currUID {
+							hiddenForMe = true
+							break
+						}
+					}
+					if hiddenForMe {
+						continue
+					}
+				}
+
+				msgs = append(msgs, map[string]interface{}{
+					"id":          id,
+					"groupId":     gIDVal,
+					"senderId":    sID,
+					"senderName":  sName,
+					"senderPhoto": sPic,
+					"content":     content,
+					"type":        mType,
+					"mediaUrl":    mURL.String,
+					"isDeleted":   isDel == 1,
+					"isEdited":    isEd == 1,
+					"timestamp":   cAt.Format("2006-01-02 15:04:05"),
+				})
+			}
+			c.JSON(http.StatusOK, msgs)
 		})
 	}
 

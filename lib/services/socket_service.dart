@@ -19,6 +19,9 @@ typedef OnLiveLocationStopped = void Function(Map<String, dynamic> data);
 typedef OnMessageDeleted = void Function(String messageId, [String mode]);
 typedef OnMessageEdited = void Function(String messageId, String newContent);
 typedef OnMessageSent = void Function(String tempId, String realId);
+typedef OnGroupMessageReceived = void Function(Map<String, dynamic> data);
+typedef OnGroupMessageDeleted = void Function(String messageId, String groupId, [String mode]);
+typedef OnGroupMessageSent = void Function(String tempId, String realId, String groupId);
 
 class SocketService {
   static final SocketService _instance = SocketService._internal();
@@ -46,6 +49,9 @@ class SocketService {
   OnMessageDeleted? onMessageDeleted;
   OnMessageEdited? onMessageEdited;
   OnMessageSent? onMessageSent;
+  OnGroupMessageReceived? onGroupMessageReceived;
+  OnGroupMessageDeleted? onGroupMessageDeleted;
+  OnGroupMessageSent? onGroupMessageSent;
 
   // Initialize and connect native WebSocket to Go backend (Port 3000 -> Nginx -> Go)
   void initSocket(String userId) {
@@ -271,6 +277,32 @@ class SocketService {
             }
           }
           break;
+
+        case 'receive_group_message':
+          if (onGroupMessageReceived != null && data is Map<String, dynamic>) {
+            onGroupMessageReceived!(Map<String, dynamic>.from(data));
+          }
+          break;
+
+        case 'group_message_deleted':
+          if (onGroupMessageDeleted != null && data is Map<String, dynamic>) {
+            final msgId = data['messageId']?.toString() ?? '';
+            final gId = data['groupId']?.toString() ?? '';
+            final mode = data['mode']?.toString() ?? 'everyone';
+            onGroupMessageDeleted!(msgId, gId, mode);
+          }
+          break;
+
+        case 'group_message_sent':
+          if (onGroupMessageSent != null && data is Map<String, dynamic>) {
+            final tempId = data['clientTempId']?.toString() ?? '';
+            final realId = data['id']?.toString() ?? '';
+            final gId = data['groupId']?.toString() ?? '';
+            if (tempId.isNotEmpty && realId.isNotEmpty) {
+              onGroupMessageSent!(tempId, realId, gId);
+            }
+          }
+          break;
       }
     } catch (e) {
       debugPrint('[GORILLA WS] Parse error: $e');
@@ -424,6 +456,38 @@ class SocketService {
       'senderId': senderId,
       'receiverId': receiverId,
       'newContent': newContent,
+    });
+  }
+
+  // Send group message
+  void sendGroupMessage({
+    required int groupId,
+    required String senderId,
+    required String content,
+    String type = 'text',
+    String? mediaUrl,
+    String? clientTempId,
+  }) {
+    _emit('send_group_message', {
+      'groupId': groupId,
+      'senderId': senderId,
+      'content': content,
+      'type': type,
+      'mediaUrl': mediaUrl ?? '',
+      'clientTempId': clientTempId ?? '',
+    });
+  }
+
+  // Delete group message (everyone or me)
+  void deleteGroupMessage({
+    required String messageId,
+    required int groupId,
+    String mode = 'everyone',
+  }) {
+    _emit('delete_group_message', {
+      'messageId': messageId,
+      'groupId': groupId,
+      'mode': mode,
     });
   }
 

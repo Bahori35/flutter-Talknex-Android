@@ -15,11 +15,14 @@ import '../../services/custom_auth_service.dart';
 import '../../services/custom_chat_service.dart';
 import '../../services/socket_service.dart';
 import '../../services/notification_service.dart';
+import '../../models/group_model.dart';
 import '../chat/chat_screen.dart';
 import '../call/call_screen.dart';
 import '../profile/profile_screen.dart';
 import '../story/story_view_screen.dart';
 import '../story/add_story_screen.dart';
+import '../group/create_group_screen.dart';
+import '../group/group_chat_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -51,6 +54,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   // Call Logs state
   List<CallModel> _callLogs = [];
   bool _isLoadingCalls = true;
+
+  // Groups state
+  List<GroupModel> _groups = [];
+  bool _isLoadingGroups = true;
 
   @override
   void initState() {
@@ -112,11 +119,33 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _loadUsers();
         _loadStories();
         _loadCallLogs();
+        _loadGroups();
 
         // Check if there is an incoming call waiting for us (e.g. app was launched from notification)
         _checkPendingIncomingCall(currentUser);
       }
     });
+  }
+
+  void _loadGroups() async {
+    try {
+      final authService = Provider.of<CustomAuthService>(context, listen: false);
+      final currentUser = authService.currentUser;
+      if (currentUser != null) {
+        final groups = await _chatService.getMyGroups(currentUser.uid);
+        if (mounted) {
+          setState(() {
+            _groups = groups;
+            _isLoadingGroups = false;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('[HOME] Groups load error: $e');
+      if (mounted) {
+        setState(() => _isLoadingGroups = false);
+      }
+    }
   }
 
   void _loadCallLogs() async {
@@ -569,11 +598,38 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   context,
                   MaterialPageRoute(builder: (_) => const ProfileScreen()),
                 );
+              } else if (val == 'new_group') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CreateGroupScreen(
+                      currentUser: currentUser,
+                      contacts: _phoneContacts,
+                    ),
+                  ),
+                ).then((created) {
+                  if (created == true) {
+                    _loadGroups();
+                  }
+                });
               } else if (val == 'logout') {
                 authService.signOut();
               }
             },
             itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'new_group',
+                child: Row(
+                  children: [
+                    Icon(Icons.group_add_rounded, color: AppColors.accent, size: 20),
+                    SizedBox(width: 12),
+                    Text(
+                      'Yeni Grup Kur',
+                      style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
               PopupMenuItem(
                 value: 'profile',
                 child: Row(
@@ -1158,57 +1214,226 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
           ),
 
-        // Chat List Cards
+        // Chat & Group List Cards
         Expanded(
-          child: filteredUsers.isEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24.0),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
+          child: RefreshIndicator(
+            color: AppColors.primaryLight,
+            onRefresh: () async {
+              _loadUsers();
+              _loadGroups();
+            },
+            child: ListView(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              children: [
+                // 1. GROUPS SECTION
+                if (_groups.isNotEmpty) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 4, 18, 6),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Container(
-                          width: 80,
-                          height: 80,
-                          decoration: BoxDecoration(
-                            color: AppColors.surface,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: AppColors.cardBorder),
+                        Text(
+                          'Gruplar (${_groups.length})',
+                          style: const TextStyle(
+                            color: AppColors.textSecondary,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
                           ),
-                          child: const Icon(Icons.chat_bubble_outline_rounded, size: 40, color: AppColors.textMuted),
                         ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Sohbet Bulunamadı',
-                          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Rehberinizdeki kayıtlı kişilerle anında güvenli sohbet başlatabilirsiniz.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: AppColors.textSecondary, fontSize: 13, height: 1.4),
-                        ),
-                        const SizedBox(height: 16),
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        InkWell(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => CreateGroupScreen(
+                                  currentUser: currentUser,
+                                  contacts: _phoneContacts,
+                                ),
+                              ),
+                            ).then((created) {
+                              if (created == true) _loadGroups();
+                            });
+                          },
+                          child: const Text(
+                            '+ Yeni Grup',
+                            style: TextStyle(
+                              color: AppColors.accent,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                          onPressed: () => _syncDeviceContacts(silent: false),
-                          icon: const Icon(Icons.sync_rounded),
-                          label: const Text('Rehberi Yenile'),
                         ),
                       ],
                     ),
                   ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemCount: filteredUsers.length,
-                  itemBuilder: (context, index) {
-                    final user = filteredUsers[index];
+                  ..._groups.map((group) {
+                    return Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: AppColors.primaryLight.withOpacity(0.2)),
+                      ),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                        leading: CircleAvatar(
+                          radius: 26,
+                          backgroundColor: AppColors.surfaceLight,
+                          backgroundImage: group.photoUrl.isNotEmpty
+                              ? CachedNetworkImageProvider(group.photoUrl)
+                              : null,
+                          child: group.photoUrl.isEmpty
+                              ? const Icon(Icons.group_rounded, color: AppColors.accent, size: 28)
+                              : null,
+                        ),
+                        title: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                group.name,
+                                style: const TextStyle(
+                                  color: AppColors.textPrimary,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 15,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (group.isAdmin)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.accent.withOpacity(0.18),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  'Yönetici',
+                                  style: TextStyle(color: AppColors.accent, fontSize: 10, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                          ],
+                        ),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 2.0),
+                          child: Text(
+                            group.lastMessage.isNotEmpty
+                                ? group.lastMessage
+                                : '${group.memberCount} üye • Grup sohbetine dokunun',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: group.lastMessage.isNotEmpty ? AppColors.textPrimary : AppColors.textSecondary,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                        ),
+                        trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.textSecondary, size: 22),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => GroupChatScreen(group: group, currentUser: currentUser),
+                            ),
+                          ).then((_) => _loadGroups());
+                        },
+                      ),
+                    );
+                  }),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                    child: Divider(color: AppColors.cardBorder),
+                  ),
+                ],
+
+                // 2. DIRECT CHATS SECTION
+                if (filteredUsers.isNotEmpty && _groups.isNotEmpty)
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(18, 2, 18, 6),
+                    child: Text(
+                      'Birebir Sohbetler',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+
+                if (filteredUsers.isEmpty && _groups.isEmpty)
+                  Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24.0),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 80,
+                            height: 80,
+                            decoration: BoxDecoration(
+                              color: AppColors.surface,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: AppColors.cardBorder),
+                            ),
+                            child: const Icon(Icons.chat_bubble_outline_rounded, size: 40, color: AppColors.textMuted),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'Sohbet Bulunamadı',
+                            style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Rehberinizdeki kayıtlı kişilerle veya yeni grup kurarak sohbete başlayabilirsiniz.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: AppColors.textSecondary, fontSize: 13, height: 1.4),
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                ),
+                                onPressed: () => _syncDeviceContacts(silent: false),
+                                icon: const Icon(Icons.sync_rounded, size: 18),
+                                label: const Text('Rehberi Yenile'),
+                              ),
+                              const SizedBox(width: 12),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.accent,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                ),
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => CreateGroupScreen(
+                                        currentUser: currentUser,
+                                        contacts: _phoneContacts,
+                                      ),
+                                    ),
+                                  ).then((created) {
+                                    if (created == true) _loadGroups();
+                                  });
+                                },
+                                icon: const Icon(Icons.group_add_rounded, size: 18),
+                                label: const Text('Grup Kur'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  ...filteredUsers.map((user) {
                     return Container(
                       margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                       decoration: BoxDecoration(
@@ -1296,8 +1521,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         },
                       ),
                     );
-                  },
-                ),
+                  }),
+              ],
+            ),
+          ),
         ),
       ],
     );
