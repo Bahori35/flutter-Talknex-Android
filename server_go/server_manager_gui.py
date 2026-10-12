@@ -328,14 +328,16 @@ class ServerManagerGUI:
     def kill_ports_and_processes(self):
         # Kill nginx
         subprocess.run(["taskkill", "/F", "/IM", "nginx.exe"], capture_output=True)
-        # Kill whatever uses port 3001
+        # Kill whatever uses port 3001 and 3000
         for proc in psutil.process_iter(['pid', 'name']):
             try:
-                for conn in proc.connections(kind='inet'):
-                    if conn.laddr.port in (3001, 3000):
+                # Use net_connections if available (psutil deprecation update)
+                conns = proc.net_connections(kind='inet') if hasattr(proc, 'net_connections') else proc.connections(kind='inet')
+                for conn in conns:
+                    if conn.laddr and conn.laddr.port in (3001, 3000):
                         if proc.name().lower() not in ("nginx.exe", "system"):
                             proc.kill()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
                 pass
 
     def start_server(self):
@@ -423,10 +425,21 @@ class ServerManagerGUI:
 
             # Start reading logs
             def stream_logs():
-                for line in iter(self.server_process.stdout.readline, ''):
-                    if line:
-                        self.log(line.strip())
-                self.server_process.stdout.close()
+                proc = self.server_process
+                if not proc or not proc.stdout:
+                    return
+                try:
+                    for line in iter(proc.stdout.readline, ''):
+                        if line:
+                            self.log(line.strip())
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if proc.stdout:
+                            proc.stdout.close()
+                    except Exception:
+                        pass
                 self.is_running = False
                 self.root.after(0, self._on_process_exit)
 
@@ -449,20 +462,22 @@ class ServerManagerGUI:
             return
 
         self.log("[SİSTEM] Sunucu durduruluyor...")
-        if self.server_process:
+        proc = self.server_process
+        self.server_process = None
+        self.is_running = False
+
+        if proc:
             try:
-                self.server_process.terminate()
+                proc.terminate()
             except Exception:
                 pass
-            self.server_process = None
 
         self.kill_ports_and_processes()
-        self.is_running = False
         self.status_badge.config(text="● DURDURULDU", fg=ACCENT_RED)
         self.btn_start.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
         self.rebuild_core_widgets(0)
-        self.log("[OK] Nginx ve Python Uvicorn tamamen durduruldu.")
+        self.log("[OK] Nginx ve Go Server tamamen durduruldu.")
 
     def restart_server(self):
         self.log("[SİSTEM] Sunucu yeniden başlatılıyor...")
