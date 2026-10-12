@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,8 +72,8 @@ func initDB() {
 		log.Fatalf("[DB HATA] Veritabani baglantisi acilamadi: %v", dbErr)
 	}
 
-	db.SetMaxOpenConns(500)
-	db.SetMaxIdleConns(50)
+	db.SetMaxOpenConns(1000)
+	db.SetMaxIdleConns(100)
 	db.SetConnMaxLifetime(time.Hour)
 
 	if pingErr := db.Ping(); pingErr != nil {
@@ -176,10 +177,13 @@ func main() {
 	initDB()
 	initFirebase()
 
-	// Ensure uploads directory exists
-	exeDir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
-	uploadDir = filepath.Join(exeDir, "uploads")
-	_ = os.MkdirAll(uploadDir, os.ModePerm)
+	// Ensure uploads directory exists (use C:\talknex_uploads if available to avoid Windows unicode path issues)
+	uploadDir = `C:\talknex_uploads`
+	if fi, err := os.Stat(uploadDir); err != nil || !fi.IsDir() {
+		exeDir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
+		uploadDir = filepath.Join(exeDir, "uploads")
+		_ = os.MkdirAll(uploadDir, os.ModePerm)
+	}
 
 	// --- SETUP SOCKET.IO SERVER ---
 	server := socketio.NewServer(nil)
@@ -312,6 +316,7 @@ func main() {
 			"messageId":  msgID,
 			"senderId":   senderID,
 			"receiverId": receiverID,
+			"content":    newContent,
 			"newContent": newContent,
 			"isEdited":   true,
 		}
@@ -348,6 +353,68 @@ func main() {
 			}
 		}
 		s.Emit("message_deleted", payload)
+	})
+
+	server.OnEvent("/", "message_delivered", func(s socketio.Conn, data map[string]interface{}) {
+		senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+		receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
+		msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+
+		if msgID > 0 {
+			_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE id = ?", msgID)
+		} else if senderID > 0 && receiverID > 0 {
+			_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE sender_id = ? AND receiver_id = ?", senderID, receiverID)
+		}
+
+		if sVal, ok := activeSockets.Load(strconv.Itoa(senderID)); ok {
+			if sConn, ok := sVal.(socketio.Conn); ok {
+				sConn.Emit("messages_delivered", map[string]interface{}{
+					"senderId":   strconv.Itoa(senderID),
+					"receiverId": strconv.Itoa(receiverID),
+					"messageId":  msgID,
+				})
+			}
+		}
+	})
+
+	server.OnEvent("/", "message_read", func(s socketio.Conn, data map[string]interface{}) {
+		senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+		receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
+		msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+
+		if msgID > 0 {
+			_, _ = db.Exec("UPDATE messages SET is_delivered = 1, is_read = 1 WHERE id = ?", msgID)
+		} else if senderID > 0 && receiverID > 0 {
+			_, _ = db.Exec("UPDATE messages SET is_delivered = 1, is_read = 1 WHERE sender_id = ? AND receiver_id = ?", senderID, receiverID)
+		}
+
+		if sVal, ok := activeSockets.Load(strconv.Itoa(senderID)); ok {
+			if sConn, ok := sVal.(socketio.Conn); ok {
+				sConn.Emit("messages_read", map[string]interface{}{
+					"senderId":   strconv.Itoa(senderID),
+					"receiverId": strconv.Itoa(receiverID),
+					"messageId":  msgID,
+				})
+			}
+		}
+	})
+
+	server.OnEvent("/", "live_location_update", func(s socketio.Conn, data map[string]interface{}) {
+		receiverID := fmt.Sprintf("%v", data["receiverId"])
+		if rVal, ok := activeSockets.Load(receiverID); ok {
+			if rConn, ok := rVal.(socketio.Conn); ok {
+				rConn.Emit("live_location_received", data)
+			}
+		}
+	})
+
+	server.OnEvent("/", "stop_live_location", func(s socketio.Conn, data map[string]interface{}) {
+		receiverID := fmt.Sprintf("%v", data["receiverId"])
+		if rVal, ok := activeSockets.Load(receiverID); ok {
+			if rConn, ok := rVal.(socketio.Conn); ok {
+				rConn.Emit("live_location_stopped", data)
+			}
+		}
 	})
 
 	server.OnEvent("/", "call_user", func(s socketio.Conn, data map[string]interface{}) {
@@ -479,7 +546,8 @@ func main() {
 	// REST API Routes
 	api := router.Group("/api")
 	{
-		api.POST("/register", func(c *gin.Context) {
+		// 1. Auth Register
+		handleRegister := func(c *gin.Context) {
 			var req struct {
 				Username    string `json:"username"`
 				Password    string `json:"password"`
@@ -491,30 +559,43 @@ func main() {
 				return
 			}
 
+			cleanUsername := strings.ToLower(strings.TrimSpace(req.Username))
+			displayName := strings.TrimSpace(req.DisplayName)
+			if displayName == "" {
+				displayName = cleanUsername
+			}
+			photoURL := fmt.Sprintf("https://ui-avatars.com/api/?name=%s&background=075E54&color=fff", displayName)
+			phone := strings.TrimSpace(req.PhoneNumber)
+
 			hash := hashPassword(req.Password)
 			res, err := db.Exec(
-				"INSERT INTO users (username, display_name, password_hash, phone_number) VALUES (?, ?, ?, ?)",
-				req.Username, req.DisplayName, hash, req.PhoneNumber,
+				"INSERT INTO users (username, display_name, password_hash, photo_url, phone_number, is_online) VALUES (?, ?, ?, ?, ?, 1)",
+				cleanUsername, displayName, hash, photoURL, phone,
 			)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Kullanici adi zaten alinmis"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Bu kullanıcı adı zaten alınmış."})
 				return
 			}
 			id, _ := res.LastInsertId()
-			token := generateJWT(int(id), req.Username)
+			token := generateJWT(int(id), cleanUsername)
 			c.JSON(http.StatusOK, gin.H{
-				"status": "success",
-				"token":  token,
+				"message": "Kayıt başarılı.",
+				"token":   token,
 				"user": gin.H{
 					"id":          id,
-					"username":    req.Username,
-					"displayName": req.DisplayName,
-					"phoneNumber": req.PhoneNumber,
+					"username":    cleanUsername,
+					"displayName": displayName,
+					"photoUrl":    photoURL,
+					"phoneNumber": phone,
+					"isOnline":    true,
 				},
 			})
-		})
+		}
+		api.POST("/register", handleRegister)
+		api.POST("/auth/register", handleRegister)
 
-		api.POST("/login", func(c *gin.Context) {
+		// 2. Auth Login
+		handleLogin := func(c *gin.Context) {
 			var req struct {
 				Username string `json:"username"`
 				Password string `json:"password"`
@@ -524,30 +605,66 @@ func main() {
 				return
 			}
 
+			cleanUsername := strings.ToLower(strings.TrimSpace(req.Username))
 			var id int
 			var pwdHash, displayName, photoURL, phone, status string
-			err := db.QueryRow("SELECT id, password_hash, display_name, photo_url, phone_number, status FROM users WHERE username = ?", req.Username).
+			err := db.QueryRow("SELECT id, password_hash, display_name, photo_url, phone_number, status FROM users WHERE username = ?", cleanUsername).
 				Scan(&id, &pwdHash, &displayName, &photoURL, &phone, &status)
 			if err != nil || !checkPassword(req.Password, pwdHash) {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Kullanici adi veya sifre hatali"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Kullanıcı adı veya şifre hatalı."})
 				return
 			}
 
-			token := generateJWT(id, req.Username)
+			_, _ = db.Exec("UPDATE users SET is_online = 1 WHERE id = ?", id)
+			token := generateJWT(id, cleanUsername)
 			c.JSON(http.StatusOK, gin.H{
-				"status": "success",
-				"token":  token,
+				"message": "Giriş başarılı.",
+				"token":   token,
 				"user": gin.H{
 					"id":          id,
-					"username":    req.Username,
+					"username":    cleanUsername,
 					"displayName": displayName,
 					"photoUrl":    photoURL,
 					"phoneNumber": phone,
 					"status":      status,
+					"isOnline":    true,
 				},
 			})
+		}
+		api.POST("/login", handleLogin)
+		api.POST("/auth/login", handleLogin)
+
+		// 3. User Profile Update
+		api.POST("/users/profile", func(c *gin.Context) {
+			var req struct {
+				UserId      int    `json:"userId"`
+				DisplayName string `json:"displayName"`
+				PhotoUrl    string `json:"photoUrl"`
+				Status      string `json:"status"`
+				PhoneNumber string `json:"phoneNumber"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz istek"})
+				return
+			}
+			_, _ = db.Exec("UPDATE users SET display_name = ?, photo_url = ?, status = ?, phone_number = ? WHERE id = ?",
+				req.DisplayName, req.PhotoUrl, req.Status, req.PhoneNumber, req.UserId)
+
+			var u struct {
+				ID          int    `json:"id"`
+				Username    string `json:"username"`
+				DisplayName string `json:"displayName"`
+				PhotoUrl    string `json:"photoUrl"`
+				PhoneNumber string `json:"phoneNumber"`
+				Status      string `json:"status"`
+			}
+			_ = db.QueryRow("SELECT id, username, display_name, photo_url, phone_number, status FROM users WHERE id = ?", req.UserId).
+				Scan(&u.ID, &u.Username, &u.DisplayName, &u.PhotoUrl, &u.PhoneNumber, &u.Status)
+
+			c.JSON(http.StatusOK, gin.H{"status": "success", "user": u})
 		})
 
+		// 4. File Upload (Photos, Encrypted Videos, Docs)
 		api.POST("/upload", func(c *gin.Context) {
 			file, header, err := c.Request.FormFile("file")
 			if err != nil {
@@ -579,6 +696,7 @@ func main() {
 			})
 		})
 
+		// 5. FCM Token Registration
 		api.POST("/users/fcm-token", func(c *gin.Context) {
 			var req struct {
 				UserId   int    `json:"userId"`
@@ -590,6 +708,355 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"status": "success"})
 		})
 
+		// 6. Contact Syncing + Previously Messaged Partners
+		api.POST("/users/sync-contacts", func(c *gin.Context) {
+			var req struct {
+				UserId   int `json:"userId"`
+				Contacts []struct {
+					Phone string `json:"phone"`
+					Name  string `json:"name"`
+				} `json:"contacts"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz istek"})
+				return
+			}
+
+			normalizedMap := make(map[string]string)
+			for _, entry := range req.Contacts {
+				norm := normalizePhone(entry.Phone)
+				if norm != "" {
+					normalizedMap[norm] = strings.TrimSpace(entry.Name)
+				}
+			}
+
+			// Find previous chat partners
+			chatPartners := make(map[int]bool)
+			pRows, pErr := db.Query(
+				"SELECT DISTINCT CASE WHEN sender_id = ? THEN receiver_id ELSE sender_id END AS partner_id FROM messages WHERE sender_id = ? OR receiver_id = ?",
+				req.UserId, req.UserId, req.UserId,
+			)
+			if pErr == nil {
+				for pRows.Next() {
+					var pid int
+					if err := pRows.Scan(&pid); err == nil && pid > 0 {
+						chatPartners[pid] = true
+					}
+				}
+				pRows.Close()
+			}
+
+			// Query all other users
+			uRows, err := db.Query(
+				"SELECT id, username, display_name, photo_url, phone_number, status, is_online, last_seen FROM users WHERE id != ?",
+				req.UserId,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Kullanicilar yuklenemedi"})
+				return
+			}
+			defer uRows.Close()
+
+			type UserItem struct {
+				ID          int    `json:"id"`
+				Username    string `json:"username"`
+				DisplayName string `json:"displayName"`
+				PhotoUrl    string `json:"photoUrl"`
+				PhoneNumber string `json:"phoneNumber"`
+				Status      string `json:"status"`
+				IsOnline    bool   `json:"isOnline"`
+				LastSeen    string `json:"lastSeen"`
+			}
+
+			var matched []UserItem
+			added := make(map[int]bool)
+
+			for uRows.Next() {
+				var u UserItem
+				var dName, pUrl, pNum, st, lSeen sql.NullString
+				var isOnline int
+				_ = uRows.Scan(&u.ID, &u.Username, &dName, &pUrl, &pNum, &st, &isOnline, &lSeen)
+				u.DisplayName = dName.String
+				u.PhotoUrl = pUrl.String
+				u.PhoneNumber = pNum.String
+				u.Status = st.String
+				u.LastSeen = lSeen.String
+
+				// Check online in memory
+				_, u.IsOnline = activeSockets.Load(strconv.Itoa(u.ID))
+
+				userNorm := normalizePhone(u.PhoneNumber)
+				localName, inContacts := normalizedMap[userNorm]
+				inHistory := chatPartners[u.ID]
+
+				if inContacts || inHistory {
+					if inContacts && localName != "" {
+						u.DisplayName = localName
+					} else if u.DisplayName == "" {
+						if u.PhoneNumber != "" {
+							u.DisplayName = u.PhoneNumber
+						} else {
+							u.DisplayName = u.Username
+						}
+					}
+					if !added[u.ID] {
+						matched = append(matched, u)
+						added[u.ID] = true
+					}
+				}
+			}
+
+			c.JSON(http.StatusOK, matched)
+		})
+
+		// 7. Get Messages Between Two Users
+		api.GET("/messages/:user1/:user2", func(c *gin.Context) {
+			user1 := c.Param("user1")
+			user2 := c.Param("user2")
+
+			rows, err := db.Query(
+				`SELECT id, sender_id, receiver_id, content, message_type, is_delivered, is_read, 
+				        media_url, is_deleted, is_edited, original_content, created_at 
+				 FROM messages 
+				 WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) 
+				 ORDER BY created_at ASC`,
+				user1, user2, user2, user1,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Mesajlar yuklenemedi"})
+				return
+			}
+			defer rows.Close()
+
+			var messages []map[string]interface{}
+			for rows.Next() {
+				var id, sID, rID, isDeliv, isRead, isDel, isEd int
+				var content, mType string
+				var mURL, origContent sql.NullString
+				var cAt time.Time
+
+				_ = rows.Scan(&id, &sID, &rID, &content, &mType, &isDeliv, &isRead, &mURL, &isDel, &isEd, &origContent, &cAt)
+				messages = append(messages, map[string]interface{}{
+					"id":              id,
+					"senderId":        sID,
+					"receiverId":      rID,
+					"content":         content,
+					"type":            mType,
+					"isDelivered":     isDeliv == 1,
+					"isRead":          isRead == 1,
+					"mediaUrl":        mURL.String,
+					"isDeleted":       isDel == 1,
+					"isEdited":        isEd == 1,
+					"originalContent": origContent.String,
+					"timestamp":       cAt.Format("2006-01-02 15:04:05"),
+				})
+			}
+			c.JSON(http.StatusOK, messages)
+		})
+
+		// 8. Story (Durum) Endpoints
+		api.POST("/stories", func(c *gin.Context) {
+			var req struct {
+				UserId    int    `json:"userId"`
+				MediaUrl  string `json:"mediaUrl"`
+				Caption   string `json:"caption"`
+				MediaType string `json:"mediaType"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz istek"})
+				return
+			}
+			mType := req.MediaType
+			if mType == "" {
+				mType = "image"
+			}
+			res, err := db.Exec(
+				"INSERT INTO stories (user_id, media_url, caption, media_type, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR))",
+				req.UserId, req.MediaUrl, req.Caption, mType,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Hikaye paylasilamadi"})
+				return
+			}
+			sid, _ := res.LastInsertId()
+			c.JSON(http.StatusOK, gin.H{"status": "success", "storyId": sid})
+		})
+
+		api.GET("/stories", func(c *gin.Context) {
+			currUID, _ := strconv.Atoi(c.DefaultQuery("currentUserId", "0"))
+
+			rows, err := db.Query(
+				`SELECT s.id, s.user_id, s.media_url, s.caption, s.media_type, s.created_at, s.expires_at,
+				        u.username, u.display_name, u.photo_url,
+				        (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.id AND sv.viewer_id = ?) > 0 AS isViewed,
+				        (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.id) AS viewCount
+				 FROM stories s
+				 JOIN users u ON s.user_id = u.id
+				 WHERE s.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+				 ORDER BY s.created_at ASC`,
+				currUID,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Hikayeler alinamadi"})
+				return
+			}
+			defer rows.Close()
+
+			type StoryItem struct {
+				ID        int    `json:"id"`
+				UserId    int    `json:"userId"`
+				MediaUrl  string `json:"mediaUrl"`
+				Caption   string `json:"caption"`
+				MediaType string `json:"mediaType"`
+				CreatedAt string `json:"createdAt"`
+				IsViewed  bool   `json:"isViewed"`
+				ViewCount int    `json:"viewCount"`
+			}
+			type StoryGroup struct {
+				UserId          int         `json:"userId"`
+				Username        string      `json:"username"`
+				DisplayName     string      `json:"displayName"`
+				UserPhotoUrl    string      `json:"userPhotoUrl"`
+				Stories         []StoryItem `json:"stories"`
+				AllViewed       bool        `json:"allViewed"`
+				LatestTimestamp time.Time   `json:"-"`
+			}
+
+			grouped := make(map[int]*StoryGroup)
+
+			for rows.Next() {
+				var id, uID, isViewedInt, vCount int
+				var mURL, mType, uName string
+				var cap, expAt, dName, pURL sql.NullString
+				var cAt time.Time
+
+				_ = rows.Scan(&id, &uID, &mURL, &cap, &mType, &cAt, &expAt, &uName, &dName, &pURL, &isViewedInt, &vCount)
+
+				if _, exists := grouped[uID]; !exists {
+					grouped[uID] = &StoryGroup{
+						UserId:          uID,
+						Username:        uName,
+						DisplayName:     dName.String,
+						UserPhotoUrl:    pURL.String,
+						Stories:         []StoryItem{},
+						AllViewed:       true,
+						LatestTimestamp: cAt,
+					}
+				}
+
+				isV := isViewedInt > 0
+				if !isV && uID != currUID {
+					grouped[uID].AllViewed = false
+				}
+				grouped[uID].LatestTimestamp = cAt
+				grouped[uID].Stories = append(grouped[uID].Stories, StoryItem{
+					ID:        id,
+					UserId:    uID,
+					MediaUrl:  mURL,
+					Caption:   cap.String,
+					MediaType: mType,
+					CreatedAt: cAt.Format("2006-01-02 15:04:05"),
+					IsViewed:  isV,
+					ViewCount: vCount,
+				})
+			}
+
+			var resList []*StoryGroup
+			for _, g := range grouped {
+				resList = append(resList, g)
+			}
+			sort.Slice(resList, func(i, j int) bool {
+				return resList[i].LatestTimestamp.After(resList[j].LatestTimestamp)
+			})
+
+			c.JSON(http.StatusOK, resList)
+		})
+
+		api.POST("/stories/view", func(c *gin.Context) {
+			var req struct {
+				StoryId  int `json:"storyId"`
+				ViewerId int `json:"viewerId"`
+			}
+			if err := c.ShouldBindJSON(&req); err == nil {
+				_, _ = db.Exec("INSERT IGNORE INTO story_views (story_id, viewer_id) VALUES (?, ?)", req.StoryId, req.ViewerId)
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "success"})
+		})
+
+		api.DELETE("/stories/:storyId", func(c *gin.Context) {
+			sID := c.Param("storyId")
+			uID := c.Query("userId")
+			_, _ = db.Exec("DELETE FROM stories WHERE id = ? AND user_id = ?", sID, uID)
+			c.JSON(http.StatusOK, gin.H{"status": "success"})
+		})
+
+		// 9. Call Logs Endpoints
+		api.POST("/calls/logs", func(c *gin.Context) {
+			var req struct {
+				CallerId        int    `json:"callerId"`
+				ReceiverId      int    `json:"receiverId"`
+				CallType        string `json:"callType"`
+				CallStatus      string `json:"callStatus"`
+				DurationSeconds int    `json:"durationSeconds"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Gecersiz istek"})
+				return
+			}
+			res, _ := db.Exec(
+				"INSERT INTO call_logs (caller_id, receiver_id, call_type, call_status, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+				req.CallerId, req.ReceiverId, req.CallType, req.CallStatus, req.DurationSeconds,
+			)
+			lid, _ := res.LastInsertId()
+			c.JSON(http.StatusOK, gin.H{"status": "success", "callLogId": lid})
+		})
+
+		api.GET("/calls/logs/:userId", func(c *gin.Context) {
+			uID := c.Param("userId")
+			rows, err := db.Query(
+				`SELECT cl.id, cl.caller_id, cl.receiver_id, cl.call_type, cl.call_status,
+				        cl.duration_seconds, cl.created_at,
+				        u_c.display_name, u_c.photo_url,
+				        u_r.display_name, u_r.photo_url
+				 FROM call_logs cl
+				 JOIN users u_c ON cl.caller_id = u_c.id
+				 JOIN users u_r ON cl.receiver_id = u_r.id
+				 WHERE cl.caller_id = ? OR cl.receiver_id = ?
+				 ORDER BY cl.created_at DESC`,
+				uID, uID,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Arama kayitlari alinamadi"})
+				return
+			}
+			defer rows.Close()
+
+			var logs []map[string]interface{}
+			for rows.Next() {
+				var id, cID, rID, dur int
+				var cType, cStat string
+				var cName, cPic, rName, rPic sql.NullString
+				var cAt time.Time
+
+				_ = rows.Scan(&id, &cID, &rID, &cType, &cStat, &dur, &cAt, &cName, &cPic, &rName, &rPic)
+				logs = append(logs, map[string]interface{}{
+					"id":              id,
+					"callerId":        cID,
+					"receiverId":      rID,
+					"callType":        cType,
+					"callStatus":      cStat,
+					"durationSeconds": dur,
+					"createdAt":       cAt.Format("2006-01-02 15:04:05"),
+					"callerName":      cName.String,
+					"callerPic":       cPic.String,
+					"receiverName":    rName.String,
+					"receiverPic":     rPic.String,
+				})
+			}
+			c.JSON(http.StatusOK, logs)
+		})
+
+		// 10. Pending Calls Check
 		api.GET("/calls/pending/:userId", func(c *gin.Context) {
 			uID := c.Param("userId")
 			if val, ok := activePendingCalls.Load(uID); ok {
