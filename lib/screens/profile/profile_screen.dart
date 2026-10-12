@@ -402,22 +402,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 20),
 
-              // Custom Image URL Field (Optional)
-              TextFormField(
-                controller: _photoController,
-                style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
-                onChanged: (val) => setState(() {}),
-                decoration: const InputDecoration(
-                  labelText: 'Özel Fotoğraf Linki (URL)',
-                  hintText: 'https://...',
-                  hintStyle: TextStyle(color: AppColors.textSecondary),
-                  labelStyle: TextStyle(color: AppColors.textSecondary),
-                  prefixIcon: Icon(Icons.link, color: AppColors.textSecondary),
-                  border: UnderlineInputBorder(),
-                  enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.surfaceLight)),
-                  focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primaryLight, width: 2)),
-                ),
-              ),
               const SizedBox(height: 36),
 
               // Save Button
