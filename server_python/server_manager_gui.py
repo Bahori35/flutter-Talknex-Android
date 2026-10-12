@@ -142,23 +142,19 @@ class ServerManagerGUI:
         hw_grid.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
 
         # Hardware & Network Grid
-        # CPU Usage & Speed
-        self.cpu_lbl = tk.Label(hw_grid, text="İşlemci (CPU): %0 (0.0 GHz)", font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD)
-        self.cpu_lbl.grid(row=0, column=0, sticky="w", pady=(2, 1))
+        # CPU Usage & Speed Bar (Text directly embedded inside the bar)
+        tk.Label(hw_grid, text="İşlemci (CPU):", font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD).grid(row=0, column=0, sticky="w", pady=(4, 4))
+        self.cpu_canvas = tk.Canvas(hw_grid, width=280, height=22, bg=BG_MAIN, highlightthickness=1, highlightbackground=BORDER_COLOR)
+        self.cpu_canvas.grid(row=0, column=1, padx=10, pady=(4, 4))
+        self.cpu_rect = self.cpu_canvas.create_rectangle(0, 0, 0, 22, fill=ACCENT_GREEN, width=0)
+        self.cpu_text = self.cpu_canvas.create_text(140, 11, text="%0 (0.0 GHz)", fill=FG_TEXT, font=("Segoe UI", 9, "bold"))
 
-        # Custom High-Contrast Green Progress Bar for CPU
-        self.cpu_canvas = tk.Canvas(hw_grid, width=220, height=14, bg=BG_MAIN, highlightthickness=1, highlightbackground=BORDER_COLOR)
-        self.cpu_canvas.grid(row=0, column=1, padx=10, pady=(2, 1))
-        self.cpu_rect = self.cpu_canvas.create_rectangle(0, 0, 0, 14, fill=ACCENT_GREEN, width=0)
-
-        # RAM Usage & Speed
-        self.ram_lbl = tk.Label(hw_grid, text="Bellek (RAM): %0 (0 MHz)", font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD)
-        self.ram_lbl.grid(row=1, column=0, sticky="w", pady=(4, 1))
-
-        # Custom High-Contrast Green Progress Bar for RAM
-        self.ram_canvas = tk.Canvas(hw_grid, width=220, height=14, bg=BG_MAIN, highlightthickness=1, highlightbackground=BORDER_COLOR)
-        self.ram_canvas.grid(row=1, column=1, padx=10, pady=(4, 1))
-        self.ram_rect = self.ram_canvas.create_rectangle(0, 0, 0, 14, fill="#10B981", width=0)
+        # RAM Usage & Speed Bar (Text directly embedded inside the bar)
+        tk.Label(hw_grid, text="Bellek (RAM):", font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD).grid(row=1, column=0, sticky="w", pady=(4, 4))
+        self.ram_canvas = tk.Canvas(hw_grid, width=280, height=22, bg=BG_MAIN, highlightthickness=1, highlightbackground=BORDER_COLOR)
+        self.ram_canvas.grid(row=1, column=1, padx=10, pady=(4, 4))
+        self.ram_rect = self.ram_canvas.create_rectangle(0, 0, 0, 22, fill="#10B981", width=0)
+        self.ram_text = self.ram_canvas.create_text(140, 11, text="%0 (0 MHz)", fill=FG_TEXT, font=("Segoe UI", 9, "bold"))
 
         # Ports & Hardware Specs Details
         self.specs_lbl = tk.Label(hw_grid, text="• Nginx Proxy: Port 3000 | Uvicorn: Port 3001\n• Toplam: " + str(self.total_cores) + " Thread | RAM: 0 GB",
@@ -246,17 +242,21 @@ class ServerManagerGUI:
         t.start()
 
     def _update_stats(self, cpu, ghz, ram, ram_used, total_ram, ram_speed, online, total):
-        # Update CPU label & vibrant green bar
-        ghz_part = f" ({ghz})" if ghz else ""
-        self.cpu_lbl.config(text=f"İşlemci (CPU): %{cpu:.1f}{ghz_part}")
-        cpu_w = int((max(0, min(cpu, 100)) / 100.0) * 220)
-        self.cpu_canvas.coords(self.cpu_rect, 0, 0, cpu_w, 14)
+        # Update CPU green bar & embedded text
+        ghz_part = f" - {ghz}" if ghz else ""
+        cpu_text_str = f"%{cpu:.1f}{ghz_part}"
+        cpu_w = int((max(0, min(cpu, 100)) / 100.0) * 280)
+        self.cpu_canvas.coords(self.cpu_rect, 0, 0, cpu_w, 22)
+        self.cpu_canvas.itemconfigure(self.cpu_text, text=cpu_text_str)
+        self.cpu_canvas.tag_raise(self.cpu_text)
 
-        # Update RAM label & vibrant green bar
+        # Update RAM green bar & embedded text
         mhz_part = f" - {ram_speed}" if ram_speed else ""
-        self.ram_lbl.config(text=f"Bellek (RAM): %{ram:.1f} ({ram_used}/{total_ram} GB{mhz_part})")
-        ram_w = int((max(0, min(ram, 100)) / 100.0) * 220)
-        self.ram_canvas.coords(self.ram_rect, 0, 0, ram_w, 14)
+        ram_text_str = f"%{ram:.1f} ({ram_used}/{total_ram} GB{mhz_part})"
+        ram_w = int((max(0, min(ram, 100)) / 100.0) * 280)
+        self.ram_canvas.coords(self.ram_rect, 0, 0, ram_w, 22)
+        self.ram_canvas.itemconfigure(self.ram_text, text=ram_text_str)
+        self.ram_canvas.tag_raise(self.ram_text)
 
         # Update Specs Label
         self.specs_lbl.config(text=f"• Nginx: Port 3000 | Uvicorn: Port 3001\n• Toplam: {self.total_cores} Thread | Toplam Bellek: {total_ram} GB {ram_speed}")
