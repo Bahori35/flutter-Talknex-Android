@@ -131,15 +131,19 @@ class _ChatScreenState extends State<ChatScreen> {
     };
 
     // Listen for message deletion
-    _socketService.onMessageDeleted = (deletedId) {
+    _socketService.onMessageDeleted = (deletedId, [mode = 'everyone']) {
       if (mounted) {
         setState(() {
-          _messages = _messages.map((m) {
-            if (m.id == deletedId) {
-              return m.copyWith(isDeleted: true, content: 'Bu mesaj silindi');
-            }
-            return m;
-          }).toList();
+          if (mode == 'me') {
+            _messages = _messages.where((m) => m.id != deletedId).toList();
+          } else {
+            _messages = _messages.map((m) {
+              if (m.id == deletedId) {
+                return m.copyWith(isDeleted: true, content: 'Bu mesaj silindi');
+              }
+              return m;
+            }).toList();
+          }
         });
       }
     };
@@ -706,15 +710,32 @@ class _ChatScreenState extends State<ChatScreen> {
                     );
                   },
                 ),
-              if (isMe)
-                ListTile(
-                  leading: const Icon(Icons.delete_outline_rounded, color: AppColors.callRed),
-                  title: const Text('Herkesten Sil', style: TextStyle(color: AppColors.callRed, fontWeight: FontWeight.w600)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _confirmDeleteMessage(message);
-                  },
-                ),
+              Builder(
+                builder: (context) {
+                  final isWithin15Minutes = DateTime.now().difference(message.timestamp).inMinutes < 15;
+                  final canDeleteForEveryone = isMe && isWithin15Minutes;
+
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.delete_outline_rounded, color: AppColors.callRed),
+                        title: Text(
+                          canDeleteForEveryone ? 'Mesajı Sil...' : 'Benden Sil',
+                          style: const TextStyle(color: AppColors.callRed, fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: canDeleteForEveryone
+                            ? const Text('Herkesten veya sadece benden sil', style: TextStyle(color: Colors.white38, fontSize: 11))
+                            : const Text('15 dakika dolduğu için sadece sizden silinir', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _confirmDeleteMessage(message, canDeleteForEveryone: canDeleteForEveryone);
+                        },
+                      ),
+                    ],
+                  );
+                },
+              ),
               ListTile(
                 leading: const Icon(Icons.close_rounded, color: Colors.white54),
                 title: const Text('İptal', style: TextStyle(color: Colors.white54)),
@@ -727,15 +748,17 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _confirmDeleteMessage(MessageModel message) {
+  void _confirmDeleteMessage(MessageModel message, {required bool canDeleteForEveryone}) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
-        title: const Text('Mesaj Silinsin mi?', style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'Bu mesaj sizden ve karşı taraftan kaldırılacak. (Güvenlik ve adli denetim kayıtları saklanır)',
-          style: TextStyle(color: Colors.white70, fontSize: 13),
+        title: const Text('Mesajı Sil', style: TextStyle(color: Colors.white)),
+        content: Text(
+          canDeleteForEveryone
+              ? 'Bu mesajı herkesten mi yoksa sadece kendinizden mi silmek istersiniz?\n(15 dakika sonra sadece kendinizden silebilirsiniz)'
+              : '15 dakika dolduğu için bu mesaj sadece sizden silinecektir. Karşı taraf mesajı görmeye devam eder.',
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
         ),
         actions: [
           TextButton(
@@ -743,27 +766,45 @@ class _ChatScreenState extends State<ChatScreen> {
             child: const Text('Vazgeç', style: TextStyle(color: Colors.white60)),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.callRed),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.surfaceLight),
             onPressed: () {
               Navigator.pop(ctx);
-              // Emit live delete via socket
+              // Delete for me
               _socketService.deleteMessage(
                 messageId: message.id,
                 senderId: widget.currentUser.uid,
                 receiverId: widget.peerUser.uid,
+                mode: 'me',
               );
-              // Update local state immediately
               setState(() {
-                _messages = _messages.map((m) {
-                  if (m.id == message.id) {
-                    return m.copyWith(isDeleted: true, content: 'Bu mesaj silindi');
-                  }
-                  return m;
-                }).toList();
+                _messages = _messages.where((m) => m.id != message.id).toList();
               });
             },
-            child: const Text('Herkesten Sil', style: TextStyle(color: Colors.white)),
+            child: const Text('Benden Sil', style: TextStyle(color: Colors.white)),
           ),
+          if (canDeleteForEveryone)
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.callRed),
+              onPressed: () {
+                Navigator.pop(ctx);
+                // Delete for everyone
+                _socketService.deleteMessage(
+                  messageId: message.id,
+                  senderId: widget.currentUser.uid,
+                  receiverId: widget.peerUser.uid,
+                  mode: 'everyone',
+                );
+                setState(() {
+                  _messages = _messages.map((m) {
+                    if (m.id == message.id) {
+                      return m.copyWith(isDeleted: true, content: 'Bu mesaj silindi');
+                    }
+                    return m;
+                  }).toList();
+                });
+              },
+              child: const Text('Herkesten Sil', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
         ],
       ),
     );

@@ -103,6 +103,7 @@ func initDB() {
 		log.Printf("[UYARI] MariaDB baglanti denemesi uyarisi: %v", pingErr)
 	} else {
 		log.Println("[OK] MariaDB Go yuksek performansli baglantisi hazir!")
+		_, _ = db.Exec("ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_by_users TEXT NULL AFTER is_deleted")
 	}
 }
 
@@ -422,25 +423,81 @@ func main() {
 				msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
 				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
 				receiverID, _ := strconv.Atoi(fmt.Sprintf("%v", data["receiverId"]))
+				deleteMode := fmt.Sprintf("%v", data["mode"]) // "everyone" or "me"
+				if deleteMode == "" || deleteMode == "<nil>" {
+					deleteMode = "everyone"
+				}
 
 				if msgID == 0 {
 					continue
 				}
 
-				_, _ = db.Exec("UPDATE messages SET is_deleted = 1 WHERE id = ?", msgID)
-
-				payload := gin.H{
-					"messageId":  strconv.Itoa(msgID),
-					"senderId":   strconv.Itoa(senderID),
-					"receiverId": strconv.Itoa(receiverID),
+				var msgSenderID int
+				var createdAt time.Time
+				var deletedBy sql.NullString
+				err := db.QueryRow("SELECT sender_id, created_at, deleted_by_users FROM messages WHERE id = ?", msgID).Scan(&msgSenderID, &createdAt, &deletedBy)
+				if err != nil {
+					continue
 				}
 
-				if rVal, ok := wsClients.Load(strconv.Itoa(receiverID)); ok {
-					if rClient, ok := rVal.(*WSClient); ok {
-						_ = rClient.Send("message_deleted", payload)
+				currentUidStr := client.userID
+				if currentUidStr == "" {
+					currentUidStr = strconv.Itoa(senderID)
+				}
+
+				if deleteMode == "everyone" {
+					// 15 Dakika Herkesten Silme Kontrolü
+					if time.Since(createdAt) > 15*time.Minute {
+						log.Printf("[UYARI] Mesaj #%d herkesten silme suresi (15 dk) doldugu icin reddedildi.", msgID)
+						_ = client.Send("error", gin.H{"message": "Mesajlar gönderildikten sonra yalnızca 15 dakika içinde herkesten silinebilir."})
+						continue
 					}
+
+					_, _ = db.Exec("UPDATE messages SET is_deleted = 1 WHERE id = ?", msgID)
+
+					payload := gin.H{
+						"messageId":  strconv.Itoa(msgID),
+						"senderId":   strconv.Itoa(senderID),
+						"receiverId": strconv.Itoa(receiverID),
+						"mode":       "everyone",
+					}
+
+					if rVal, ok := wsClients.Load(strconv.Itoa(receiverID)); ok {
+						if rClient, ok := rVal.(*WSClient); ok {
+							_ = rClient.Send("message_deleted", payload)
+						}
+					}
+					_ = client.Send("message_deleted", payload)
+				} else {
+					// Benden Sil (Delete for me)
+					existingList := strings.Split(deletedBy.String, ",")
+					alreadyInList := false
+					for _, u := range existingList {
+						if strings.TrimSpace(u) == currentUidStr {
+							alreadyInList = true
+							break
+						}
+					}
+
+					newList := deletedBy.String
+					if !alreadyInList {
+						if newList == "" {
+							newList = currentUidStr
+						} else {
+							newList = newList + "," + currentUidStr
+						}
+						_, _ = db.Exec("UPDATE messages SET deleted_by_users = ? WHERE id = ?", newList, msgID)
+					}
+
+					payload := gin.H{
+						"messageId":  strconv.Itoa(msgID),
+						"senderId":   strconv.Itoa(senderID),
+						"receiverId": strconv.Itoa(receiverID),
+						"mode":       "me",
+						"deletedBy":  currentUidStr,
+					}
+					_ = client.Send("message_deleted", payload)
 				}
-				_ = client.Send("message_deleted", payload)
 
 			case "message_delivered":
 				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
@@ -878,7 +935,7 @@ func main() {
 
 			rows, err := db.Query(
 				`SELECT id, sender_id, receiver_id, content, message_type, is_delivered, is_read, 
-				        media_url, is_deleted, is_edited, original_content, created_at 
+				        media_url, is_deleted, deleted_by_users, is_edited, original_content, created_at 
 				 FROM messages 
 				 WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) 
 				 ORDER BY created_at ASC`,
@@ -894,10 +951,25 @@ func main() {
 			for rows.Next() {
 				var id, sID, rID, isDeliv, isRead, isDel, isEd int
 				var content, mType string
-				var mURL, origContent sql.NullString
+				var mURL, origContent, delByUsers sql.NullString
 				var cAt time.Time
 
-				_ = rows.Scan(&id, &sID, &rID, &content, &mType, &isDeliv, &isRead, &mURL, &isDel, &isEd, &origContent, &cAt)
+				_ = rows.Scan(&id, &sID, &rID, &content, &mType, &isDeliv, &isRead, &mURL, &isDel, &delByUsers, &isEd, &origContent, &cAt)
+
+				// Kullanıcı kendinden silmişse bu mesajı ona gönderme
+				if delByUsers.Valid && delByUsers.String != "" {
+					isDeletedForUser1 := false
+					for _, u := range strings.Split(delByUsers.String, ",") {
+						if strings.TrimSpace(u) == user1 {
+							isDeletedForUser1 = true
+							break
+						}
+					}
+					if isDeletedForUser1 {
+						continue
+					}
+				}
+
 				messages = append(messages, map[string]interface{}{
 					"id":              id,
 					"senderId":        sID,

@@ -16,7 +16,7 @@ typedef OnCallEnded = void Function();
 typedef OnUserStatusChange = void Function(String userId, bool isOnline);
 typedef OnLiveLocationUpdate = void Function(Map<String, dynamic> data);
 typedef OnLiveLocationStopped = void Function(Map<String, dynamic> data);
-typedef OnMessageDeleted = void Function(String messageId);
+typedef OnMessageDeleted = void Function(String messageId, [String mode]);
 typedef OnMessageEdited = void Function(String messageId, String newContent);
 typedef OnMessageSent = void Function(String tempId, String realId);
 
@@ -246,7 +246,8 @@ class SocketService {
         case 'message_deleted':
           if (onMessageDeleted != null && data is Map<String, dynamic>) {
             final msgId = data['messageId']?.toString() ?? '';
-            onMessageDeleted!(msgId);
+            final mode = data['mode']?.toString() ?? 'everyone';
+            onMessageDeleted!(msgId, mode);
           }
           break;
 
@@ -396,16 +397,18 @@ class SocketService {
     });
   }
 
-  // Delete message
+  // Delete message (mode: 'everyone' or 'me')
   void deleteMessage({
     required String messageId,
     required String senderId,
     required String receiverId,
+    String mode = 'everyone',
   }) {
     _emit('delete_message', {
       'messageId': messageId,
       'senderId': senderId,
       'receiverId': receiverId,
+      'mode': mode,
     });
   }
 
