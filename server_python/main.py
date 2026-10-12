@@ -252,6 +252,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
 # Active sockets: user_id -> sid
 active_sockets = {}
 # Active pending calls: receiver_id (str) -> callData (dict)
@@ -395,10 +399,9 @@ def update_fcm_token(req: FcmTokenRequest):
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
-    os.makedirs("uploads", exist_ok=True)
     ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
     filename = f"{uuid.uuid4().hex}.{ext}"
-    file_path = os.path.join("uploads", filename)
+    file_path = os.path.join(UPLOAD_DIR, filename)
 
     with open(file_path, "wb") as f:
         content = await file.read()
