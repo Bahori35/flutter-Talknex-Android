@@ -1,0 +1,23 @@
+# /etc/systemd/system/talknex-backend.service
+# Talknex Python Uvicorn Backend Linux Systemd Servisi
+
+[Unit]
+Description=Talknex Python Uvicorn Backend Service
+After=network.target mariadb.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/talknex/server_python
+Environment="PATH=/usr/bin:/usr/local/bin"
+Environment="PORT=3001"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/usr/bin/python3 main.py
+Restart=always
+RestartSec=5s
+
+# Limitler (Yuksek baglanti kapasitesi icin)
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

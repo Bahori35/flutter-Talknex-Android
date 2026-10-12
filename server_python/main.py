@@ -977,4 +977,6 @@ async def disconnect(sid):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:socket_app", host="0.0.0.0", port=3000, reload=True)
+    server_port = int(os.getenv("PORT", 3001))
+    print(f"[*] Talknex Backend Uvicorn baslatiliyor (Port: {server_port})...")
+    uvicorn.run("main:socket_app", host="127.0.0.1", port=server_port, reload=False)
