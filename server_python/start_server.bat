@@ -11,6 +11,7 @@ echo.
 
 :: 1. Onceki calisan Nginx surecleri varsa sonlandir
 taskkill /F /IM nginx.exe >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":3001" ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 
 :: 2. Nginx dizinini tespit et (Once C:\nginx, yoksa proje ici nginx)
 if exist "C:\nginx\nginx.exe" (
