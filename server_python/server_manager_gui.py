@@ -228,9 +228,10 @@ class ServerManagerGUI:
         # 1. Start Nginx
         nginx_dir = self.get_nginx_exe()
         if nginx_dir:
-            self.log(f"[2/3] Nginx Web Hızlandırıcı başlatılıyor ({nginx_dir})...")
+            nginx_exe = os.path.join(nginx_dir, "nginx.exe")
+            self.log(f"[2/3] Nginx Web Hızlandırıcı başlatılıyor ({nginx_exe})...")
             try:
-                subprocess.Popen(["nginx.exe"], cwd=nginx_dir, creationflags=subprocess.CREATE_NO_WINDOW)
+                subprocess.Popen([nginx_exe], cwd=nginx_dir, creationflags=subprocess.CREATE_NO_WINDOW)
                 self.log("[OK] Nginx Port 3000 üzerinde devrede (Video / Medya / Proxy).")
             except Exception as e:
                 self.log(f"[UYARI] Nginx başlatılamadı: {e}")
