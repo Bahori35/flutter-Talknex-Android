@@ -103,20 +103,12 @@ class ServerManagerGUI:
                                        insertbackground=FG_TEXT, relief=tk.SOLID, bd=1, justify=tk.CENTER)
         self.thread_entry.pack(side=tk.LEFT, padx=(0, 15))
 
-        # Engine Selector (Go vs Python)
+        # Engine Indicator (Pure Go)
         engine_frame = tk.Frame(ctrl_card, bg=BG_CARD)
         engine_frame.pack(fill=tk.X, padx=15, pady=(4, 6))
 
-        tk.Label(engine_frame, text="Sunucu Motoru (Teknoloji):", font=("Segoe UI", 9, "bold"), fg=FG_TEXT, bg=BG_CARD).pack(side=tk.LEFT, padx=(0, 10))
-        self.engine_var = tk.StringVar(value="go")
-
-        rb_go = tk.Radiobutton(engine_frame, text="⚡ Go (Golang - Önerilen)", variable=self.engine_var, value="go",
-                               bg=BG_CARD, fg="#38BDF8", selectcolor=BG_MAIN, activebackground=BG_CARD, font=("Segoe UI", 9, "bold"))
-        rb_go.pack(side=tk.LEFT, padx=5)
-
-        rb_py = tk.Radiobutton(engine_frame, text="🐍 Python (Uvicorn)", variable=self.engine_var, value="python",
-                               bg=BG_CARD, fg=FG_MUTED, selectcolor=BG_MAIN, activebackground=BG_CARD, font=("Segoe UI", 9))
-        rb_py.pack(side=tk.LEFT, padx=5)
+        tk.Label(engine_frame, text="Sunucu Motoru:", font=("Segoe UI", 9, "bold"), fg=FG_TEXT, bg=BG_CARD).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(engine_frame, text="⚡ Go (Golang) + Gorilla WebSocket (Ultra-Fast)", font=("Segoe UI", 9, "bold"), fg="#38BDF8", bg=BG_CARD).pack(side=tk.LEFT)
 
         # Buttons (Start, Stop, Restart)
         btn_frame = tk.Frame(ctrl_card, bg=BG_CARD)
@@ -387,24 +379,18 @@ class ServerManagerGUI:
         except Exception:
             assigned_threads = self.total_cores
 
-        # 2. Start Backend (Go or Python)
-        selected_engine = self.engine_var.get()
+        # 2. Start Go Backend
         env = os.environ.copy()
         env["PORT"] = "3001"
-        env["PYTHONUNBUFFERED"] = "1"
 
-        go_server_exe = os.path.join(PROJECT_ROOT, "server_go", "talknex_server.exe")
-        launch_cmd = []
+        go_server_exe = os.path.join(CURRENT_DIR, "talknex_server.exe")
+        if not os.path.exists(go_server_exe):
+            go_server_exe = os.path.join(PROJECT_ROOT, "server_go", "talknex_server.exe")
+
+        launch_cmd = [go_server_exe]
         launch_cwd = CURRENT_DIR
 
-        if selected_engine == "go" and os.path.exists(go_server_exe):
-            self.log(f"[3/3] ⚡ Go (Golang) Ultra-Fast Backend başlatılıyor -> Hedef: {assigned_threads} Thread...")
-            launch_cmd = [go_server_exe]
-            launch_cwd = os.path.join(PROJECT_ROOT, "server_go")
-        else:
-            self.log(f"[3/3] 🐍 Python Uvicorn Backend başlatılıyor -> Hedef: {assigned_threads} CPU Thread...")
-            launch_cmd = [sys.executable, "main.py"]
-            launch_cwd = CURRENT_DIR
+        self.log(f"[3/3] ⚡ Go (Golang) Ultra-Fast Backend başlatılıyor -> Hedef: {assigned_threads} Thread...")
 
         try:
             self.server_process = subprocess.Popen(

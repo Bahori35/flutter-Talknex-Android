@@ -1,12 +1,11 @@
 @echo off
-title Talknex Server Control Center
+title Talknex Go Server Control Center
 chcp 65001 >nul
 
-cd /d "%~dp0\server_python"
+cd /d "%~dp0\server_go"
 
 echo ========================================================
-echo    Talknex Server Control Center Baslatiliyor...
+echo    Talknex Go Server Control Center Baslatiliyor...
 echo ========================================================
 
 python server_manager_gui.py
-
