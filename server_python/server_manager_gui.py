@@ -77,22 +77,37 @@ class ServerManagerGUI:
                                   fg=FG_TEXT, bg=BG_CARD, bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
         ctrl_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
-        # Worker & Thread Selector
+        # Worker & Thread Selector (Custom Input + Presets)
         thread_frame = tk.Frame(ctrl_card, bg=BG_CARD)
         thread_frame.pack(fill=tk.X, padx=15, pady=12)
 
-        tk.Label(thread_frame, text="Kullanılacak İşlemci Thread / Çekirdek Sayısı:", font=("Segoe UI", 10), fg=FG_MUTED, bg=BG_CARD).pack(anchor="w")
+        tk.Label(thread_frame, text=f"Kullanılacak İşlemci Thread / Çekirdek Sayısı (Sistemde Toplam: {self.total_cores} Çekirdek):",
+                 font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD).pack(anchor="w")
 
         opts_frame = tk.Frame(thread_frame, bg=BG_CARD)
-        opts_frame.pack(fill=tk.X, pady=6)
+        opts_frame.pack(fill=tk.X, pady=(6, 4))
 
-        self.thread_var = tk.IntVar(value=min(self.total_cores, 8))
-        for count in [2, 4, 8, 12, self.total_cores]:
-            if count <= self.total_cores:
-                rb = tk.Radiobutton(opts_frame, text=f"{count} Thread ({'Tümü' if count == self.total_cores else f'%{int(count/self.total_cores*100)}'})",
-                                    variable=self.thread_var, value=count, bg=BG_CARD, fg=FG_TEXT,
-                                    selectcolor=BG_MAIN, activebackground=BG_CARD, font=("Segoe UI", 9, "bold"))
-                rb.pack(side=tk.LEFT, padx=6)
+        tk.Label(opts_frame, text="Thread Sayısı (Elle Yazılabilir):", font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD).pack(side=tk.LEFT, padx=(0, 8))
+
+        self.thread_var = tk.StringVar(value=str(self.total_cores))
+        self.thread_entry = tk.Spinbox(opts_frame, from_=1, to=256, textvariable=self.thread_var,
+                                       font=("Segoe UI", 11, "bold"), width=6, bg=BG_MAIN, fg="#38BDF8",
+                                       insertbackground=FG_TEXT, relief=tk.SOLID, bd=1, justify=tk.CENTER)
+        self.thread_entry.pack(side=tk.LEFT, padx=(0, 15))
+
+        # Quick preset buttons
+        tk.Label(opts_frame, text="Hızlı Seçim:", font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD).pack(side=tk.LEFT, padx=(0, 5))
+
+        def set_preset(val):
+            self.thread_var.set(str(val))
+
+        for p_val in [2, 4, 8, 12, 16, 24, self.total_cores]:
+            if p_val <= max(self.total_cores, 24):
+                btn_p = tk.Button(opts_frame, text=str(p_val) if p_val != self.total_cores else f"{p_val} (Tümü)",
+                                  font=("Segoe UI", 8, "bold"), bg=BORDER_COLOR, fg=FG_TEXT,
+                                  relief=tk.FLAT, padx=6, pady=1, cursor="hand2",
+                                  command=lambda v=p_val: set_preset(v))
+                btn_p.pack(side=tk.LEFT, padx=2)
 
         # Buttons (Start, Stop, Restart)
         btn_frame = tk.Frame(ctrl_card, bg=BG_CARD)
@@ -223,7 +238,14 @@ class ServerManagerGUI:
             self.log("[UYARI] Nginx bulunamadı, doğrudan Uvicorn çalışacak.")
 
         # 2. Start Uvicorn Backend with thread count
-        assigned_threads = self.thread_var.get()
+        try:
+            raw_val = self.thread_var.get().strip()
+            assigned_threads = int(raw_val) if raw_val.isdigit() else self.total_cores
+            if assigned_threads < 1:
+                assigned_threads = 1
+        except Exception:
+            assigned_threads = self.total_cores
+
         self.log(f"[3/3] Python Uvicorn Backend başlatılıyor -> Hedef: {assigned_threads} CPU Thread...")
 
         env = os.environ.copy()
@@ -245,11 +267,13 @@ class ServerManagerGUI:
             # Set CPU Affinity to assign exact number of threads
             try:
                 p = psutil.Process(self.server_process.pid)
-                affinity = list(range(assigned_threads))
+                # If requested threads exceed physical cores, clamp to total_cores
+                affinity_count = min(assigned_threads, self.total_cores)
+                affinity = list(range(affinity_count))
                 p.cpu_affinity(affinity)
-                self.log(f"[OK] CPU Affinity tanımlandı: Çekirdek 0..{assigned_threads - 1} tahsis edildi.")
+                self.log(f"[OK] CPU Affinity tanımlandı: Çekirdek 0..{affinity_count - 1} ({assigned_threads} thread hedefi) tahsis edildi.")
             except Exception as aff_err:
-                self.log(f"[BİLGİ] CPU Affinity ayarı: {aff_err}")
+                self.log(f"[BİLGİ] CPU Affinity: {aff_err}")
 
             self.is_running = True
             self.status_badge.config(text="● ÇALIŞIYOR", fg=ACCENT_GREEN)
