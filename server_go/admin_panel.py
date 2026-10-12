@@ -81,6 +81,27 @@ def decrypt_file_bytes(encrypted_bytes: bytes, user1_id, user2_id) -> bytes:
         return encrypted_bytes
 
 
+def detect_media_format(raw_bytes: bytes) -> str:
+    """Detects real media format from decrypted binary magic numbers."""
+    if len(raw_bytes) < 4:
+        return "bin"
+    if raw_bytes.startswith(b"\xff\xd8"):
+        return "jpg"
+    if raw_bytes.startswith(b"\x89PNG"):
+        return "png"
+    if raw_bytes.startswith(b"GIF8"):
+        return "gif"
+    if raw_bytes.startswith(b"RIFF") and b"WEBP" in raw_bytes[:16]:
+        return "webp"
+    if b"ftyp" in raw_bytes[:16] or raw_bytes.startswith(b"\x00\x00\x00"):
+        return "mp4"
+    if raw_bytes.startswith(b"ID3") or raw_bytes.startswith(b"\xff\xfb"):
+        return "mp3"
+    if raw_bytes.startswith(b"%PDF"):
+        return "pdf"
+    return "bin"
+
+
 def get_db():
     return pymysql.connect(
         host=DB_HOST,
@@ -455,55 +476,65 @@ class TalknexAdminApp(tk.Tk):
         raw_content = msg.get("content") or ""
         decrypted = decrypt_text(raw_content, msg["sender_id"], msg["receiver_id"])
         msg_type = msg.get("message_type", "text")
-        media_url = msg.get("media_url") or ""
-        date_str = str(msg.get("created_at", ""))[:16]
-
-        # 1. Media Preview (Image / Video / Audio)
+        media_url = msg.g        # 1. Media Preview (Image / Video / Audio)
         if media_url:
             local_path = self._get_local_media_file(media_url)
             if local_path and os.path.exists(local_path):
-                # Try to decrypt and preview if image
-                ext = local_path.split(".")[-1].lower()
-                if ext in ("jpg", "jpeg", "png", "webp", "gif"):
-                    try:
-                        with open(local_path, "rb") as f:
-                            enc_bytes = f.read()
-                        dec_bytes = decrypt_file_bytes(enc_bytes, msg["sender_id"], msg["receiver_id"])
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                            tmp.write(dec_bytes)
-                            tmp_img = tmp.name
+                try:
+                    with open(local_path, "rb") as f:
+                        enc_bytes = f.read()
+                    dec_bytes = decrypt_file_bytes(enc_bytes, msg["sender_id"], msg["receiver_id"])
+                    fmt = detect_media_format(dec_bytes)
 
-                        img = Image.open(tmp_img)
-                        img.thumbnail((260, 260))
-                        photo = ImageTk.PhotoImage(img)
-                        self.preview_photo_cache.append(photo)
+                    if fmt in ("jpg", "png", "gif", "webp"):
+                        # Render actual photo inline inside WhatsApp bubble
+                        try:
+                            import io
+                            img = Image.open(io.BytesIO(dec_bytes))
+                            img.thumbnail((280, 280))
+                            photo = ImageTk.PhotoImage(img)
+                            self.preview_photo_cache.append(photo)
 
-                        img_lbl = tk.Label(bubble, image=photo, bg=bubble_bg, cursor="hand2")
-                        img_lbl.pack(anchor="w", pady=(2, 6))
-                        # Click opens fullscreen
-                        img_lbl.bind("<Button-1>", lambda e, p=tmp_img: os.startfile(p))
-                    except Exception:
-                        pass
-                elif ext in ("mp4", "mov", "avi", "mkv"):
-                    # Video Indicator Card
-                    vid_card = tk.Frame(bubble, bg="#111B21", padx=10, pady=8, cursor="hand2")
-                    vid_card.pack(fill=tk.X, pady=(2, 6))
-                    tk.Label(vid_card, text="🎥 VİDEO KAYDI", bg="#111B21", fg="#00A884", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-                    tk.Label(vid_card, text=f"Dosya: {os.path.basename(local_path)} (Oynatmak için tıkla)", bg="#111B21", fg="#8696A0", font=("Segoe UI", 8)).pack(anchor="w")
-                    vid_card.bind("<Button-1>", lambda e, p=local_path, s=msg["sender_id"], r=msg["receiver_id"]: self._play_video(p, s, r))
+                            img_card = tk.Frame(bubble, bg=bubble_bg, cursor="hand2")
+                            img_card.pack(anchor="w", pady=(2, 6))
 
-            # Media Action Buttons
-            btn_frame = tk.Frame(bubble, bg=bubble_bg)
-            btn_frame.pack(anchor="w", pady=(2, 4))
-            open_btn = tk.Button(btn_frame, text="👁️ Medyayı Aç", bg="#00A884", fg="#FFFFFF",
-                                 font=("Segoe UI", 8, "bold"), relief=tk.FLAT, padx=6, pady=2,
-                                 command=lambda m=msg: self._open_media(m))
-            open_btn.pack(side=tk.LEFT, padx=(0, 6))
+                            img_lbl = tk.Label(img_card, image=photo, bg=bubble_bg)
+                            img_lbl.pack()
+                            img_lbl.bind("<Button-1>", lambda e, b=dec_bytes, ext=fmt: self._open_bytes_file(b, ext))
 
-            save_btn = tk.Button(btn_frame, text="💾 Kaydet", bg="#2A3942", fg="#00A884",
-                                 font=("Segoe UI", 8, "bold"), relief=tk.FLAT, padx=6, pady=2,
-                                 command=lambda m=msg: self._save_media(m))
-            save_btn.pack(side=tk.LEFT)
+                            hint_lbl = tk.Label(img_card, text="🔍 Tam ekran açmak için tıkla", bg=bubble_bg, fg="#00A884", font=("Segoe UI", 8))
+                            hint_lbl.pack(anchor="w", pady=(2, 0))
+                        except Exception as img_err:
+                            tk.Label(bubble, text=f"📷 Fotoğraf Çözüldü ({fmt.upper()})", bg=bubble_bg, fg="#00A884", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+
+                    elif fmt == "mp4" or msg.get("message_type") == "video":
+                        # Render Interactive Video Card
+                        vid_card = tk.Frame(bubble, bg="#111B21", padx=12, pady=10, cursor="hand2", relief=tk.SOLID, bd=1)
+                        vid_card.pack(fill=tk.X, pady=(4, 6))
+                        tk.Label(vid_card, text="▶️ 🎥 VİDEO (ŞİFRESİ ÇÖZÜLDÜ)", bg="#111B21", fg="#00A884", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+                        tk.Label(vid_card, text=f"Boyut: {len(dec_bytes) // 1024} KB  |  Tıklayıp Anında Oynatın", bg="#111B21", fg="#E9EDEF", font=("Segoe UI", 9)).pack(anchor="w")
+                        vid_card.bind("<Button-1>", lambda e, b=dec_bytes, ext="mp4": self._open_bytes_file(b, ext))
+                    else:
+                        doc_card = tk.Frame(bubble, bg="#111B21", padx=10, pady=8, cursor="hand2")
+                        doc_card.pack(fill=tk.X, pady=(2, 6))
+                        tk.Label(doc_card, text=f"📄 DOSYA ({fmt.upper()})", bg="#111B21", fg="#00A884", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+                        doc_card.bind("<Button-1>", lambda e, b=dec_bytes, ext=fmt: self._open_bytes_file(b, ext))
+
+                    # Action buttons
+                    btn_frame = tk.Frame(bubble, bg=bubble_bg)
+                    btn_frame.pack(anchor="w", pady=(2, 4))
+                    open_btn = tk.Button(btn_frame, text="👁️ Medyayı Aç / Oynat", bg="#00A884", fg="#FFFFFF",
+                                         font=("Segoe UI", 8, "bold"), relief=tk.FLAT, padx=8, pady=3, cursor="hand2",
+                                         command=lambda b=dec_bytes, ext=fmt: self._open_bytes_file(b, ext))
+                    open_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+                    save_btn = tk.Button(btn_frame, text="💾 Diske Kaydet", bg="#2A3942", fg="#00A884",
+                                         font=("Segoe UI", 8, "bold"), relief=tk.FLAT, padx=8, pady=3, cursor="hand2",
+                                         command=lambda b=dec_bytes, ext=fmt: self._save_bytes_file(b, ext))
+                    save_btn.pack(side=tk.LEFT)
+
+                except Exception as media_err:
+                    tk.Label(bubble, text=f"[Medya Çözme Uyarısı: {media_err}]", bg=bubble_bg, fg="#FF5252", font=("Segoe UI", 8)).pack(anchor="w")
 
         # 2. Text Message Content
         if decrypted:
@@ -517,49 +548,20 @@ class TalknexAdminApp(tk.Tk):
         tk.Label(foot_frame, text=f"🔒 {date_str}", bg=bubble_bg, fg="#8696A0",
                  font=("Segoe UI", 8)).pack(side=tk.RIGHT)
 
-    def _play_video(self, local_path, sender_id, receiver_id):
+    def _open_bytes_file(self, dec_bytes: bytes, ext: str):
         try:
-            with open(local_path, "rb") as f:
-                enc = f.read()
-            dec = decrypt_file_bytes(enc, sender_id, receiver_id)
-            ext = local_path.split(".")[-1].lower()
+            if not ext or ext == "bin":
+                ext = "mp4" if b"ftyp" in dec_bytes[:16] else "jpg"
             with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                tmp.write(dec)
+                tmp.write(dec_bytes)
                 tmp_path = tmp.name
             os.startfile(tmp_path)
         except Exception as e:
-            messagebox.showerror("Hata", f"Video açılamadı: {e}")
+            messagebox.showerror("Açma Hatası", f"Dosya açılamadı:\n{e}")
 
-    def _open_media(self, msg):
-        local_path = self._get_local_media_file(msg.get("media_url"))
-        if not local_path:
-            messagebox.showerror("Hata", "Dosya sunucuda bulunamadı.")
-            return
-
-        with open(local_path, "rb") as f:
-            enc = f.read()
-        dec = decrypt_file_bytes(enc, msg["sender_id"], msg["receiver_id"])
-        ext = local_path.split(".")[-1].lower()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-            tmp.write(dec)
-            tmp_path = tmp.name
-
-        try:
-            os.startfile(tmp_path)
-        except Exception as e:
-            messagebox.showerror("Hata", f"Medya açılamadı:\n{e}")
-
-    def _save_media(self, msg):
-        local_path = self._get_local_media_file(msg.get("media_url"))
-        if not local_path:
-            messagebox.showerror("Hata", "Dosya bulunamadı.")
-            return
-
-        with open(local_path, "rb") as f:
-            enc = f.read()
-        dec = decrypt_file_bytes(enc, msg["sender_id"], msg["receiver_id"])
-        ext = local_path.split(".")[-1].lower()
-
+    def _save_bytes_file(self, dec_bytes: bytes, ext: str):
+        if not ext or ext == "bin":
+            ext = "mp4" if b"ftyp" in dec_bytes[:16] else "jpg"
         dest = filedialog.asksaveasfilename(
             title="Çözülmüş Medyayı Kaydet",
             defaultextension=f".{ext}",
@@ -567,8 +569,8 @@ class TalknexAdminApp(tk.Tk):
         )
         if dest:
             with open(dest, "wb") as f:
-                f.write(dec)
-            messagebox.showinfo("Başarılı", f"Dosya kaydedildi:\n{dest}")
+                f.write(dec_bytes)
+            messagebox.showinfo("Başarılı", f"Dosya başarıyla kaydedildi:\n{dest}")
 
     def export_report(self):
         if not self.selected_user or not self.active_peer_id or not self.current_messages:
