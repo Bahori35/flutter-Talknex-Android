@@ -23,6 +23,10 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
 	socketio "github.com/googollee/go-socket.io"
+	"github.com/googollee/go-socket.io/engineio"
+	"github.com/googollee/go-socket.io/engineio/transport"
+	"github.com/googollee/go-socket.io/engineio/transport/polling"
+	"github.com/googollee/go-socket.io/engineio/transport/websocket"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/api/option"
 )
@@ -186,7 +190,22 @@ func main() {
 	}
 
 	// --- SETUP SOCKET.IO SERVER ---
-	server := socketio.NewServer(nil)
+	wsTransport := &websocket.Transport{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+	pollTransport := &polling.Transport{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+	server := socketio.NewServer(&engineio.Options{
+		Transports: []transport.Transport{
+			wsTransport,
+			pollTransport,
+		},
+	})
 
 	server.OnConnect("/", func(s socketio.Conn) error {
 		s.SetContext("")
