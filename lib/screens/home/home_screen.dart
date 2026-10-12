@@ -86,16 +86,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             senderDisplayName = senderObj.displayName;
           } catch (_) {}
 
-          // If sender is not in our loaded list, reload users to display them immediately
-          if (!_phoneContacts.any((u) => u.uid == message.senderId)) {
-            _loadUsers();
-          }
+          // Reload contacts to bring latest chat to top
+          _loadUsers();
 
           _notificationService.showMessageNotification(
             id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
             senderName: senderDisplayName,
             messageContent: message.content,
           );
+        };
+
+        // Listen for live group messages received while in HomeScreen
+        _socketService.onGroupMessageReceived = (data) {
+          _loadGroups();
         };
 
         // Listen for incoming calls
@@ -1214,316 +1217,352 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
           ),
 
-        // Chat & Group List Cards
+        // Unified Chat & Group List (Sorted by latest message timestamp)
         Expanded(
-          child: RefreshIndicator(
-            color: AppColors.primaryLight,
-            onRefresh: () async {
-              _loadUsers();
-              _loadGroups();
-            },
-            child: ListView(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              children: [
-                // 1. GROUPS SECTION
-                if (_groups.isNotEmpty) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 4, 18, 6),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Gruplar (${_groups.length})',
-                          style: const TextStyle(
-                            color: AppColors.textSecondary,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        ),
-                        InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => CreateGroupScreen(
-                                  currentUser: currentUser,
-                                  contacts: _phoneContacts,
-                                ),
-                              ),
-                            ).then((created) {
-                              if (created == true) _loadGroups();
-                            });
-                          },
-                          child: const Text(
-                            '+ Yeni Grup',
-                            style: TextStyle(
-                              color: AppColors.accent,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  ..._groups.map((group) {
-                    return Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: AppColors.primaryLight.withOpacity(0.2)),
-                      ),
-                      child: ListTile(
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                        leading: CircleAvatar(
-                          radius: 26,
-                          backgroundColor: AppColors.surfaceLight,
-                          backgroundImage: group.photoUrl.isNotEmpty
-                              ? CachedNetworkImageProvider(group.photoUrl)
-                              : null,
-                          child: group.photoUrl.isEmpty
-                              ? const Icon(Icons.group_rounded, color: AppColors.accent, size: 28)
-                              : null,
-                        ),
-                        title: Row(
+          child: Builder(
+            builder: (context) {
+              // Combine direct contacts and groups into unified conversation items
+              final List<Map<String, dynamic>> allConversations = [];
+
+              for (final group in _groups) {
+                if (_searchQuery.isEmpty || group.name.toLowerCase().contains(_searchQuery.toLowerCase())) {
+                  allConversations.add({
+                    'type': 'group',
+                    'group': group,
+                    'time': group.lastTime ?? DateTime.fromMillisecondsSinceEpoch(0),
+                  });
+                }
+              }
+
+              for (final user in filteredUsers) {
+                allConversations.add({
+                  'type': 'user',
+                  'user': user,
+                  'time': user.lastTime ?? DateTime.fromMillisecondsSinceEpoch(0),
+                });
+              }
+
+              // Sort descending: most recent message/time first
+              allConversations.sort((a, b) {
+                final DateTime timeA = a['time'] as DateTime;
+                final DateTime timeB = b['time'] as DateTime;
+                return timeB.compareTo(timeA);
+              });
+
+              if (allConversations.isEmpty) {
+                return RefreshIndicator(
+                  color: AppColors.primaryLight,
+                  onRefresh: () async {
+                    _loadUsers();
+                    _loadGroups();
+                  },
+                  child: ListView(
+                    padding: const EdgeInsets.all(24.0),
+                    children: [
+                      const SizedBox(height: 60),
+                      Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Expanded(
-                              child: Text(
-                                group.name,
-                                style: const TextStyle(
-                                  color: AppColors.textPrimary,
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 15,
-                                ),
-                                overflow: TextOverflow.ellipsis,
+                            Container(
+                              width: 80,
+                              height: 80,
+                              decoration: BoxDecoration(
+                                color: AppColors.surface,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: AppColors.cardBorder),
                               ),
+                              child: const Icon(Icons.chat_bubble_outline_rounded, size: 40, color: AppColors.textMuted),
                             ),
-                            if (group.isAdmin)
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: AppColors.accent.withOpacity(0.18),
-                                  borderRadius: BorderRadius.circular(6),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'Sohbet Bulunamadı',
+                              style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Rehberinizdeki kayıtlı kişilerle veya yeni grup kurarak sohbete başlayabilirsiniz.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: AppColors.textSecondary, fontSize: 13, height: 1.4),
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppColors.primary,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                  ),
+                                  onPressed: () => _syncDeviceContacts(silent: false),
+                                  icon: const Icon(Icons.sync_rounded, size: 18),
+                                  label: const Text('Rehberi Yenile'),
                                 ),
-                                child: const Text(
-                                  'Yönetici',
-                                  style: TextStyle(color: AppColors.accent, fontSize: 10, fontWeight: FontWeight.bold),
+                                const SizedBox(width: 12),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppColors.accent,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                  ),
+                                  onPressed: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => CreateGroupScreen(
+                                          currentUser: currentUser,
+                                          contacts: _phoneContacts,
+                                        ),
+                                      ),
+                                    ).then((created) {
+                                      if (created == true) _loadGroups();
+                                    });
+                                  },
+                                  icon: const Icon(Icons.group_add_rounded, size: 18),
+                                  label: const Text('Grup Kur'),
                                 ),
-                              ),
+                              ],
+                            ),
                           ],
                         ),
-                        subtitle: Padding(
-                          padding: const EdgeInsets.only(top: 2.0),
-                          child: Text(
-                            group.lastMessage.isNotEmpty
-                                ? group.lastMessage
-                                : '${group.memberCount} üye • Grup sohbetine dokunun',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: group.lastMessage.isNotEmpty ? AppColors.textPrimary : AppColors.textSecondary,
-                              fontSize: 12.5,
-                            ),
-                          ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return RefreshIndicator(
+                color: AppColors.primaryLight,
+                onRefresh: () async {
+                  _loadUsers();
+                  _loadGroups();
+                },
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: allConversations.length,
+                  itemBuilder: (context, index) {
+                    final item = allConversations[index];
+
+                    if (item['type'] == 'group') {
+                      final GroupModel group = item['group'] as GroupModel;
+                      final timeStr = group.lastTime != null
+                          ? DateFormat('HH:mm').format(group.lastTime!)
+                          : '';
+
+                      return Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: AppColors.primaryLight.withOpacity(0.2)),
                         ),
-                        trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.textSecondary, size: 22),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => GroupChatScreen(group: group, currentUser: currentUser),
-                            ),
-                          ).then((_) => _loadGroups());
-                        },
-                      ),
-                    );
-                  }),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-                    child: Divider(color: AppColors.cardBorder),
-                  ),
-                ],
-
-                // 2. DIRECT CHATS SECTION
-                if (filteredUsers.isNotEmpty && _groups.isNotEmpty)
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(18, 2, 18, 6),
-                    child: Text(
-                      'Birebir Sohbetler',
-                      style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
-
-                if (filteredUsers.isEmpty && _groups.isEmpty)
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24.0),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Container(
-                            width: 80,
-                            height: 80,
-                            decoration: BoxDecoration(
-                              color: AppColors.surface,
-                              shape: BoxShape.circle,
-                              border: Border.all(color: AppColors.cardBorder),
-                            ),
-                            child: const Icon(Icons.chat_bubble_outline_rounded, size: 40, color: AppColors.textMuted),
-                          ),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'Sohbet Bulunamadı',
-                            style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16),
-                          ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            'Rehberinizdeki kayıtlı kişilerle veya yeni grup kurarak sohbete başlayabilirsiniz.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: AppColors.textSecondary, fontSize: 13, height: 1.4),
-                          ),
-                          const SizedBox(height: 16),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                          leading: Stack(
                             children: [
-                              ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppColors.primary,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                ),
-                                onPressed: () => _syncDeviceContacts(silent: false),
-                                icon: const Icon(Icons.sync_rounded, size: 18),
-                                label: const Text('Rehberi Yenile'),
+                              CircleAvatar(
+                                radius: 26,
+                                backgroundColor: AppColors.surfaceLight,
+                                backgroundImage: group.photoUrl.isNotEmpty
+                                    ? CachedNetworkImageProvider(group.photoUrl)
+                                    : null,
+                                child: group.photoUrl.isEmpty
+                                    ? const Icon(Icons.group_rounded, color: AppColors.accent, size: 28)
+                                    : null,
                               ),
-                              const SizedBox(width: 12),
-                              ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppColors.accent,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                ),
-                                onPressed: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => CreateGroupScreen(
-                                        currentUser: currentUser,
-                                        contacts: _phoneContacts,
-                                      ),
-                                    ),
-                                  ).then((created) {
-                                    if (created == true) _loadGroups();
-                                  });
-                                },
-                                icon: const Icon(Icons.group_add_rounded, size: 18),
-                                label: const Text('Grup Kur'),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                else
-                  ...filteredUsers.map((user) {
-                    return Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: AppColors.cardBorder),
-                      ),
-                      child: ListTile(
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                        leading: Stack(
-                          children: [
-                            CircleAvatar(
-                              radius: 26,
-                              backgroundColor: AppColors.surfaceLight,
-                              backgroundImage: CachedNetworkImageProvider(user.photoUrl),
-                            ),
-                            if (user.isOnline)
                               Positioned(
                                 bottom: 0,
                                 right: 0,
                                 child: Container(
-                                  width: 14,
-                                  height: 14,
-                                  decoration: BoxDecoration(
-                                    color: AppColors.onlineGreen,
+                                  padding: const EdgeInsets.all(3),
+                                  decoration: const BoxDecoration(
+                                    color: AppColors.accent,
                                     shape: BoxShape.circle,
-                                    border: Border.all(color: AppColors.surface, width: 2),
+                                  ),
+                                  child: const Icon(Icons.groups, size: 10, color: Colors.black),
+                                ),
+                              ),
+                            ],
+                          ),
+                          title: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  group.name,
+                                  style: const TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (timeStr.isNotEmpty)
+                                Text(
+                                  timeStr,
+                                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 11),
+                                ),
+                            ],
+                          ),
+                          subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 2.0),
+                            child: Row(
+                              children: [
+                                if (group.isAdmin) ...[
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                    margin: const EdgeInsets.only(right: 6),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.accent.withOpacity(0.18),
+                                      borderRadius: BorderRadius.circular(5),
+                                    ),
+                                    child: const Text(
+                                      'Yönetici',
+                                      style: TextStyle(color: AppColors.accent, fontSize: 9.5, fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                ],
+                                Expanded(
+                                  child: Text(
+                                    group.lastMessage.isNotEmpty
+                                        ? group.lastMessage
+                                        : '${group.memberCount} üye • Grup sohbeti',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: group.lastMessage.isNotEmpty ? AppColors.textPrimary : AppColors.textSecondary,
+                                      fontSize: 12.5,
+                                    ),
                                   ),
                                 ),
-                              ),
-                          ],
-                        ),
-                        title: Text(
-                          user.displayName,
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 15,
+                              ],
+                            ),
                           ),
-                          overflow: TextOverflow.ellipsis,
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => GroupChatScreen(group: group, currentUser: currentUser),
+                              ),
+                            ).then((_) => _loadGroups());
+                          },
                         ),
-                        subtitle: Padding(
-                          padding: const EdgeInsets.only(top: 2.0),
-                          child: Text(
-                            user.status,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                      );
+                    } else {
+                      final UserModel user = item['user'] as UserModel;
+                      final timeStr = user.lastTime != null && user.lastMessage.isNotEmpty
+                          ? DateFormat('HH:mm').format(user.lastTime!)
+                          : '';
+
+                      return Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: AppColors.cardBorder),
+                        ),
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                          leading: Stack(
+                            children: [
+                              CircleAvatar(
+                                radius: 26,
+                                backgroundColor: AppColors.surfaceLight,
+                                backgroundImage: CachedNetworkImageProvider(user.photoUrl),
+                              ),
+                              if (user.isOnline)
+                                Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: Container(
+                                    width: 14,
+                                    height: 14,
+                                    decoration: BoxDecoration(
+                                      color: AppColors.onlineGreen,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: AppColors.surface, width: 2),
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: Container(
-                                padding: const EdgeInsets.all(7),
-                                decoration: BoxDecoration(
-                                  color: AppColors.primary.withOpacity(0.12),
-                                  shape: BoxShape.circle,
+                          title: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  user.displayName,
+                                  style: const TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                child: const Icon(Icons.call_rounded, color: AppColors.primaryLight, size: 18),
                               ),
-                              onPressed: () => _startAudioOrVideoCall(user, CallType.audio),
-                            ),
-                            IconButton(
-                              icon: Container(
-                                padding: const EdgeInsets.all(7),
-                                decoration: BoxDecoration(
-                                  color: AppColors.accent.withOpacity(0.12),
-                                  shape: BoxShape.circle,
+                              if (timeStr.isNotEmpty)
+                                Text(
+                                  timeStr,
+                                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 11),
                                 ),
-                                child: const Icon(Icons.videocam_rounded, color: AppColors.accent, size: 18),
+                            ],
+                          ),
+                          subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 2.0),
+                            child: Text(
+                              user.lastMessage.isNotEmpty ? user.lastMessage : user.status,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: user.lastMessage.isNotEmpty ? AppColors.textPrimary : AppColors.textSecondary,
+                                fontSize: 12.5,
                               ),
-                              onPressed: () => _startAudioOrVideoCall(user, CallType.video),
                             ),
-                          ],
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: Container(
+                                  padding: const EdgeInsets.all(7),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary.withOpacity(0.12),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.call_rounded, color: AppColors.primaryLight, size: 18),
+                                ),
+                                onPressed: () => _startAudioOrVideoCall(user, CallType.audio),
+                              ),
+                              IconButton(
+                                icon: Container(
+                                  padding: const EdgeInsets.all(7),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.accent.withOpacity(0.12),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.videocam_rounded, color: AppColors.accent, size: 18),
+                                ),
+                                onPressed: () => _startAudioOrVideoCall(user, CallType.video),
+                              ),
+                            ],
+                          ),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => ChatScreen(peerUser: user, currentUser: currentUser),
+                              ),
+                            ).then((_) => _loadUsers());
+                          },
                         ),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => ChatScreen(peerUser: user, currentUser: currentUser),
-                            ),
-                          );
-                        },
-                      ),
-                    );
-                  }),
-              ],
-            ),
+                      );
+                    }
+                  },
+                ),
+              );
+            },
           ),
         ),
       ],

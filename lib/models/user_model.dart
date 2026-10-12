@@ -10,6 +10,8 @@ class UserModel {
   final String status;
   final bool isOnline;
   final DateTime? lastSeen;
+  final String lastMessage;
+  final DateTime? lastTime;
 
   UserModel({
     required this.uid,
@@ -21,6 +23,8 @@ class UserModel {
     this.status = 'Hey there! I am using this app.',
     this.isOnline = false,
     this.lastSeen,
+    this.lastMessage = '',
+    this.lastTime,
   });
 
   Map<String, dynamic> toMap() {
@@ -57,6 +61,8 @@ class UserModel {
       status: map['status'] ?? 'Hey there! I am using this app.',
       isOnline: map['isOnline'] == true || map['isOnline'] == 1,
       lastSeen: parsedLastSeen,
+      lastMessage: map['lastMessage'] ?? '',
+      lastTime: map['lastTime'] != null ? DateTime.tryParse(map['lastTime'].toString()) : null,
     );
   }
 
@@ -70,6 +76,8 @@ class UserModel {
     String? status,
     bool? isOnline,
     DateTime? lastSeen,
+    String? lastMessage,
+    DateTime? lastTime,
   }) {
     return UserModel(
       uid: uid ?? this.uid,
@@ -81,6 +89,8 @@ class UserModel {
       status: status ?? this.status,
       isOnline: isOnline ?? this.isOnline,
       lastSeen: lastSeen ?? this.lastSeen,
+      lastMessage: lastMessage ?? this.lastMessage,
+      lastTime: lastTime ?? this.lastTime,
     );
   }
 }

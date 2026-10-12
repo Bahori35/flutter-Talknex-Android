@@ -179,6 +179,8 @@ class CustomChatService {
             phoneNumber: json['phoneNumber'] ?? '',
             status: json['status'] ?? 'Hey there! I am using this app.',
             isOnline: json['isOnline'] == 1 || json['isOnline'] == true,
+            lastMessage: json['lastMessage'] ?? '',
+            lastTime: json['lastTime'] != null && json['lastTime'] != '' ? DateTime.tryParse(json['lastTime'].toString()) : null,
           );
         }).toList();
       }

@@ -1084,10 +1084,14 @@ func main() {
 				pRows.Close()
 			}
 
-			// Query all other users
+			// Query all other users with their last message to/from req.UserId
 			uRows, err := db.Query(
-				"SELECT id, username, display_name, photo_url, phone_number, status, is_online, last_seen FROM users WHERE id != ?",
-				req.UserId,
+				`SELECT u.id, u.username, u.display_name, u.photo_url, u.phone_number, u.status, u.is_online, u.last_seen,
+				        COALESCE((SELECT content FROM messages WHERE ((sender_id = u.id AND receiver_id = ?) OR (sender_id = ? AND receiver_id = u.id)) AND is_deleted = 0 ORDER BY id DESC LIMIT 1), '') AS last_msg,
+				        COALESCE((SELECT created_at FROM messages WHERE ((sender_id = u.id AND receiver_id = ?) OR (sender_id = ? AND receiver_id = u.id)) AND is_deleted = 0 ORDER BY id DESC LIMIT 1), u.created_at) AS last_time
+				 FROM users u 
+				 WHERE u.id != ?`,
+				req.UserId, req.UserId, req.UserId, req.UserId, req.UserId,
 			)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Kullanicilar yuklenemedi"})
@@ -1104,6 +1108,8 @@ func main() {
 				Status      string `json:"status"`
 				IsOnline    bool   `json:"isOnline"`
 				LastSeen    string `json:"lastSeen"`
+				LastMessage string `json:"lastMessage"`
+				LastTime    string `json:"lastTime"`
 			}
 
 			var matched []UserItem
@@ -1111,14 +1117,19 @@ func main() {
 
 			for uRows.Next() {
 				var u UserItem
-				var dName, pUrl, pNum, st, lSeen sql.NullString
+				var dName, pUrl, pNum, st, lSeen, lMsg sql.NullString
 				var isOnline int
-				_ = uRows.Scan(&u.ID, &u.Username, &dName, &pUrl, &pNum, &st, &isOnline, &lSeen)
+				var lTime time.Time
+				_ = uRows.Scan(&u.ID, &u.Username, &dName, &pUrl, &pNum, &st, &isOnline, &lSeen, &lMsg, &lTime)
 				u.DisplayName = dName.String
 				u.PhotoUrl = pUrl.String
 				u.PhoneNumber = pNum.String
 				u.Status = st.String
 				u.LastSeen = lSeen.String
+				u.LastMessage = lMsg.String
+				if !lTime.IsZero() {
+					u.LastTime = lTime.Format("2006-01-02 15:04:05")
+				}
 
 				// Check online in memory
 				_, u.IsOnline = wsClients.Load(strconv.Itoa(u.ID))
