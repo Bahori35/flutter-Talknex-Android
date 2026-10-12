@@ -23,6 +23,7 @@ import '../story/story_view_screen.dart';
 import '../story/add_story_screen.dart';
 import '../group/create_group_screen.dart';
 import '../group/group_chat_screen.dart';
+import '../../services/encryption_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -1426,16 +1427,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                   ),
                                 ],
                                 Expanded(
-                                  child: Text(
-                                    group.lastMessage.isNotEmpty
-                                        ? group.lastMessage
-                                        : '${group.memberCount} üye • Grup sohbeti',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      color: group.lastMessage.isNotEmpty ? AppColors.textPrimary : AppColors.textSecondary,
-                                      fontSize: 12.5,
-                                    ),
+                                  child: Builder(
+                                    builder: (context) {
+                                      String displayMsg = group.lastMessage;
+                                      if (displayMsg.isNotEmpty) {
+                                        final senderKey = group.lastSenderId.isNotEmpty ? group.lastSenderId : currentUser.uid;
+                                        displayMsg = EndToEndEncryptionService.decryptText(
+                                          displayMsg,
+                                          senderKey,
+                                          'group_${group.id}',
+                                        );
+                                      }
+                                      return Text(
+                                        displayMsg.isNotEmpty
+                                            ? displayMsg
+                                            : '${group.memberCount} üye • Grup sohbeti',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: displayMsg.isNotEmpty ? AppColors.textPrimary : AppColors.textSecondary,
+                                          fontSize: 12.5,
+                                        ),
+                                      );
+                                    },
                                   ),
                                 ),
                               ],
@@ -1511,14 +1525,26 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           ),
                           subtitle: Padding(
                             padding: const EdgeInsets.only(top: 2.0),
-                            child: Text(
-                              user.lastMessage.isNotEmpty ? user.lastMessage : user.status,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: user.lastMessage.isNotEmpty ? AppColors.textPrimary : AppColors.textSecondary,
-                                fontSize: 12.5,
-                              ),
+                            child: Builder(
+                              builder: (context) {
+                                String displayMsg = user.lastMessage;
+                                if (displayMsg.isNotEmpty) {
+                                  displayMsg = EndToEndEncryptionService.decryptText(
+                                    displayMsg,
+                                    currentUser.uid,
+                                    user.uid,
+                                  );
+                                }
+                                return Text(
+                                  displayMsg.isNotEmpty ? displayMsg : user.status,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: displayMsg.isNotEmpty ? AppColors.textPrimary : AppColors.textSecondary,
+                                    fontSize: 12.5,
+                                  ),
+                                );
+                              },
                             ),
                           ),
                           trailing: Row(

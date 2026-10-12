@@ -7,6 +7,7 @@ class GroupModel {
   final String myRole; // 'admin' or 'member'
   final int memberCount;
   final String lastMessage;
+  final String lastSenderId;
   final DateTime? lastTime;
 
   GroupModel({
@@ -18,6 +19,7 @@ class GroupModel {
     this.myRole = 'member',
     this.memberCount = 1,
     this.lastMessage = '',
+    this.lastSenderId = '',
     this.lastTime,
   });
 
@@ -38,6 +40,7 @@ class GroupModel {
       myRole: json['myRole']?.toString() ?? 'member',
       memberCount: json['memberCount'] is int ? json['memberCount'] : int.tryParse(json['memberCount']?.toString() ?? '1') ?? 1,
       lastMessage: json['lastMessage']?.toString() ?? '',
+      lastSenderId: json['lastSenderId']?.toString() ?? '',
       lastTime: parsedTime,
     );
   }

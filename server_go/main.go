@@ -1498,6 +1498,7 @@ func main() {
 				`SELECT g.id, g.name, COALESCE(g.photo_url, ''), COALESCE(g.description, ''), g.created_by, gm.role,
 				        (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count,
 				        COALESCE((SELECT content FROM group_messages WHERE group_id = g.id AND is_deleted = 0 ORDER BY id DESC LIMIT 1), '') AS last_msg,
+				        COALESCE((SELECT sender_id FROM group_messages WHERE group_id = g.id AND is_deleted = 0 ORDER BY id DESC LIMIT 1), 0) AS last_sender_id,
 				        COALESCE((SELECT created_at FROM group_messages WHERE group_id = g.id AND is_deleted = 0 ORDER BY id DESC LIMIT 1), g.created_at) AS last_time
 				 FROM groups g
 				 JOIN group_members gm ON g.id = gm.group_id
@@ -1513,21 +1514,22 @@ func main() {
 
 			var list []map[string]interface{}
 			for rows.Next() {
-				var gID, createdBy, memCount int
+				var gID, createdBy, memCount, lastSenderID int
 				var gName, photoURL, desc, myRole, lastMsg string
 				var lastTime time.Time
-				_ = rows.Scan(&gID, &gName, &photoURL, &desc, &createdBy, &myRole, &memCount, &lastMsg, &lastTime)
+				_ = rows.Scan(&gID, &gName, &photoURL, &desc, &createdBy, &myRole, &memCount, &lastMsg, &lastSenderID, &lastTime)
 
 				list = append(list, map[string]interface{}{
-					"id":          gID,
-					"name":        gName,
-					"photoUrl":    photoURL,
-					"description": desc,
-					"createdBy":   createdBy,
-					"myRole":      myRole,
-					"memberCount": memCount,
-					"lastMessage": lastMsg,
-					"lastTime":    lastTime.Format("2006-01-02 15:04:05"),
+					"id":           gID,
+					"name":         gName,
+					"photoUrl":     photoURL,
+					"description":  desc,
+					"createdBy":    createdBy,
+					"myRole":       myRole,
+					"memberCount":  memCount,
+					"lastMessage":  lastMsg,
+					"lastSenderId": strconv.Itoa(lastSenderID),
+					"lastTime":     lastTime.Format("2006-01-02 15:04:05"),
 				})
 			}
 			c.JSON(http.StatusOK, list)
