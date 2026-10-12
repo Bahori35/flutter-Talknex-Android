@@ -159,7 +159,40 @@ class ServerManagerGUI:
         # Ports & Hardware Specs Details
         self.specs_lbl = tk.Label(hw_grid, text="• Nginx Proxy: Port 3000 | Uvicorn: Port 3001\n• Toplam: " + str(self.total_cores) + " Thread | RAM: 0 GB",
                                   font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD, justify=tk.LEFT)
-        self.specs_lbl.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.specs_lbl.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        # --- MIDDLE: Active Thread Monitoring Grid ---
+        self.cores_card = tk.LabelFrame(body, text=f" İşlemci Çekirdek Dağılımı ({self.total_cores} Thread Canlı Yük) ",
+                                        font=("Segoe UI", 10, "bold"), fg=FG_TEXT, bg=BG_CARD, bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
+        self.cores_card.pack(fill=tk.X, pady=(0, 10))
+
+        self.cores_container = tk.Frame(self.cores_card, bg=BG_CARD)
+        self.cores_container.pack(fill=tk.X, padx=10, pady=8)
+
+        self.core_widgets = []
+        # Create a mini meter for each core (max 24 in grid)
+        display_cores = min(self.total_cores, 32)
+        cols_per_row = 8 if display_cores >= 12 else 4
+
+        for c_idx in range(display_cores):
+            r = c_idx // cols_per_row
+            col = c_idx % cols_per_row
+
+            c_frame = tk.Frame(self.cores_container, bg=BG_CARD, padx=4, pady=2)
+            c_frame.grid(row=r, column=col, sticky="w", padx=4, pady=2)
+
+            c_lbl = tk.Label(c_frame, text=f"T{c_idx+1}: %0", font=("Segoe UI", 8, "bold"), fg=FG_MUTED, bg=BG_CARD, width=8, anchor="w")
+            c_lbl.pack(side=tk.LEFT)
+
+            c_canv = tk.Canvas(c_frame, width=42, height=10, bg=BG_MAIN, highlightthickness=1, highlightbackground=BORDER_COLOR)
+            c_canv.pack(side=tk.LEFT, padx=(2, 0))
+            c_rect = c_canv.create_rectangle(0, 0, 0, 10, fill=ACCENT_GREEN, width=0)
+
+            self.core_widgets.append({
+                "label": c_lbl,
+                "canvas": c_canv,
+                "rect": c_rect
+            })
 
         # --- BOTTOM: Live Console Logs ---
         log_frame = tk.LabelFrame(body, text=" Canlı Sunucu Logları ", font=("Segoe UI", 11, "bold"),
@@ -234,14 +267,17 @@ class ServerManagerGUI:
                         except Exception:
                             pass
 
-                    self.root.after(0, self._update_stats, cpu_pct, ghz_str, ram_pct, ram_used_gb, total_ram_gb, ram_speed_str, online_users, total_users)
+                    # Fetch per-thread usage
+                    per_cpu_list = psutil.cpu_percent(interval=None, percpu=True)
+
+                    self.root.after(0, self._update_stats, cpu_pct, ghz_str, ram_pct, ram_used_gb, total_ram_gb, ram_speed_str, online_users, total_users, per_cpu_list)
                 except Exception:
                     time.sleep(1)
 
         t = threading.Thread(target=monitor_loop, daemon=True)
         t.start()
 
-    def _update_stats(self, cpu, ghz, ram, ram_used, total_ram, ram_speed, online, total):
+    def _update_stats(self, cpu, ghz, ram, ram_used, total_ram, ram_speed, online, total, per_cpu=None):
         # Update CPU green bar & embedded text
         ghz_part = f" - {ghz}" if ghz else ""
         cpu_text_str = f"%{cpu:.1f}{ghz_part}"
@@ -257,6 +293,15 @@ class ServerManagerGUI:
         self.ram_canvas.coords(self.ram_rect, 0, 0, ram_w, 22)
         self.ram_canvas.itemconfigure(self.ram_text, text=ram_text_str)
         self.ram_canvas.tag_raise(self.ram_text)
+
+        # Update Individual Core Mini-Meters
+        if per_cpu and self.core_widgets:
+            for idx, w in enumerate(self.core_widgets):
+                if idx < len(per_cpu):
+                    c_val = per_cpu[idx]
+                    w["label"].config(text=f"T{idx+1}: %{int(c_val)}")
+                    cw = int((max(0, min(c_val, 100)) / 100.0) * 42)
+                    w["canvas"].coords(w["rect"], 0, 0, cw, 10)
 
         # Update Specs Label
         self.specs_lbl.config(text=f"• Nginx: Port 3000 | Uvicorn: Port 3001\n• Toplam: {self.total_cores} Thread | Toplam Bellek: {total_ram} GB {ram_speed}")
