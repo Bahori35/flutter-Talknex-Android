@@ -54,3 +54,4 @@ server_go/*.exe
 # Secret Service Account Keys
 *firebase-adminsdk*.json
 
+uploads/
