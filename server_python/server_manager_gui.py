@@ -171,7 +171,26 @@ class ServerManagerGUI:
 
         self.core_widgets = []
         self.active_allocated_threads = 0
+        # --- BOTTOM: Live Console Logs ---
+        log_frame = tk.LabelFrame(body, text=" Canlı Sunucu Logları ", font=("Segoe UI", 11, "bold"),
+                                  fg=FG_TEXT, bg=BG_CARD, bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
+        log_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.log_text = tk.Text(log_frame, bg=BG_LOG, fg="#38BDF8", insertbackground=FG_TEXT,
+                                font=("Consolas", 10), wrap=tk.WORD, bd=0, padx=10, pady=10)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = tk.Scrollbar(log_frame, command=self.log_text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.config(yscrollcommand=scrollbar.set)
+
+        # Clear Log Button on corner
+        btn_clear = tk.Button(log_frame, text="Logları Temizle", font=("Segoe UI", 8), bg=BORDER_COLOR, fg=FG_TEXT,
+                              relief=tk.FLAT, padx=6, pady=2, command=lambda: self.log_text.delete('1.0', tk.END))
+        btn_clear.place(relx=1.0, rely=0.0, anchor="ne", x=-25, y=5)
+
         self.rebuild_core_widgets(0)
+        self.log("[SİSTEM] Talknex Sunucu Kontrol Merkezi hazır. Başlat butonuna basabilirsiniz.")
 
     def rebuild_core_widgets(self, count):
         # Clear existing
@@ -210,26 +229,6 @@ class ServerManagerGUI:
                 "rect": c_rect,
                 "thread_id": c_idx
             })
-
-        # --- BOTTOM: Live Console Logs ---
-        log_frame = tk.LabelFrame(body, text=" Canlı Sunucu Logları ", font=("Segoe UI", 11, "bold"),
-                                  fg=FG_TEXT, bg=BG_CARD, bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
-        log_frame.pack(fill=tk.BOTH, expand=True)
-
-        self.log_text = tk.Text(log_frame, bg=BG_LOG, fg="#38BDF8", insertbackground=FG_TEXT,
-                                font=("Consolas", 10), wrap=tk.WORD, bd=0, padx=10, pady=10)
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar = tk.Scrollbar(log_frame, command=self.log_text.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log_text.config(yscrollcommand=scrollbar.set)
-
-        # Clear Log Button on corner
-        btn_clear = tk.Button(log_frame, text="Logları Temizle", font=("Segoe UI", 8), bg=BORDER_COLOR, fg=FG_TEXT,
-                              relief=tk.FLAT, padx=6, pady=2, command=lambda: self.log_text.delete('1.0', tk.END))
-        btn_clear.place(relx=1.0, rely=0.0, anchor="ne", x=-25, y=5)
-
-        self.log("[SİSTEM] Talknex Sunucu Kontrol Merkezi hazır. Başlat butonuna basabilirsiniz.")
 
     def log(self, text):
         self.root.after(0, self._append_log, text)
