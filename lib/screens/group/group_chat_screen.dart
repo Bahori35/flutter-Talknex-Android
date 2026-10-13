@@ -85,10 +85,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           map['content'] = decrypted;
         }
 
-        final newMsg = GroupMessageModel.fromJson(map);
-        setState(() {
-          _messages.insert(0, newMsg);
-        });
+        try {
+          final newMsg = GroupMessageModel.fromJson(map);
+          setState(() {
+            _messages.insert(0, newMsg);
+          });
+        } catch (e) {
+          debugPrint('[GROUP MSG RECEIVE ERR]: $e');
+        }
       }
     };
 
@@ -149,16 +153,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final gId = data['groupId'] is int ? data['groupId'] : int.tryParse(data['groupId']?.toString() ?? '0') ?? 0;
       if (gId == _group.id && mounted) {
         final pData = data['poll'];
-        if (pData != null && pData is Map<String, dynamic>) {
-          final updatedPoll = GroupPollModel.fromJson(Map<String, dynamic>.from(pData));
-          setState(() {
-            _messages = _messages.map((m) {
-              if (m.poll?.id == updatedPoll.id || m.id == updatedPoll.messageId.toString()) {
-                return m.copyWith(poll: updatedPoll);
-              }
-              return m;
-            }).toList();
-          });
+        if (pData != null && pData is Map) {
+          try {
+            final updatedPoll = GroupPollModel.fromJson(Map<String, dynamic>.from(pData));
+            setState(() {
+              _messages = _messages.map((m) {
+                if (m.poll?.id == updatedPoll.id || m.id == updatedPoll.messageId.toString()) {
+                  return m.copyWith(poll: updatedPoll);
+                }
+                return m;
+              }).toList();
+            });
+          } catch (e) {
+            debugPrint('[GROUP POLL UPDATE ERR]: $e');
+          }
         }
       }
     };
@@ -168,16 +176,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final gId = data['groupId'] is int ? data['groupId'] : int.tryParse(data['groupId']?.toString() ?? '0') ?? 0;
       if (gId == _group.id && mounted) {
         final eData = data['event'];
-        if (eData != null && eData is Map<String, dynamic>) {
-          final updatedEvent = GroupEventModel.fromJson(Map<String, dynamic>.from(eData));
-          setState(() {
-            _messages = _messages.map((m) {
-              if (m.event?.id == updatedEvent.id || m.id == updatedEvent.messageId.toString()) {
-                return m.copyWith(event: updatedEvent);
-              }
-              return m;
-            }).toList();
-          });
+        if (eData != null && eData is Map) {
+          try {
+            final updatedEvent = GroupEventModel.fromJson(Map<String, dynamic>.from(eData));
+            setState(() {
+              _messages = _messages.map((m) {
+                if (m.event?.id == updatedEvent.id || m.id == updatedEvent.messageId.toString()) {
+                  return m.copyWith(event: updatedEvent);
+                }
+                return m;
+              }).toList();
+            });
+          } catch (e) {
+            debugPrint('[GROUP EVENT UPDATE ERR]: $e');
+          }
         }
       }
     };
@@ -1062,360 +1074,410 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  String _formatTurkishDateTime(DateTime dt) {
+    const months = [
+      'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+      'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'
+    ];
+    final day = dt.day;
+    final month = (dt.month >= 1 && dt.month <= 12) ? months[dt.month - 1] : dt.month.toString();
+    final year = dt.year;
+    final hour = dt.hour.toString().padLeft(2, '0');
+    final minute = dt.minute.toString().padLeft(2, '0');
+    return '$day $month $year, $hour:$minute';
+  }
+
+  String _formatTimeOnly(DateTime dt) {
+    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+
   Widget _buildEventWidget(GroupMessageModel message) {
-    final event = message.event!;
-    final now = DateTime.now();
-    final isPast = event.isPast || now.isAfter(event.endTime);
-    final isStarted = now.isAfter(event.startTime) && !isPast;
-
-    final startFormat = DateFormat('d MMMM yyyy, HH:mm', 'tr_TR');
-    final endFormat = DateFormat('HH:mm');
-
-    String timeDisplay = '';
-    try {
-      timeDisplay = '${startFormat.format(event.startTime)} - ${endFormat.format(event.endTime)}';
-    } catch (_) {
-      timeDisplay = '${DateFormat('dd.MM.yyyy HH:mm').format(event.startTime)} - ${DateFormat('HH:mm').format(event.endTime)}';
-    }
-
-    String reminderLabel = '';
-    if (event.reminderUnit == 'minutes' || event.reminderUnit == 'dakika') {
-      reminderLabel = '${event.reminderValue} dakika önce';
-    } else if (event.reminderUnit == 'days' || event.reminderUnit == 'gün') {
-      reminderLabel = '${event.reminderValue} gün önce';
-    } else {
-      reminderLabel = '${event.reminderValue} saat önce';
-    }
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isStarted ? Colors.tealAccent.withOpacity(0.4) : AppColors.cardBorder,
-          width: isStarted ? 1.4 : 1,
+    final event = message.event;
+    if (event == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.cardBorder),
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header: Event icon & Title
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFAB47BC).withOpacity(0.18),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.event_available_rounded, color: Color(0xFFCE93D8), size: 24),
+        child: Row(
+          children: [
+            const Icon(Icons.event_available_rounded, color: Color(0xFFCE93D8), size: 24),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.content.isNotEmpty ? message.content : 'Etkinlik',
+                style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      event.title,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        height: 1.25,
-                      ),
-                    ),
-                    if (event.description.isNotEmpty) ...[
-                      const SizedBox(height: 3),
-                      Text(
-                        event.description,
-                        style: const TextStyle(color: Colors.white70, fontSize: 12.5),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-
-          // Status & Reminder Badge row
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
-                decoration: BoxDecoration(
-                  color: isPast
-                      ? AppColors.callRed.withOpacity(0.18)
-                      : (isStarted ? Colors.teal.withOpacity(0.2) : Colors.purple.withOpacity(0.18)),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: isPast
-                        ? AppColors.callRed.withOpacity(0.4)
-                        : (isStarted ? Colors.tealAccent.withOpacity(0.5) : const Color(0xFFAB47BC).withOpacity(0.4)),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      isPast
-                          ? Icons.event_busy_rounded
-                          : (isStarted ? Icons.play_arrow_rounded : Icons.schedule_rounded),
-                      size: 13,
-                      color: isPast
-                          ? AppColors.callRed
-                          : (isStarted ? Colors.tealAccent : const Color(0xFFCE93D8)),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      isPast ? 'Sona Erdi' : (isStarted ? 'Şu Anda Devam Ediyor' : 'Planlandı'),
-                      style: TextStyle(
-                        color: isPast
-                            ? AppColors.callRed
-                            : (isStarted ? Colors.tealAccent : const Color(0xFFCE93D8)),
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
-                decoration: BoxDecoration(
-                  color: Colors.amber.withOpacity(0.14),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.amber.withOpacity(0.3)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.notifications_active_rounded, size: 12, color: Colors.amberAccent),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Bildirim: $reminderLabel',
-                      style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ),
-              if (event.allowGuests)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.14),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.blue.withOpacity(0.3)),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.people_alt_rounded, size: 12, color: Colors.lightBlueAccent),
-                      SizedBox(width: 4),
-                      Text(
-                        'Konuk İzni Açık',
-                        style: TextStyle(color: Colors.lightBlueAccent, fontSize: 11, fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-
-          // Date & Time Box
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceLight,
-              borderRadius: BorderRadius.circular(10),
             ),
-            child: Row(
+          ],
+        ),
+      );
+    }
+
+    try {
+      final now = DateTime.now();
+      final isPast = event.isPast || now.isAfter(event.endTime);
+      final isStarted = now.isAfter(event.startTime) && !isPast;
+
+      final timeDisplay = '${_formatTurkishDateTime(event.startTime)} - ${_formatTimeOnly(event.endTime)}';
+
+      String reminderLabel = '';
+      if (event.reminderUnit == 'minutes' || event.reminderUnit == 'dakika') {
+        reminderLabel = '${event.reminderValue} dakika önce';
+      } else if (event.reminderUnit == 'days' || event.reminderUnit == 'gün') {
+        reminderLabel = '${event.reminderValue} gün önce';
+      } else {
+        reminderLabel = '${event.reminderValue} saat önce';
+      }
+
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isStarted ? Colors.tealAccent.withOpacity(0.4) : AppColors.cardBorder,
+            width: isStarted ? 1.4 : 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header: Event icon & Title
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.access_time_rounded, color: AppColors.accent, size: 18),
-                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFAB47BC).withOpacity(0.18),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.event_available_rounded, color: Color(0xFFCE93D8), size: 24),
+                ),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: Text(
-                    timeDisplay,
-                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        event.title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          height: 1.25,
+                        ),
+                      ),
+                      if (event.description.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(
+                          event.description,
+                          style: const TextStyle(color: Colors.white70, fontSize: 12.5),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 6),
+            const SizedBox(height: 10),
 
-          // Location Box (Clickable to open map/navigation)
-          InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () {
-              String mapUrl;
-              if (event.latitude != 0.0 && event.longitude != 0.0) {
-                mapUrl = 'https://maps.google.com/?q=${event.latitude},${event.longitude}';
-              } else {
-                mapUrl = 'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(event.location)}';
-              }
-              _openDocument(mapUrl);
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppColors.surfaceLight,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFFF7043).withOpacity(0.35)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.location_on_rounded, color: Color(0xFFFF7043), size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          event.location,
-                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+            // Status & Reminder Badge row
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                  decoration: BoxDecoration(
+                    color: isPast
+                        ? AppColors.callRed.withOpacity(0.18)
+                        : (isStarted ? Colors.teal.withOpacity(0.2) : Colors.purple.withOpacity(0.18)),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: isPast
+                          ? AppColors.callRed.withOpacity(0.4)
+                          : (isStarted ? Colors.tealAccent.withOpacity(0.5) : const Color(0xFFAB47BC).withOpacity(0.4)),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isPast
+                            ? Icons.event_busy_rounded
+                            : (isStarted ? Icons.play_arrow_rounded : Icons.schedule_rounded),
+                        size: 13,
+                        color: isPast
+                            ? AppColors.callRed
+                            : (isStarted ? Colors.tealAccent : const Color(0xFFCE93D8)),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        isPast ? 'Sona Erdi' : (isStarted ? 'Şu Anda Devam Ediyor' : 'Planlandı'),
+                        style: TextStyle(
+                          color: isPast
+                              ? AppColors.callRed
+                              : (isStarted ? Colors.tealAccent : const Color(0xFFCE93D8)),
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
                         ),
-                        const SizedBox(height: 2),
-                        const Text(
-                          'Haritada Yol Tarifi Al ↗',
-                          style: TextStyle(color: Color(0xFFFF7043), fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.14),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.amber.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.notifications_active_rounded, size: 12, color: Colors.amberAccent),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Bildirim: $reminderLabel',
+                        style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+                if (event.allowGuests)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.14),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.people_alt_rounded, size: 12, color: Colors.lightBlueAccent),
+                        SizedBox(width: 4),
+                        Text(
+                          'Konuk İzni Açık',
+                          style: TextStyle(color: Colors.lightBlueAccent, fontSize: 11, fontWeight: FontWeight.w600),
                         ),
                       ],
                     ),
                   ),
-                  const Icon(Icons.navigation_rounded, color: Color(0xFFFF7043), size: 16),
-                ],
-              ),
+              ],
             ),
-          ),
-          const SizedBox(height: 12),
+            const SizedBox(height: 12),
 
-          // Attendance summary bar (clickable to view attendees list)
-          InkWell(
-            onTap: () => _showEventAttendeesSheet(event),
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            // Date & Time Box
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.05),
-                borderRadius: BorderRadius.circular(8),
+                color: AppColors.surfaceLight,
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Row(
                 children: [
-                  Text(
-                    '✓ ${event.goingCount} Katılıyor${event.totalGuests > 0 ? ' (+${event.totalGuests} misafir)' : ''}',
-                    style: const TextStyle(color: AppColors.onlineGreen, fontSize: 12, fontWeight: FontWeight.bold),
+                  const Icon(Icons.access_time_rounded, color: AppColors.accent, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      timeDisplay,
+                      style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
                   ),
-                  const SizedBox(width: 10),
-                  Text(
-                    '? ${event.maybeCount} Belki',
-                    style: const TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    '✗ ${event.declinedCount} Katılmıyor',
-                    style: const TextStyle(color: Colors.white54, fontSize: 12),
-                  ),
-                  const Spacer(),
-                  const Icon(Icons.chevron_right_rounded, color: Colors.white38, size: 18),
                 ],
               ),
             ),
-          ),
-          const SizedBox(height: 12),
+            const SizedBox(height: 6),
 
-          // RSVP Action Buttons
-          if (isPast)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 4),
-                child: Text(
-                  'Bu etkinlik sona ermiştir.',
-                  style: TextStyle(color: Colors.white38, fontSize: 12, fontStyle: FontStyle.italic),
+            // Location Box (Clickable to open map/navigation)
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () {
+                String mapUrl;
+                if (event.latitude != 0.0 && event.longitude != 0.0) {
+                  mapUrl = 'https://maps.google.com/?q=${event.latitude},${event.longitude}';
+                } else {
+                  mapUrl = 'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(event.location)}';
+                }
+                _openDocument(mapUrl);
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceLight,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFF7043).withOpacity(0.35)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.location_on_rounded, color: Color(0xFFFF7043), size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            event.location,
+                            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                          ),
+                          const SizedBox(height: 2),
+                          const Text(
+                            'Haritada Yol Tarifi Al ↗',
+                            style: TextStyle(color: Color(0xFFFF7043), fontSize: 11, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.navigation_rounded, color: Color(0xFFFF7043), size: 16),
+                  ],
                 ),
               ),
-            )
-          else ...[
-            const Text(
-              'Katılım Durumunuz:',
-              style: TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.w600),
             ),
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                // Katılacağım
-                Expanded(
-                  child: _buildRsvpButton(
-                    label: event.myStatus == 'going' && event.myGuestCount > 0
-                        ? 'Katılıyorum (+${event.myGuestCount})'
-                        : 'Katılacağım',
-                    icon: Icons.check_circle_rounded,
-                    isSelected: event.myStatus == 'going',
-                    activeColor: AppColors.onlineGreen,
-                    onTap: () {
-                      if (event.allowGuests) {
-                        _showGuestPickerDialog(event);
-                      } else {
+            const SizedBox(height: 12),
+
+            // Attendance summary bar (clickable to view attendees list)
+            InkWell(
+              onTap: () => _showEventAttendeesSheet(event),
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          Text(
+                            '✓ ${event.goingCount} Katılıyor${event.totalGuests > 0 ? ' (+${event.totalGuests} misafir)' : ''}',
+                            style: const TextStyle(color: AppColors.onlineGreen, fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            '? ${event.maybeCount} Belki',
+                            style: const TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            '✗ ${event.declinedCount} Katılmıyor',
+                            style: const TextStyle(color: Colors.white54, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.chevron_right_rounded, color: Colors.white38, size: 18),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // RSVP Action Buttons
+            if (isPast)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    'Bu etkinlik sona ermiştir.',
+                    style: TextStyle(color: Colors.white38, fontSize: 12, fontStyle: FontStyle.italic),
+                  ),
+                ),
+              )
+            else ...[
+              const Text(
+                'Katılım Durumunuz:',
+                style: TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  // Katılacağım
+                  Expanded(
+                    child: _buildRsvpButton(
+                      label: event.myStatus == 'going' && event.myGuestCount > 0
+                          ? 'Katılıyorum (+${event.myGuestCount})'
+                          : 'Katılacağım',
+                      icon: Icons.check_circle_rounded,
+                      isSelected: event.myStatus == 'going',
+                      activeColor: AppColors.onlineGreen,
+                      onTap: () {
+                        if (event.allowGuests) {
+                          _showGuestPickerDialog(event);
+                        } else {
+                          _socketService.rsvpGroupEvent(
+                            groupId: _group.id,
+                            eventId: event.id,
+                            status: 'going',
+                            guestCount: 0,
+                          );
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // Belki
+                  Expanded(
+                    child: _buildRsvpButton(
+                      label: 'Belki',
+                      icon: Icons.help_outline_rounded,
+                      isSelected: event.myStatus == 'maybe',
+                      activeColor: Colors.amberAccent,
+                      onTap: () {
                         _socketService.rsvpGroupEvent(
                           groupId: _group.id,
                           eventId: event.id,
-                          status: 'going',
+                          status: 'maybe',
                           guestCount: 0,
                         );
-                      }
-                    },
+                      },
+                    ),
                   ),
-                ),
-                const SizedBox(width: 6),
-                // Belki
-                Expanded(
-                  child: _buildRsvpButton(
-                    label: 'Belki',
-                    icon: Icons.help_outline_rounded,
-                    isSelected: event.myStatus == 'maybe',
-                    activeColor: Colors.amberAccent,
-                    onTap: () {
-                      _socketService.rsvpGroupEvent(
-                        groupId: _group.id,
-                        eventId: event.id,
-                        status: 'maybe',
-                        guestCount: 0,
-                      );
-                    },
+                  const SizedBox(width: 6),
+                  // Katılmayacağım
+                  Expanded(
+                    child: _buildRsvpButton(
+                      label: 'Katılmıyorum',
+                      icon: Icons.cancel_outlined,
+                      isSelected: event.myStatus == 'declined',
+                      activeColor: AppColors.callRed,
+                      onTap: () {
+                        _socketService.rsvpGroupEvent(
+                          groupId: _group.id,
+                          eventId: event.id,
+                          status: 'declined',
+                          guestCount: 0,
+                        );
+                      },
+                    ),
                   ),
-                ),
-                const SizedBox(width: 6),
-                // Katılmayacağım
-                Expanded(
-                  child: _buildRsvpButton(
-                    label: 'Katılmıyorum',
-                    icon: Icons.cancel_outlined,
-                    isSelected: event.myStatus == 'declined',
-                    activeColor: AppColors.callRed,
-                    onTap: () {
-                      _socketService.rsvpGroupEvent(
-                        groupId: _group.id,
-                        eventId: event.id,
-                        status: 'declined',
-                        guestCount: 0,
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
+                ],
+              ),
+            ],
           ],
-        ],
-      ),
-    );
+        ),
+      );
+    } catch (e) {
+      debugPrint('[EVENT WIDGET BUILD ERR] $e');
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Text(message.content, style: const TextStyle(color: Colors.white)),
+      );
+    }
   }
 
   Widget _buildRsvpButton({
@@ -1903,8 +1965,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final isLocation = message.type == 'location';
     final isDoc = message.type == 'doc';
     final isVideo = message.type == 'video' || (message.mediaUrl != null && message.mediaUrl!.endsWith('.mp4'));
-    final isPoll = message.type == 'poll' && message.poll != null;
-    final isEvent = message.type == 'event' && message.event != null;
+    final isPoll = message.type == 'poll';
+    final isEvent = message.type == 'event';
     final isSpecialCard = isPoll || isEvent;
     final hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
 

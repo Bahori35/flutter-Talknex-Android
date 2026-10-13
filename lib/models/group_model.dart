@@ -306,10 +306,16 @@ class GroupEventModel {
       eTime = DateTime.tryParse(json['endTime'].toString()) ?? eTime;
     }
 
-    final attList = (json['attendees'] as List?)
-            ?.map((e) => GroupEventAttendeeModel.fromJson(Map<String, dynamic>.from(e)))
-            .toList() ??
-        [];
+    final List<GroupEventAttendeeModel> attList = [];
+    if (json['attendees'] is List) {
+      for (final e in (json['attendees'] as List)) {
+        if (e is Map) {
+          try {
+            attList.add(GroupEventAttendeeModel.fromJson(Map<String, dynamic>.from(e)));
+          } catch (_) {}
+        }
+      }
+    }
 
     final past = json['isPast'] == true || DateTime.now().isAfter(eTime);
 
@@ -432,12 +438,20 @@ class GroupMessageModel {
 
     GroupPollModel? pModel;
     if (json['poll'] != null && json['poll'] is Map) {
-      pModel = GroupPollModel.fromJson(Map<String, dynamic>.from(json['poll']));
+      try {
+        pModel = GroupPollModel.fromJson(Map<String, dynamic>.from(json['poll']));
+      } catch (e) {
+        // Safe fallback
+      }
     }
 
     GroupEventModel? eModel;
     if (json['event'] != null && json['event'] is Map) {
-      eModel = GroupEventModel.fromJson(Map<String, dynamic>.from(json['event']));
+      try {
+        eModel = GroupEventModel.fromJson(Map<String, dynamic>.from(json['event']));
+      } catch (e) {
+        // Safe fallback
+      }
     }
 
     return GroupMessageModel(

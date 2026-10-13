@@ -412,15 +412,17 @@ class CustomChatService {
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
         return data.map((json) {
-          final rawContent = json['content'] ?? '';
-          // Group messages decrypted
-          final decrypted = EndToEndEncryptionService.decryptText(
-            rawContent,
-            json['senderId'].toString(),
-            'group_$groupId',
-          );
           final map = Map<String, dynamic>.from(json);
-          map['content'] = decrypted;
+          final mType = json['type']?.toString() ?? 'text';
+          if (mType != 'poll' && mType != 'event') {
+            final rawContent = json['content'] ?? '';
+            final decrypted = EndToEndEncryptionService.decryptText(
+              rawContent,
+              json['senderId'].toString(),
+              'group_$groupId',
+            );
+            map['content'] = decrypted;
+          }
           return GroupMessageModel.fromJson(map);
         }).toList();
       }
