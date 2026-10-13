@@ -102,6 +102,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _loadGroups();
         };
 
+        // Listen for group deletion/closing
+        _socketService.onGroupDeleted = (groupId, message) {
+          _loadGroups();
+        };
+
         // Listen for incoming calls
         _socketService.onIncomingCall = (callData) {
           _notificationService.startRingtone();
@@ -1459,7 +1464,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (_) => GroupChatScreen(group: group, currentUser: currentUser),
+                                builder: (_) => GroupChatScreen(
+                                  group: group,
+                                  currentUser: currentUser,
+                                  contacts: _phoneContacts,
+                                ),
                               ),
                             ).then((_) => _loadGroups());
                           },

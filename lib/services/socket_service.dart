@@ -22,6 +22,7 @@ typedef OnMessageSent = void Function(String tempId, String realId);
 typedef OnGroupMessageReceived = void Function(Map<String, dynamic> data);
 typedef OnGroupMessageDeleted = void Function(String messageId, String groupId, [String mode]);
 typedef OnGroupMessageSent = void Function(String tempId, String realId, String groupId);
+typedef OnGroupDeleted = void Function(String groupId, String message);
 
 class SocketService {
   static final SocketService _instance = SocketService._internal();
@@ -52,6 +53,7 @@ class SocketService {
   OnGroupMessageReceived? onGroupMessageReceived;
   OnGroupMessageDeleted? onGroupMessageDeleted;
   OnGroupMessageSent? onGroupMessageSent;
+  OnGroupDeleted? onGroupDeleted;
 
   // Initialize and connect native WebSocket to Go backend (Port 3000 -> Nginx -> Go)
   void initSocket(String userId) {
@@ -301,6 +303,14 @@ class SocketService {
             if (tempId.isNotEmpty && realId.isNotEmpty) {
               onGroupMessageSent!(tempId, realId, gId);
             }
+          }
+          break;
+
+        case 'group_deleted':
+          if (onGroupDeleted != null && data is Map<String, dynamic>) {
+            final gId = data['groupId']?.toString() ?? '';
+            final msg = data['message']?.toString() ?? 'Grup kapatıldı';
+            onGroupDeleted!(gId, msg);
           }
           break;
       }

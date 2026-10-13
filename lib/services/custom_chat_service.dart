@@ -383,6 +383,26 @@ class CustomChatService {
     }
   }
 
+  Future<Map<String, dynamic>> deleteGroup({
+    required int groupId,
+    required int userId,
+  }) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('$baseUrl/groups/$groupId?userId=$userId'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        return {'success': true};
+      } else {
+        final data = jsonDecode(response.body);
+        return {'success': false, 'error': data['error'] ?? 'Grup silinemedi'};
+      }
+    } catch (e) {
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
   Future<List<GroupMessageModel>> getGroupMessages(int groupId, String currentUserId) async {
     try {
       final response = await http.get(

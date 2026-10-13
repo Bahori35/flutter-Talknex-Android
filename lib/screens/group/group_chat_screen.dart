@@ -16,11 +16,13 @@ import 'group_info_screen.dart';
 class GroupChatScreen extends StatefulWidget {
   final GroupModel group;
   final UserModel currentUser;
+  final List<UserModel> contacts;
 
   const GroupChatScreen({
     Key? key,
     required this.group,
     required this.currentUser,
+    this.contacts = const [],
   }) : super(key: key);
 
   @override
@@ -109,6 +111,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             return m;
           }).toList();
         });
+      }
+    };
+
+    // Listen for live group deletion/closing by creator
+    _socketService.onGroupDeleted = (gId, msg) {
+      if (gId == _group.id.toString() && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(msg),
+            backgroundColor: AppColors.callRed,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        Navigator.pop(context, true);
       }
     };
   }
@@ -343,12 +359,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   void _openGroupInfo() async {
-    await Navigator.push(
+    final res = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => GroupInfoScreen(
           group: _group,
           currentUser: widget.currentUser,
+          contacts: widget.contacts,
           onGroupUpdated: () async {
             final refreshed = await _chatService.getGroupDetails(_group.id);
             if (refreshed != null && mounted) {
@@ -365,6 +382,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         ),
       ),
     );
+
+    if (res == true || res == 'deleted') {
+      if (mounted) {
+        Navigator.pop(context, true);
+      }
+    }
   }
 
   @override

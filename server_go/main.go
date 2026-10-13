@@ -1034,6 +1034,40 @@ func main() {
 			})
 		})
 
+		// 4b. List Registered Users
+		api.GET("/users", func(c *gin.Context) {
+			currUID := c.DefaultQuery("currentUserId", "0")
+			rows, err := db.Query(
+				`SELECT id, username, COALESCE(NULLIF(display_name, ''), username), COALESCE(photo_url, ''), 
+				        COALESCE(status, ''), is_online, COALESCE(phone_number, '') 
+				 FROM users 
+				 WHERE id != ?`,
+				currUID,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Kullanicilar alinamadi"})
+				return
+			}
+			defer rows.Close()
+
+			var users []map[string]interface{}
+			for rows.Next() {
+				var id, isOnline int
+				var uname, dname, photo, status, phone string
+				_ = rows.Scan(&id, &uname, &dname, &photo, &status, &isOnline, &phone)
+				users = append(users, map[string]interface{}{
+					"id":          id,
+					"username":    uname,
+					"displayName": dname,
+					"photoUrl":    photo,
+					"status":      status,
+					"isOnline":    isOnline == 1,
+					"phoneNumber": phone,
+				})
+			}
+			c.JSON(http.StatusOK, users)
+		})
+
 		// 5. FCM Token Registration
 		api.POST("/users/fcm-token", func(c *gin.Context) {
 			var req struct {
@@ -1720,6 +1754,64 @@ func main() {
 
 			_, _ = db.Exec("DELETE FROM group_members WHERE group_id = ? AND user_id = ?", gID, targetUID)
 			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Uye gruptan ayrildi"})
+		})
+
+		// G2. Delete / Close Group (Only creator allowed)
+		api.DELETE("/groups/:groupId", func(c *gin.Context) {
+			gID := c.Param("groupId")
+			reqUID := c.DefaultQuery("userId", "")
+			if reqUID == "" {
+				var body struct {
+					UserId int `json:"userId"`
+				}
+				_ = c.ShouldBindJSON(&body)
+				if body.UserId > 0 {
+					reqUID = strconv.Itoa(body.UserId)
+				}
+			}
+			if reqUID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Kullanici ID belirtilmedi"})
+				return
+			}
+
+			var createdBy int
+			var groupName string
+			err := db.QueryRow("SELECT created_by, name FROM groups WHERE id = ?", gID).Scan(&createdBy, &groupName)
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Grup bulunamadi"})
+				return
+			}
+
+			if strconv.Itoa(createdBy) != reqUID {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Yalnizca grubu kuran kisi grubu kapatabilir!"})
+				return
+			}
+
+			// Broadcast group_deleted to all online members
+			mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", gID)
+			if mErr == nil {
+				for mRows.Next() {
+					var mUID int
+					_ = mRows.Scan(&mUID)
+					uidStr := strconv.Itoa(mUID)
+					if memVal, ok := wsClients.Load(uidStr); ok {
+						if memClient, ok := memVal.(*WSClient); ok {
+							_ = memClient.Send("group_deleted", gin.H{
+								"groupId": gID,
+								"message": fmt.Sprintf("'%s' grubu kurucusu tarafından kapatıldı.", groupName),
+							})
+						}
+					}
+				}
+				mRows.Close()
+			}
+
+			// Delete group messages, members, and group
+			_, _ = db.Exec("DELETE FROM group_messages WHERE group_id = ?", gID)
+			_, _ = db.Exec("DELETE FROM group_members WHERE group_id = ?", gID)
+			_, _ = db.Exec("DELETE FROM groups WHERE id = ?", gID)
+
+			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Grup basariyla kapatildi ve silindi"})
 		})
 
 		// H. Get Group Messages (Filtered by deleted_by_users)
