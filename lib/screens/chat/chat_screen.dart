@@ -935,6 +935,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    final viewBottomPadding = MediaQuery.of(context).viewPadding.bottom;
+    final bottomInset = bottomPadding > viewBottomPadding ? bottomPadding : viewBottomPadding;
+
     return PopScope(
       canPop: !_showEmojiPicker,
       onPopInvokedWithResult: (didPop, result) {
@@ -1103,7 +1107,7 @@ class _ChatScreenState extends State<ChatScreen> {
           // Emoji / GIF / Sticker Picker Tray
           if (_showEmojiPicker)
             SizedBox(
-              height: 290,
+              height: 310 + bottomInset,
               child: EmojiGifStickerPicker(
                 onEmojiSelected: (emoji) {
                   final text = _messageController.text;
@@ -1709,6 +1713,8 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       color: AppColors.surface,
       child: SafeArea(
+        top: false,
+        bottom: !_showEmojiPicker,
         child: Row(
           children: [
             // WhatsApp-style Emoji, GIF, Sticker Tray Toggle

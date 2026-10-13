@@ -766,33 +766,40 @@ class _EmojiGifStickerPickerState extends State<EmojiGifStickerPicker> {
 
   // --- BOTTOM WHATSAPP-STYLE TAB SWITCHER ---
   Widget _buildBottomTabBar() {
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    final viewBottomPadding = MediaQuery.of(context).viewPadding.bottom;
+    final bottomInset = bottomPadding > viewBottomPadding ? bottomPadding : viewBottomPadding;
+
     return Container(
-      height: 46,
+      padding: EdgeInsets.only(bottom: bottomInset),
       decoration: const BoxDecoration(
         color: AppColors.surfaceLight,
         border: Border(
           top: BorderSide(color: AppColors.cardBorder, width: 0.8),
         ),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _buildBottomTabButton(
-            tab: PickerTab.emoji,
-            icon: Icons.sentiment_satisfied_alt_rounded,
-            label: 'EMOJİ',
-          ),
-          _buildBottomTabButton(
-            tab: PickerTab.gif,
-            icon: Icons.gif_box_rounded,
-            label: 'GIF',
-          ),
-          _buildBottomTabButton(
-            tab: PickerTab.sticker,
-            icon: Icons.sticky_note_2_rounded,
-            label: 'ÇIKARTMA',
-          ),
-        ],
+      child: SizedBox(
+        height: 48,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            _buildBottomTabButton(
+              tab: PickerTab.emoji,
+              icon: Icons.sentiment_satisfied_alt_rounded,
+              label: 'EMOJİ',
+            ),
+            _buildBottomTabButton(
+              tab: PickerTab.gif,
+              icon: Icons.gif_box_rounded,
+              label: 'GIF',
+            ),
+            _buildBottomTabButton(
+              tab: PickerTab.sticker,
+              icon: Icons.sticky_note_2_rounded,
+              label: 'ÇIKARTMA',
+            ),
+          ],
+        ),
       ),
     );
   }
