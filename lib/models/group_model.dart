@@ -254,6 +254,8 @@ class GroupEventModel {
   final String title;
   final String description;
   final String location;
+  final double latitude;
+  final double longitude;
   final DateTime startTime;
   final DateTime endTime;
   final int reminderValue;
@@ -277,6 +279,8 @@ class GroupEventModel {
     required this.title,
     this.description = '',
     required this.location,
+    this.latitude = 0.0,
+    this.longitude = 0.0,
     required this.startTime,
     required this.endTime,
     this.reminderValue = 1,
@@ -318,6 +322,8 @@ class GroupEventModel {
       title: json['title']?.toString() ?? '',
       description: json['description']?.toString() ?? '',
       location: json['location']?.toString() ?? '',
+      latitude: (json['latitude'] is num) ? (json['latitude'] as num).toDouble() : double.tryParse(json['latitude']?.toString() ?? '0') ?? 0.0,
+      longitude: (json['longitude'] is num) ? (json['longitude'] as num).toDouble() : double.tryParse(json['longitude']?.toString() ?? '0') ?? 0.0,
       startTime: sTime,
       endTime: eTime,
       reminderValue: json['reminderValue'] is int ? json['reminderValue'] : int.tryParse(json['reminderValue']?.toString() ?? '1') ?? 1,
@@ -343,6 +349,8 @@ class GroupEventModel {
     String? title,
     String? description,
     String? location,
+    double? latitude,
+    double? longitude,
     DateTime? startTime,
     DateTime? endTime,
     int? reminderValue,
@@ -366,6 +374,8 @@ class GroupEventModel {
       title: title ?? this.title,
       description: description ?? this.description,
       location: location ?? this.location,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
       startTime: startTime ?? this.startTime,
       endTime: endTime ?? this.endTime,
       reminderValue: reminderValue ?? this.reminderValue,

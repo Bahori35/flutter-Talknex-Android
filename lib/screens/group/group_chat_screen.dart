@@ -1252,24 +1252,48 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           ),
           const SizedBox(height: 6),
 
-          // Location Box
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceLight,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.location_on_rounded, color: Color(0xFFFF7043), size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    event.location,
-                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+          // Location Box (Clickable to open map/navigation)
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () {
+              String mapUrl;
+              if (event.latitude != 0.0 && event.longitude != 0.0) {
+                mapUrl = 'https://maps.google.com/?q=${event.latitude},${event.longitude}';
+              } else {
+                mapUrl = 'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(event.location)}';
+              }
+              _openDocument(mapUrl);
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceLight,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFFF7043).withOpacity(0.35)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.location_on_rounded, color: Color(0xFFFF7043), size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          event.location,
+                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                        ),
+                        const SizedBox(height: 2),
+                        const Text(
+                          'Haritada Yol Tarifi Al ↗',
+                          style: TextStyle(color: Color(0xFFFF7043), fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                  const Icon(Icons.navigation_rounded, color: Color(0xFFFF7043), size: 16),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -2368,6 +2392,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final reminderValController = TextEditingController(text: '1');
     String reminderUnit = 'hours';
     bool allowGuests = true;
+    double selectedLat = 0.0;
+    double selectedLng = 0.0;
 
     DateTime selectedStart = DateTime.now().add(const Duration(days: 1));
     selectedStart = DateTime(selectedStart.year, selectedStart.month, selectedStart.day, selectedStart.hour + 1, 0);
@@ -2508,18 +2534,57 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       ),
                     ),
                     const SizedBox(height: 14),
-                    const Text(
-                      'Etkinlik Konumu *',
-                      style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Etkinlik Konumu *',
+                          style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                        TextButton.icon(
+                          onPressed: () async {
+                            final result = await Navigator.push<LocationPickerResult>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const LocationPickerScreen(),
+                              ),
+                            );
+                            if (result != null) {
+                              setModalState(() {
+                                selectedLat = result.latitude;
+                                selectedLng = result.longitude;
+                                final fullLoc = (result.title.isNotEmpty && result.title != 'Konumunuz'
+                                        ? '${result.title}, '
+                                        : '') +
+                                    result.address;
+                                locationController.text = fullLoc.trim();
+                              });
+                            }
+                          },
+                          icon: const Icon(Icons.map_rounded, size: 16, color: Color(0xFFCE93D8)),
+                          label: const Text(
+                            'Haritada İşaretle',
+                            style: TextStyle(color: Color(0xFFCE93D8), fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 6),
                     TextField(
                       controller: locationController,
                       style: const TextStyle(color: Colors.white, fontSize: 14),
                       decoration: InputDecoration(
-                        hintText: 'Örn: Beşiktaş Sahil Kafe / Online Zoom',
+                        hintText: 'Örn: Beşiktaş Sahil Kafe veya haritadan seçin',
                         hintStyle: const TextStyle(color: Colors.white38),
                         prefixIcon: const Icon(Icons.location_on_rounded, color: Color(0xFFFF7043), size: 20),
+                        suffixIcon: (selectedLat != 0.0 || selectedLng != 0.0)
+                            ? const Icon(Icons.check_circle_rounded, color: AppColors.onlineGreen, size: 20)
+                            : null,
                         filled: true,
                         fillColor: AppColors.surfaceLight,
                         border: OutlineInputBorder(
@@ -2529,6 +2594,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                       ),
                     ),
+                    if (selectedLat != 0.0 || selectedLng != 0.0) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          const Icon(Icons.my_location_rounded, size: 13, color: AppColors.onlineGreen),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Haritadan işaretlendi (${selectedLat.toStringAsFixed(4)}, ${selectedLng.toStringAsFixed(4)})',
+                            style: const TextStyle(color: AppColors.onlineGreen, fontSize: 11, fontWeight: FontWeight.w500),
+                          ),
+                        ],
+                      ),
+                    ],
                     const SizedBox(height: 14),
                     const Text(
                       'Açıklama (İsteğe Bağlı)',
@@ -2779,6 +2857,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             title: title,
                             description: desc,
                             location: loc,
+                            latitude: selectedLat,
+                            longitude: selectedLng,
                             startTime: selectedStart,
                             endTime: selectedEnd,
                             reminderValue: rVal,

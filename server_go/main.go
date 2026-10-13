@@ -176,6 +176,8 @@ func initDB() {
 			title VARCHAR(255) NOT NULL,
 			description TEXT NULL,
 			location VARCHAR(255) NOT NULL,
+			latitude DOUBLE DEFAULT 0,
+			longitude DOUBLE DEFAULT 0,
 			start_time DATETIME NOT NULL,
 			end_time DATETIME NOT NULL,
 			reminder_value INT DEFAULT 1,
@@ -188,6 +190,8 @@ func initDB() {
 			INDEX (start_time),
 			INDEX (reminder_sent)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+		_, _ = db.Exec("ALTER TABLE group_events ADD COLUMN IF NOT EXISTS latitude DOUBLE DEFAULT 0 AFTER location")
+		_, _ = db.Exec("ALTER TABLE group_events ADD COLUMN IF NOT EXISTS longitude DOUBLE DEFAULT 0 AFTER latitude")
 
 		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS group_event_rsvps (
 			id INT AUTO_INCREMENT PRIMARY KEY,
@@ -296,13 +300,15 @@ func getPollData(pollID int, currUID int) (map[string]interface{}, error) {
 func getEventData(eventID int, currUID int) (map[string]interface{}, error) {
 	var eID, msgID, gID, cID, reminderVal, allowGuests, reminderSent int
 	var title, desc, loc, reminderUnit string
+	var lat, lng float64
 	var startTime, endTime, createdAt time.Time
 
 	err := db.QueryRow(`
 		SELECT id, message_id, group_id, creator_id, title, COALESCE(description, ''), location,
+		       COALESCE(latitude, 0), COALESCE(longitude, 0),
 		       start_time, end_time, reminder_value, reminder_unit, allow_guests, reminder_sent, created_at
 		FROM group_events WHERE id = ?`, eventID).
-		Scan(&eID, &msgID, &gID, &cID, &title, &desc, &loc,
+		Scan(&eID, &msgID, &gID, &cID, &title, &desc, &loc, &lat, &lng,
 			&startTime, &endTime, &reminderVal, &reminderUnit, &allowGuests, &reminderSent, &createdAt)
 	if err != nil {
 		return nil, err
@@ -376,6 +382,8 @@ func getEventData(eventID int, currUID int) (map[string]interface{}, error) {
 		"title":         title,
 		"description":   desc,
 		"location":      loc,
+		"latitude":      lat,
+		"longitude":     lng,
 		"startTime":     startTime.Format("2006-01-02 15:04:05"),
 		"endTime":       endTime.Format("2006-01-02 15:04:05"),
 		"reminderValue": reminderVal,
@@ -1443,6 +1451,8 @@ func main() {
 				title := strings.TrimSpace(fmt.Sprintf("%v", data["title"]))
 				desc := strings.TrimSpace(fmt.Sprintf("%v", data["description"]))
 				location := strings.TrimSpace(fmt.Sprintf("%v", data["location"]))
+				lat, _ := strconv.ParseFloat(fmt.Sprintf("%v", data["latitude"]), 64)
+				lng, _ := strconv.ParseFloat(fmt.Sprintf("%v", data["longitude"]), 64)
 				startTimeStr := fmt.Sprintf("%v", data["startTime"])
 				endTimeStr := fmt.Sprintf("%v", data["endTime"])
 				reminderVal, _ := strconv.Atoi(fmt.Sprintf("%v", data["reminderValue"]))
@@ -1503,9 +1513,9 @@ func main() {
 
 				// 2. Insert into group_events
 				eRes, eErr := db.Exec(
-					`INSERT INTO group_events (message_id, group_id, creator_id, title, description, location, start_time, end_time, reminder_value, reminder_unit, allow_guests)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					msgID, groupID, senderID, title, desc, location, startTime, endTime, reminderVal, reminderUnit, allowGuests,
+					`INSERT INTO group_events (message_id, group_id, creator_id, title, description, location, latitude, longitude, start_time, end_time, reminder_value, reminder_unit, allow_guests)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					msgID, groupID, senderID, title, desc, location, lat, lng, startTime, endTime, reminderVal, reminderUnit, allowGuests,
 				)
 				if eErr != nil {
 					log.Printf("[DB ERR create_group_event event]: %v", eErr)
