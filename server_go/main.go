@@ -731,6 +731,10 @@ func main() {
 						pushBody = "📄 Belge / Dosya"
 					case "location":
 						pushBody = "📍 Canlı Konum"
+					case "gif":
+						pushBody = "👾 GIF"
+					case "sticker":
+						pushBody = "🏷️ Çıkartma"
 					}
 					sendFCMPush(receiverID, senderName, pushBody, map[string]string{
 						"type":        "chat",
@@ -1092,6 +1096,10 @@ func main() {
 									pushText = senderName + ": 📄 Belge"
 								} else if msgType == "location" {
 									pushText = senderName + ": 📍 Konum"
+								} else if msgType == "gif" {
+									pushText = senderName + ": 👾 GIF"
+								} else if msgType == "sticker" {
+									pushText = senderName + ": 🏷️ Çıkartma"
 								}
 								sendFCMPush(targetID, groupName, pushText, map[string]string{
 									"type":      "group_chat",

@@ -21,6 +21,7 @@ import 'group_info_screen.dart';
 import '../chat/location_picker_screen.dart';
 import '../chat/widgets/video_message_bubble.dart';
 import '../chat/widgets/decrypted_image_widget.dart';
+import '../../widgets/emoji_gif_sticker_picker.dart';
 
 class GroupChatScreen extends StatefulWidget {
   final GroupModel group;
@@ -40,6 +41,7 @@ class GroupChatScreen extends StatefulWidget {
 
 class _GroupChatScreenState extends State<GroupChatScreen> {
   final _messageController = TextEditingController();
+  final _focusNode = FocusNode();
   final _scrollController = ScrollController();
   final _socketService = SocketService();
   final _chatService = CustomChatService();
@@ -49,6 +51,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   List<GroupMessageModel> _messages = [];
   bool _isLoading = true;
   bool _isUploadingMedia = false;
+  bool _showEmojiPicker = false;
+
+  void _toggleEmojiPicker() {
+    if (_showEmojiPicker) {
+      setState(() {
+        _showEmojiPicker = false;
+      });
+      _focusNode.requestFocus();
+    } else {
+      FocusScope.of(context).unfocus();
+      setState(() {
+        _showEmojiPicker = true;
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -61,6 +78,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void dispose() {
     _messageController.dispose();
+    _focusNode.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -745,7 +763,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: !_showEmojiPicker,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _showEmojiPicker) {
+          setState(() {
+            _showEmojiPicker = false;
+          });
+        }
+      },
+      child: Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         backgroundColor: AppColors.surface,
@@ -837,8 +864,45 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       ),
           ),
           _buildMessageInput(),
+
+          // Emoji / GIF / Sticker Picker Tray
+          if (_showEmojiPicker)
+            SizedBox(
+              height: 290,
+              child: EmojiGifStickerPicker(
+                onEmojiSelected: (emoji) {
+                  final text = _messageController.text;
+                  final selection = _messageController.selection;
+                  final newText = (selection.start >= 0 && selection.end >= 0)
+                      ? selection.textBefore(text) + emoji + selection.textAfter(text)
+                      : text + emoji;
+                  final newOffset = (selection.start >= 0)
+                      ? selection.baseOffset + emoji.length
+                      : newText.length;
+                  _messageController.value = TextEditingValue(
+                    text: newText,
+                    selection: TextSelection.collapsed(offset: newOffset),
+                  );
+                },
+                onBackspacePressed: () {
+                  final text = _messageController.text;
+                  if (text.isNotEmpty) {
+                    final runes = text.runes.toList();
+                    runes.removeLast();
+                    _messageController.text = String.fromCharCodes(runes);
+                  }
+                },
+                onGifSelected: (gifUrl) {
+                  _sendMessage(type: 'gif', mediaUrl: gifUrl, caption: '👾 GIF');
+                },
+                onStickerSelected: (stickerUrl) {
+                  _sendMessage(type: 'sticker', mediaUrl: stickerUrl, caption: '🏷️ Çıkartma');
+                },
+              ),
+            ),
         ],
       ),
+    ),
     );
   }
 
@@ -1960,15 +2024,122 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     return const Color(0xFF5E35B1);
   }
 
+  Widget _buildGroupStickerWidget(GroupMessageModel message, bool isMe) {
+    return Column(
+      crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: CachedNetworkImage(
+            imageUrl: message.mediaUrl!,
+            width: 145,
+            height: 145,
+            fit: BoxFit.contain,
+            placeholder: (ctx, url) => const SizedBox(
+              width: 145,
+              height: 145,
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent),
+                ),
+              ),
+            ),
+            errorWidget: (ctx, url, err) => const SizedBox(
+              width: 145,
+              height: 145,
+              child: Icon(Icons.broken_image_rounded, color: Colors.white38),
+            ),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.4),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            DateFormat('HH:mm').format(message.timestamp),
+            style: const TextStyle(color: Colors.white70, fontSize: 10),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildGroupGifWidget(GroupMessageModel message, bool isMe) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Stack(
+            children: [
+              CachedNetworkImage(
+                imageUrl: message.mediaUrl!,
+                width: 220,
+                height: 170,
+                fit: BoxFit.cover,
+                placeholder: (ctx, url) => Container(
+                  width: 220,
+                  height: 170,
+                  color: AppColors.surfaceLight,
+                  child: const Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                    ),
+                  ),
+                ),
+                errorWidget: (ctx, url, err) => Container(
+                  width: 220,
+                  height: 170,
+                  color: AppColors.surfaceLight,
+                  child: const Icon(Icons.broken_image_rounded, color: Colors.white38),
+                ),
+              ),
+              Positioned(
+                bottom: 6,
+                left: 6,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'GIF',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildGroupMessageBubble(GroupMessageModel message, bool isMe) {
     final timeStr = DateFormat('HH:mm').format(message.timestamp);
     final isLocation = message.type == 'location';
     final isDoc = message.type == 'doc';
-    final isVideo = message.type == 'video' || (message.mediaUrl != null && message.mediaUrl!.endsWith('.mp4'));
+    final isSticker = message.type == 'sticker' && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
+    final isGif = message.type == 'gif' && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final isPoll = message.type == 'poll';
     final isEvent = message.type == 'event';
     final isSpecialCard = isPoll || isEvent;
     final hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
+    final isVideo = message.type == 'video' ||
+        (hasMedia && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
@@ -1976,28 +2147,30 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         onLongPress: () => _showMessageOptions(message),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: EdgeInsets.all(isSpecialCard ? 2 : (hasMedia && !isDoc && !isLocation ? 4 : 10)),
+          padding: EdgeInsets.all(isSticker ? 0 : (isSpecialCard ? 2 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
           constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * (isSpecialCard ? 0.88 : 0.78)),
-          decoration: BoxDecoration(
-            color: message.isDeleted
-                ? AppColors.surfaceLight.withOpacity(0.4)
-                : (isSpecialCard ? Colors.transparent : (isMe ? AppColors.primary : AppColors.surface)),
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(16),
-              topRight: const Radius.circular(16),
-              bottomLeft: Radius.circular(isMe ? 16 : 4),
-              bottomRight: Radius.circular(isMe ? 4 : 16),
-            ),
-            border: Border.all(
-              color: (isMe || isSpecialCard) ? Colors.transparent : AppColors.cardBorder,
-              width: 0.8,
-            ),
-          ),
+          decoration: isSticker
+              ? null
+              : BoxDecoration(
+                  color: message.isDeleted
+                      ? AppColors.surfaceLight.withOpacity(0.4)
+                      : (isSpecialCard ? Colors.transparent : (isMe ? AppColors.primary : AppColors.surface)),
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(16),
+                    topRight: const Radius.circular(16),
+                    bottomLeft: Radius.circular(isMe ? 16 : 4),
+                    bottomRight: Radius.circular(isMe ? 4 : 16),
+                  ),
+                  border: Border.all(
+                    color: (isMe || isSpecialCard) ? Colors.transparent : AppColors.cardBorder,
+                    width: 0.8,
+                  ),
+                ),
           child: Column(
             crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
               // Show sender name for other members
-              if (!isMe && !message.isDeleted)
+              if (!isMe && !message.isDeleted && !isSticker)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4, left: 4),
                   child: Text(
@@ -2024,7 +2197,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   ],
                 )
               else ...[
-                if (isPoll) ...[
+                if (isSticker) ...[
+                  _buildGroupStickerWidget(message, isMe),
+                ] else if (isGif) ...[
+                  _buildGroupGifWidget(message, isMe),
+                ] else if (isPoll) ...[
                   _buildPollWidget(message),
                 ] else if (isEvent) ...[
                   _buildEventWidget(message),
@@ -2072,41 +2249,43 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ],
               ],
 
-              const SizedBox(height: 4),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (message.isEdited && !message.isDeleted) ...[
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.edit_rounded,
-                            size: 11,
-                            color: isMe ? Colors.white70 : AppColors.accent,
-                          ),
-                          const SizedBox(width: 3),
-                          Text(
-                            'düzenlendi • ',
-                            style: TextStyle(
+              if (!isSticker) ...[
+                const SizedBox(height: 4),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (message.isEdited && !message.isDeleted) ...[
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.edit_rounded,
+                              size: 11,
                               color: isMe ? Colors.white70 : AppColors.accent,
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w600,
-                              fontStyle: FontStyle.italic,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 3),
+                            Text(
+                              'düzenlendi • ',
+                              style: TextStyle(
+                                color: isMe ? Colors.white70 : AppColors.accent,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                      Text(
+                        timeStr,
+                        style: const TextStyle(color: Colors.white54, fontSize: 10),
                       ),
                     ],
-                    Text(
-                      timeStr,
-                      style: const TextStyle(color: Colors.white54, fontSize: 10),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -2121,6 +2300,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       child: SafeArea(
         child: Row(
           children: [
+            // WhatsApp-style Emoji, GIF, Sticker Tray Toggle
+            IconButton(
+              icon: Icon(
+                _showEmojiPicker ? Icons.keyboard_rounded : Icons.sentiment_satisfied_alt_rounded,
+                color: _showEmojiPicker ? AppColors.accent : AppColors.textSecondary,
+                size: 24,
+              ),
+              onPressed: _toggleEmojiPicker,
+            ),
             IconButton(
               icon: const Icon(Icons.attach_file_rounded, color: AppColors.textSecondary),
               onPressed: _showMediaPickerSheet,
@@ -2139,6 +2327,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ),
                 child: TextField(
                   controller: _messageController,
+                  focusNode: _focusNode,
+                  onTap: () {
+                    if (_showEmojiPicker) {
+                      setState(() {
+                        _showEmojiPicker = false;
+                      });
+                    }
+                  },
                   style: const TextStyle(color: AppColors.textPrimary, fontSize: 14.5),
                   decoration: const InputDecoration(
                     hintText: 'Mesaj yazın...',

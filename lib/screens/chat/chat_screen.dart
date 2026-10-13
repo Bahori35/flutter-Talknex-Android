@@ -26,6 +26,7 @@ import 'video_player_screen.dart';
 import 'widgets/video_message_bubble.dart';
 import 'widgets/decrypted_image_widget.dart';
 import '../../services/encryption_service.dart';
+import '../../widgets/emoji_gif_sticker_picker.dart';
 
 class ChatScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -43,6 +44,7 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   final CustomChatService _chatService = CustomChatService();
   final SocketService _socketService = SocketService();
@@ -53,6 +55,21 @@ class _ChatScreenState extends State<ChatScreen> {
   late UserModel _peer;
   StreamSubscription<Position>? _liveLocationSubscription;
   bool _isSharingLiveLocation = false;
+  bool _showEmojiPicker = false;
+
+  void _toggleEmojiPicker() {
+    if (_showEmojiPicker) {
+      setState(() {
+        _showEmojiPicker = false;
+      });
+      _focusNode.requestFocus();
+    } else {
+      FocusScope.of(context).unfocus();
+      setState(() {
+        _showEmojiPicker = true;
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -196,6 +213,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _liveLocationSubscription?.cancel();
     _messageController.dispose();
+    _focusNode.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -917,7 +935,16 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: !_showEmojiPicker,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _showEmojiPicker) {
+          setState(() {
+            _showEmojiPicker = false;
+          });
+        }
+      },
+      child: Scaffold(
       backgroundColor: AppColors.chatBackground,
       appBar: AppBar(
         backgroundColor: AppColors.surface,
@@ -1072,8 +1099,45 @@ class _ChatScreenState extends State<ChatScreen> {
 
           // Message Input Field
           _buildMessageInput(),
+
+          // Emoji / GIF / Sticker Picker Tray
+          if (_showEmojiPicker)
+            SizedBox(
+              height: 290,
+              child: EmojiGifStickerPicker(
+                onEmojiSelected: (emoji) {
+                  final text = _messageController.text;
+                  final selection = _messageController.selection;
+                  final newText = (selection.start >= 0 && selection.end >= 0)
+                      ? selection.textBefore(text) + emoji + selection.textAfter(text)
+                      : text + emoji;
+                  final newOffset = (selection.start >= 0)
+                      ? selection.baseOffset + emoji.length
+                      : newText.length;
+                  _messageController.value = TextEditingValue(
+                    text: newText,
+                    selection: TextSelection.collapsed(offset: newOffset),
+                  );
+                },
+                onBackspacePressed: () {
+                  final text = _messageController.text;
+                  if (text.isNotEmpty) {
+                    final runes = text.runes.toList();
+                    runes.removeLast();
+                    _messageController.text = String.fromCharCodes(runes);
+                  }
+                },
+                onGifSelected: (gifUrl) {
+                  _sendMessage(type: MessageType.gif, mediaUrl: gifUrl, customContent: '👾 GIF');
+                },
+                onStickerSelected: (stickerUrl) {
+                  _sendMessage(type: MessageType.sticker, mediaUrl: stickerUrl, customContent: '🏷️ Çıkartma');
+                },
+              ),
+            ),
         ],
       ),
+    ),
     );
   }
 
@@ -1350,13 +1414,132 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Widget _buildStickerMessageWidget(MessageModel message, bool isMe) {
+    return Column(
+      crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: CachedNetworkImage(
+            imageUrl: message.mediaUrl!,
+            width: 145,
+            height: 145,
+            fit: BoxFit.contain,
+            placeholder: (ctx, url) => const SizedBox(
+              width: 145,
+              height: 145,
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent),
+                ),
+              ),
+            ),
+            errorWidget: (ctx, url, err) => const SizedBox(
+              width: 145,
+              height: 145,
+              child: Icon(Icons.broken_image_rounded, color: Colors.white38),
+            ),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.4),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                DateFormat('HH:mm').format(message.timestamp),
+                style: const TextStyle(color: Colors.white70, fontSize: 10),
+              ),
+              if (isMe && !message.isDeleted) ...[
+                const SizedBox(width: 4),
+                Icon(
+                  (message.isRead || message.isDelivered) ? Icons.done_all_rounded : Icons.done_rounded,
+                  size: 13,
+                  color: message.isRead ? AppColors.accent : Colors.white70,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildGifMessageWidget(MessageModel message, bool isMe) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Stack(
+            children: [
+              CachedNetworkImage(
+                imageUrl: message.mediaUrl!,
+                width: 220,
+                height: 170,
+                fit: BoxFit.cover,
+                placeholder: (ctx, url) => Container(
+                  width: 220,
+                  height: 170,
+                  color: AppColors.surfaceLight,
+                  child: const Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                    ),
+                  ),
+                ),
+                errorWidget: (ctx, url, err) => Container(
+                  width: 220,
+                  height: 170,
+                  color: AppColors.surfaceLight,
+                  child: const Icon(Icons.broken_image_rounded, color: Colors.white38),
+                ),
+              ),
+              Positioned(
+                bottom: 6,
+                left: 6,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'GIF',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildMessageBubble(MessageModel message, bool isMe) {
     final bool isLocation = message.type == MessageType.location;
     final bool isDoc = message.type == MessageType.doc;
+    final bool isSticker = message.type == MessageType.sticker && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
+    final bool isGif = message.type == MessageType.gif && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool isVideo = message.type == MessageType.video ||
-        (hasMedia && !isDoc && !isLocation && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
-    final bool isImage = (message.type == MessageType.image || (hasMedia && !isDoc && !isLocation && !isVideo));
+        (hasMedia && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
+    final bool isImage = (message.type == MessageType.image || (hasMedia && !isDoc && !isLocation && !isVideo && !isSticker && !isGif));
 
     final bool isDeleted = message.isDeleted;
     final bool isEdited = message.isEdited;
@@ -1367,32 +1550,34 @@ class _ChatScreenState extends State<ChatScreen> {
         onLongPress: () => _showMessageActionDialog(message, isMe),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 3.5),
-          padding: EdgeInsets.all(hasMedia && !isDoc && !isLocation ? 4 : 10),
+          padding: EdgeInsets.all(isSticker ? 0 : (hasMedia && !isDoc && !isLocation ? 4 : 10)),
           constraints: BoxConstraints(
             maxWidth: MediaQuery.of(context).size.width * 0.78,
           ),
-          decoration: BoxDecoration(
-            gradient: isMe ? (isDeleted ? null : AppColors.bubbleGradient) : null,
-            color: isDeleted 
-                ? (isMe ? Colors.white10 : Colors.white12) 
-                : (isMe ? null : AppColors.peerMessageBubble),
-            border: Border.all(
-              color: isDeleted ? Colors.white24 : (isMe ? Colors.transparent : AppColors.cardBorder),
-            ),
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(16),
-              topRight: const Radius.circular(16),
-              bottomLeft: Radius.circular(isMe ? 16 : 3),
-              bottomRight: Radius.circular(isMe ? 3 : 16),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
+          decoration: isSticker
+              ? null
+              : BoxDecoration(
+                  gradient: isMe ? (isDeleted ? null : AppColors.bubbleGradient) : null,
+                  color: isDeleted 
+                      ? (isMe ? Colors.white10 : Colors.white12) 
+                      : (isMe ? null : AppColors.peerMessageBubble),
+                  border: Border.all(
+                    color: isDeleted ? Colors.white24 : (isMe ? Colors.transparent : AppColors.cardBorder),
+                  ),
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(16),
+                    topRight: const Radius.circular(16),
+                    bottomLeft: Radius.circular(isMe ? 16 : 3),
+                    bottomRight: Radius.circular(isMe ? 3 : 16),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -1413,7 +1598,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   ],
                 ),
               ] else ...[
-                if (isLocation) ...[
+                if (isSticker) ...[
+                  _buildStickerMessageWidget(message, isMe),
+                ] else if (isGif) ...[
+                  _buildGifMessageWidget(message, isMe),
+                ] else if (isLocation) ...[
                   _buildLocationWidget(message),
                 ] else if (isDoc) ...[
                   _buildDocumentWidget(message),
@@ -1460,52 +1649,54 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ],
               ],
-              const SizedBox(height: 4),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (isEdited && !isDeleted) ...[
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.edit_rounded,
-                            size: 11,
-                            color: isMe ? Colors.white70 : AppColors.accent,
-                          ),
-                          const SizedBox(width: 3),
-                          Text(
-                            'düzenlendi • ',
-                            style: TextStyle(
+              if (!isSticker) ...[
+                const SizedBox(height: 4),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (isEdited && !isDeleted) ...[
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.edit_rounded,
+                              size: 11,
                               color: isMe ? Colors.white70 : AppColors.accent,
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w600,
-                              fontStyle: FontStyle.italic,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 3),
+                            Text(
+                              'düzenlendi • ',
+                              style: TextStyle(
+                                color: isMe ? Colors.white70 : AppColors.accent,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                      Text(
+                        DateFormat('HH:mm').format(message.timestamp),
+                        style: TextStyle(
+                          color: isMe ? Colors.white70 : AppColors.textSecondary,
+                          fontSize: 11,
+                        ),
                       ),
+                      if (isMe && !isDeleted) ...[
+                        const SizedBox(width: 4),
+                        Icon(
+                          (message.isRead || message.isDelivered) ? Icons.done_all_rounded : Icons.done_rounded,
+                          size: 15,
+                          color: message.isRead ? AppColors.accent : Colors.white70,
+                        ),
+                      ],
                     ],
-                    Text(
-                      DateFormat('HH:mm').format(message.timestamp),
-                      style: TextStyle(
-                        color: isMe ? Colors.white70 : AppColors.textSecondary,
-                        fontSize: 11,
-                      ),
-                    ),
-                    if (isMe && !isDeleted) ...[
-                      const SizedBox(width: 4),
-                      Icon(
-                        (message.isRead || message.isDelivered) ? Icons.done_all_rounded : Icons.done_rounded,
-                        size: 15,
-                        color: message.isRead ? AppColors.accent : Colors.white70,
-                      ),
-                    ],
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -1520,6 +1711,15 @@ class _ChatScreenState extends State<ChatScreen> {
       child: SafeArea(
         child: Row(
           children: [
+            // WhatsApp-style Emoji, GIF, Sticker Tray Toggle
+            IconButton(
+              icon: Icon(
+                _showEmojiPicker ? Icons.keyboard_rounded : Icons.sentiment_satisfied_alt_rounded,
+                color: _showEmojiPicker ? AppColors.accent : AppColors.textSecondary,
+                size: 24,
+              ),
+              onPressed: _toggleEmojiPicker,
+            ),
             IconButton(
               icon: const Icon(Icons.attach_file_rounded, color: AppColors.textSecondary),
               onPressed: _showMediaPickerSheet,
@@ -1538,6 +1738,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 child: TextField(
                   controller: _messageController,
+                  focusNode: _focusNode,
+                  onTap: () {
+                    if (_showEmojiPicker) {
+                      setState(() {
+                        _showEmojiPicker = false;
+                      });
+                    }
+                  },
                   style: const TextStyle(color: AppColors.textPrimary, fontSize: 14.5),
                   decoration: const InputDecoration(
                     hintText: 'Mesaj yazın...',
