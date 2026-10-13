@@ -70,12 +70,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _socketService.onGroupMessageReceived = (data) {
       final gId = data['groupId'] is int ? data['groupId'] : int.tryParse(data['groupId']?.toString() ?? '0') ?? 0;
       final senderIdStr = data['senderId']?.toString() ?? '';
-      // Don't duplicate text/media if sent by current user, but DO process poll creation
-      if (senderIdStr == widget.currentUser.uid && data['type'] != 'poll') return;
+      // Don't duplicate text/media if sent by current user, but DO process poll and event creation
+      if (senderIdStr == widget.currentUser.uid && data['type'] != 'poll' && data['type'] != 'event') return;
 
       if (gId == _group.id && mounted) {
         final map = Map<String, dynamic>.from(data);
-        if (map['type'] != 'poll') {
+        if (map['type'] != 'poll' && map['type'] != 'event') {
           final rawContent = data['content']?.toString() ?? '';
           final decrypted = EndToEndEncryptionService.decryptText(
             rawContent,
@@ -155,6 +155,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             _messages = _messages.map((m) {
               if (m.poll?.id == updatedPoll.id || m.id == updatedPoll.messageId.toString()) {
                 return m.copyWith(poll: updatedPoll);
+              }
+              return m;
+            }).toList();
+          });
+        }
+      }
+    };
+
+    // Listen for live group event updates
+    _socketService.onGroupEventUpdated = (data) {
+      final gId = data['groupId'] is int ? data['groupId'] : int.tryParse(data['groupId']?.toString() ?? '0') ?? 0;
+      if (gId == _group.id && mounted) {
+        final eData = data['event'];
+        if (eData != null && eData is Map<String, dynamic>) {
+          final updatedEvent = GroupEventModel.fromJson(Map<String, dynamic>.from(eData));
+          setState(() {
+            _messages = _messages.map((m) {
+              if (m.event?.id == updatedEvent.id || m.id == updatedEvent.messageId.toString()) {
+                return m.copyWith(event: updatedEvent);
               }
               return m;
             }).toList();
@@ -1043,6 +1062,598 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  Widget _buildEventWidget(GroupMessageModel message) {
+    final event = message.event!;
+    final now = DateTime.now();
+    final isPast = event.isPast || now.isAfter(event.endTime);
+    final isStarted = now.isAfter(event.startTime) && !isPast;
+
+    final startFormat = DateFormat('d MMMM yyyy, HH:mm', 'tr_TR');
+    final endFormat = DateFormat('HH:mm');
+
+    String timeDisplay = '';
+    try {
+      timeDisplay = '${startFormat.format(event.startTime)} - ${endFormat.format(event.endTime)}';
+    } catch (_) {
+      timeDisplay = '${DateFormat('dd.MM.yyyy HH:mm').format(event.startTime)} - ${DateFormat('HH:mm').format(event.endTime)}';
+    }
+
+    String reminderLabel = '';
+    if (event.reminderUnit == 'minutes' || event.reminderUnit == 'dakika') {
+      reminderLabel = '${event.reminderValue} dakika önce';
+    } else if (event.reminderUnit == 'days' || event.reminderUnit == 'gün') {
+      reminderLabel = '${event.reminderValue} gün önce';
+    } else {
+      reminderLabel = '${event.reminderValue} saat önce';
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isStarted ? Colors.tealAccent.withOpacity(0.4) : AppColors.cardBorder,
+          width: isStarted ? 1.4 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header: Event icon & Title
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFAB47BC).withOpacity(0.18),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.event_available_rounded, color: Color(0xFFCE93D8), size: 24),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      event.title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        height: 1.25,
+                      ),
+                    ),
+                    if (event.description.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        event.description,
+                        style: const TextStyle(color: Colors.white70, fontSize: 12.5),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+
+          // Status & Reminder Badge row
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                decoration: BoxDecoration(
+                  color: isPast
+                      ? AppColors.callRed.withOpacity(0.18)
+                      : (isStarted ? Colors.teal.withOpacity(0.2) : Colors.purple.withOpacity(0.18)),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: isPast
+                        ? AppColors.callRed.withOpacity(0.4)
+                        : (isStarted ? Colors.tealAccent.withOpacity(0.5) : const Color(0xFFAB47BC).withOpacity(0.4)),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isPast
+                          ? Icons.event_busy_rounded
+                          : (isStarted ? Icons.play_arrow_rounded : Icons.schedule_rounded),
+                      size: 13,
+                      color: isPast
+                          ? AppColors.callRed
+                          : (isStarted ? Colors.tealAccent : const Color(0xFFCE93D8)),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      isPast ? 'Sona Erdi' : (isStarted ? 'Şu Anda Devam Ediyor' : 'Planlandı'),
+                      style: TextStyle(
+                        color: isPast
+                            ? AppColors.callRed
+                            : (isStarted ? Colors.tealAccent : const Color(0xFFCE93D8)),
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withOpacity(0.14),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.amber.withOpacity(0.3)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.notifications_active_rounded, size: 12, color: Colors.amberAccent),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Bildirim: $reminderLabel',
+                      style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+              if (event.allowGuests)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.14),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.people_alt_rounded, size: 12, color: Colors.lightBlueAccent),
+                      SizedBox(width: 4),
+                      Text(
+                        'Konuk İzni Açık',
+                        style: TextStyle(color: Colors.lightBlueAccent, fontSize: 11, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Date & Time Box
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceLight,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.access_time_rounded, color: AppColors.accent, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    timeDisplay,
+                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+
+          // Location Box
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceLight,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.location_on_rounded, color: Color(0xFFFF7043), size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    event.location,
+                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Attendance summary bar (clickable to view attendees list)
+          InkWell(
+            onTap: () => _showEventAttendeesSheet(event),
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    '✓ ${event.goingCount} Katılıyor${event.totalGuests > 0 ? ' (+${event.totalGuests} misafir)' : ''}',
+                    style: const TextStyle(color: AppColors.onlineGreen, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '? ${event.maybeCount} Belki',
+                    style: const TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '✗ ${event.declinedCount} Katılmıyor',
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                  const Spacer(),
+                  const Icon(Icons.chevron_right_rounded, color: Colors.white38, size: 18),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // RSVP Action Buttons
+          if (isPast)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.symmetric(vertical: 4),
+                child: Text(
+                  'Bu etkinlik sona ermiştir.',
+                  style: TextStyle(color: Colors.white38, fontSize: 12, fontStyle: FontStyle.italic),
+                ),
+              ),
+            )
+          else ...[
+            const Text(
+              'Katılım Durumunuz:',
+              style: TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                // Katılacağım
+                Expanded(
+                  child: _buildRsvpButton(
+                    label: event.myStatus == 'going' && event.myGuestCount > 0
+                        ? 'Katılıyorum (+${event.myGuestCount})'
+                        : 'Katılacağım',
+                    icon: Icons.check_circle_rounded,
+                    isSelected: event.myStatus == 'going',
+                    activeColor: AppColors.onlineGreen,
+                    onTap: () {
+                      if (event.allowGuests) {
+                        _showGuestPickerDialog(event);
+                      } else {
+                        _socketService.rsvpGroupEvent(
+                          groupId: _group.id,
+                          eventId: event.id,
+                          status: 'going',
+                          guestCount: 0,
+                        );
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 6),
+                // Belki
+                Expanded(
+                  child: _buildRsvpButton(
+                    label: 'Belki',
+                    icon: Icons.help_outline_rounded,
+                    isSelected: event.myStatus == 'maybe',
+                    activeColor: Colors.amberAccent,
+                    onTap: () {
+                      _socketService.rsvpGroupEvent(
+                        groupId: _group.id,
+                        eventId: event.id,
+                        status: 'maybe',
+                        guestCount: 0,
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(width: 6),
+                // Katılmayacağım
+                Expanded(
+                  child: _buildRsvpButton(
+                    label: 'Katılmıyorum',
+                    icon: Icons.cancel_outlined,
+                    isSelected: event.myStatus == 'declined',
+                    activeColor: AppColors.callRed,
+                    onTap: () {
+                      _socketService.rsvpGroupEvent(
+                        groupId: _group.id,
+                        eventId: event.id,
+                        status: 'declined',
+                        guestCount: 0,
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRsvpButton({
+    required String label,
+    required IconData icon,
+    required bool isSelected,
+    required Color activeColor,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+        decoration: BoxDecoration(
+          color: isSelected ? activeColor.withOpacity(0.22) : AppColors.surfaceLight,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected ? activeColor : Colors.white12,
+            width: isSelected ? 1.4 : 1,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: isSelected ? activeColor : Colors.white60,
+            ),
+            const SizedBox(height: 3),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? activeColor : Colors.white70,
+                fontSize: 11,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showGuestPickerDialog(GroupEventModel event) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: const [
+                    Icon(Icons.people_alt_rounded, color: Color(0xFFCE93D8), size: 22),
+                    SizedBox(width: 8),
+                    Text(
+                      'Kaç Konuk / Misafir Getireceksiniz?',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Yanınızda katılacak misafir sayısını seçebilirsiniz.',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: List.generate(6, (count) {
+                    final isSel = event.myStatus == 'going' && event.myGuestCount == count;
+                    return InkWell(
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _socketService.rsvpGroupEvent(
+                          groupId: _group.id,
+                          eventId: event.id,
+                          status: 'going',
+                          guestCount: count,
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: isSel ? AppColors.onlineGreen.withOpacity(0.2) : AppColors.surfaceLight,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: isSel ? AppColors.onlineGreen : Colors.white12,
+                          ),
+                        ),
+                        child: Text(
+                          count == 0 ? 'Yalnızca Ben (0 Misafir)' : '+$count Misafir',
+                          style: TextStyle(
+                            color: isSel ? AppColors.onlineGreen : Colors.white,
+                            fontSize: 13,
+                            fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+                const SizedBox(height: 12),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showEventAttendeesSheet(GroupEventModel event) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        final going = event.attendees.where((a) => a.status == 'going').toList();
+        final maybe = event.attendees.where((a) => a.status == 'maybe').toList();
+        final declined = event.attendees.where((a) => a.status == 'declined').toList();
+
+        return Container(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Etkinlik Katılımcıları (${event.attendees.length})',
+                style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 14),
+              Expanded(
+                child: ListView(
+                  children: [
+                    if (going.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Text(
+                          'KATILANLAR (${going.length}${event.totalGuests > 0 ? ' + ${event.totalGuests} Misafir' : ''})',
+                          style: const TextStyle(color: AppColors.onlineGreen, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      ...going.map((a) => _buildAttendeeTile(a, AppColors.onlineGreen)),
+                      const SizedBox(height: 12),
+                    ],
+                    if (maybe.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Text(
+                          'BELKİ (${maybe.length})',
+                          style: const TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      ...maybe.map((a) => _buildAttendeeTile(a, Colors.amberAccent)),
+                      const SizedBox(height: 12),
+                    ],
+                    if (declined.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Text(
+                          'KATILMAYANLAR (${declined.length})',
+                          style: const TextStyle(color: AppColors.callRed, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      ...declined.map((a) => _buildAttendeeTile(a, AppColors.callRed)),
+                    ],
+                    if (event.attendees.isEmpty)
+                      const Center(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 30),
+                          child: Text(
+                            'Henüz kimse yanıt vermedi.',
+                            style: TextStyle(color: Colors.white38, fontSize: 13),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAttendeeTile(GroupEventAttendeeModel attendee, Color badgeColor) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: badgeColor.withOpacity(0.2),
+            backgroundImage: attendee.photoUrl.isNotEmpty ? CachedNetworkImageProvider(attendee.photoUrl) : null,
+            child: attendee.photoUrl.isEmpty
+                ? Text(
+                    attendee.name.isNotEmpty ? attendee.name[0].toUpperCase() : '?',
+                    style: TextStyle(color: badgeColor, fontWeight: FontWeight.bold, fontSize: 13),
+                  )
+                : null,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              attendee.name,
+              style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w500),
+            ),
+          ),
+          if (attendee.guestCount > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.blue.withOpacity(0.4)),
+              ),
+              child: Text(
+                '+${attendee.guestCount} misafir',
+                style: const TextStyle(color: Colors.lightBlueAccent, fontSize: 11, fontWeight: FontWeight.bold),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLocationWidget(GroupMessageModel message) {
     final isLive = message.content.contains('Canlı Konum');
 
@@ -1269,6 +1880,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final isDoc = message.type == 'doc';
     final isVideo = message.type == 'video' || (message.mediaUrl != null && message.mediaUrl!.endsWith('.mp4'));
     final isPoll = message.type == 'poll' && message.poll != null;
+    final isEvent = message.type == 'event' && message.event != null;
+    final isSpecialCard = isPoll || isEvent;
     final hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
 
     return Align(
@@ -1277,12 +1890,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         onLongPress: () => _showMessageOptions(message),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: EdgeInsets.all(isPoll ? 2 : (hasMedia && !isDoc && !isLocation ? 4 : 10)),
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * (isPoll ? 0.85 : 0.78)),
+          padding: EdgeInsets.all(isSpecialCard ? 2 : (hasMedia && !isDoc && !isLocation ? 4 : 10)),
+          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * (isSpecialCard ? 0.88 : 0.78)),
           decoration: BoxDecoration(
             color: message.isDeleted
                 ? AppColors.surfaceLight.withOpacity(0.4)
-                : (isPoll ? Colors.transparent : (isMe ? AppColors.primary : AppColors.surface)),
+                : (isSpecialCard ? Colors.transparent : (isMe ? AppColors.primary : AppColors.surface)),
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(16),
               topRight: const Radius.circular(16),
@@ -1290,7 +1903,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               bottomRight: Radius.circular(isMe ? 4 : 16),
             ),
             border: Border.all(
-              color: (isMe || isPoll) ? Colors.transparent : AppColors.cardBorder,
+              color: (isMe || isSpecialCard) ? Colors.transparent : AppColors.cardBorder,
               width: 0.8,
             ),
           ),
@@ -1327,6 +1940,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               else ...[
                 if (isPoll) ...[
                   _buildPollWidget(message),
+                ] else if (isEvent) ...[
+                  _buildEventWidget(message),
                 ] else if (isLocation) ...[
                   _buildLocationWidget(message),
                 ] else if (isDoc) ...[
@@ -1746,6 +2361,450 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  void _openCreateEventDialog() {
+    final titleController = TextEditingController();
+    final descController = TextEditingController();
+    final locationController = TextEditingController();
+    final reminderValController = TextEditingController(text: '1');
+    String reminderUnit = 'hours';
+    bool allowGuests = true;
+
+    DateTime selectedStart = DateTime.now().add(const Duration(days: 1));
+    selectedStart = DateTime(selectedStart.year, selectedStart.month, selectedStart.day, selectedStart.hour + 1, 0);
+    DateTime selectedEnd = selectedStart.add(const Duration(hours: 3));
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            String formatDT(DateTime dt) {
+              return '${dt.day.toString().padLeft(2, '0')}.${dt.month.toString().padLeft(2, '0')}.${dt.year} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+            }
+
+            Future<void> pickDateTime({required bool isStart}) async {
+              final initial = isStart ? selectedStart : selectedEnd;
+              final pickedDate = await showDatePicker(
+                context: context,
+                initialDate: initial,
+                firstDate: DateTime.now().subtract(const Duration(days: 1)),
+                lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
+                builder: (context, child) {
+                  return Theme(
+                    data: ThemeData.dark().copyWith(
+                      colorScheme: const ColorScheme.dark(
+                        primary: Color(0xFFAB47BC),
+                        onPrimary: Colors.white,
+                        surface: AppColors.surface,
+                        onSurface: Colors.white,
+                      ),
+                    ),
+                    child: child!,
+                  );
+                },
+              );
+              if (pickedDate == null) return;
+
+              final pickedTime = await showTimePicker(
+                context: context,
+                initialTime: TimeOfDay(hour: initial.hour, minute: initial.minute),
+                builder: (context, child) {
+                  return Theme(
+                    data: ThemeData.dark().copyWith(
+                      colorScheme: const ColorScheme.dark(
+                        primary: Color(0xFFAB47BC),
+                        onPrimary: Colors.white,
+                        surface: AppColors.surface,
+                        onSurface: Colors.white,
+                      ),
+                    ),
+                    child: child!,
+                  );
+                },
+              );
+              if (pickedTime == null) return;
+
+              final newDT = DateTime(
+                pickedDate.year,
+                pickedDate.month,
+                pickedDate.day,
+                pickedTime.hour,
+                pickedTime.minute,
+              );
+
+              setModalState(() {
+                if (isStart) {
+                  selectedStart = newDT;
+                  if (selectedEnd.isBefore(selectedStart)) {
+                    selectedEnd = selectedStart.add(const Duration(hours: 2));
+                  }
+                } else {
+                  selectedEnd = newDT;
+                }
+              });
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+                top: 16,
+                left: 20,
+                right: 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: const [
+                        Icon(Icons.event_available_rounded, color: Color(0xFFCE93D8), size: 24),
+                        SizedBox(width: 8),
+                        Text(
+                          'Yeni Grup Etkinliği',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Etkinlik Başlığı *',
+                      style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: titleController,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: 'Örn: Şirket Yemeği, Piknik, Toplantı',
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        filled: true,
+                        fillColor: AppColors.surfaceLight,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text(
+                      'Etkinlik Konumu *',
+                      style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: locationController,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: 'Örn: Beşiktaş Sahil Kafe / Online Zoom',
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        prefixIcon: const Icon(Icons.location_on_rounded, color: Color(0xFFFF7043), size: 20),
+                        filled: true,
+                        fillColor: AppColors.surfaceLight,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text(
+                      'Açıklama (İsteğe Bağlı)',
+                      style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: descController,
+                      maxLines: 2,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: 'Etkinlikle ilgili detayları yazabilirsiniz...',
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        filled: true,
+                        fillColor: AppColors.surfaceLight,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Start & End Date pickers
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Başlangıç',
+                                style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 6),
+                              InkWell(
+                                onTap: () => pickDateTime(isStart: true),
+                                borderRadius: BorderRadius.circular(12),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.surfaceLight,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.calendar_today_rounded, size: 16, color: Color(0xFFCE93D8)),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          formatDT(selectedStart),
+                                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Bitiş',
+                                style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 6),
+                              InkWell(
+                                onTap: () => pickDateTime(isStart: false),
+                                borderRadius: BorderRadius.circular(12),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.surfaceLight,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.event_busy_rounded, size: 16, color: Colors.orangeAccent),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          formatDT(selectedEnd),
+                                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Reminder Setting
+                    const Text(
+                      'Etkinlik Bildirim Zamanı',
+                      style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 80,
+                          child: TextField(
+                            controller: reminderValController,
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: AppColors.surfaceLight,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide.none,
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              color: AppColors.surfaceLight,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: reminderUnit,
+                                dropdownColor: AppColors.surface,
+                                style: const TextStyle(color: Colors.white, fontSize: 14),
+                                icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
+                                items: const [
+                                  DropdownMenuItem(value: 'minutes', child: Text('Dakika Önce')),
+                                  DropdownMenuItem(value: 'hours', child: Text('Saat Önce')),
+                                  DropdownMenuItem(value: 'days', child: Text('Gün Önce')),
+                                ],
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setModalState(() {
+                                      reminderUnit = val;
+                                    });
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.amber.withOpacity(0.3)),
+                      ),
+                      child: const Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.notifications_active_rounded, color: Colors.amberAccent, size: 18),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Etkinliğe "Katılacağım" diyen kullanıcılara, etkinlik başlamadan belirttiğiniz vakit önce otomatik hatırlatma bildirimi gönderilecektir.',
+                              style: TextStyle(color: Colors.white70, fontSize: 11.5, height: 1.3),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Allow Guests Switch
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceLight,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: SwitchListTile(
+                        value: allowGuests,
+                        activeColor: const Color(0xFFAB47BC),
+                        title: const Text(
+                          'Konuk / Misafir Getirme İzni',
+                          style: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: const Text(
+                          'Katılımcılar yanlarında gelecek kişi sayısını belirtebilir.',
+                          style: TextStyle(color: Colors.white54, fontSize: 11.5),
+                        ),
+                        onChanged: (val) {
+                          setModalState(() {
+                            allowGuests = val;
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    // Submit Button
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFAB47BC),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        onPressed: () {
+                          final title = titleController.text.trim();
+                          final loc = locationController.text.trim();
+                          final desc = descController.text.trim();
+                          final rVal = int.tryParse(reminderValController.text.trim()) ?? 1;
+
+                          if (title.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Lütfen etkinlik başlığı girin.')),
+                            );
+                            return;
+                          }
+                          if (loc.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Lütfen etkinlik konumu girin.')),
+                            );
+                            return;
+                          }
+                          if (selectedEnd.isBefore(selectedStart) || selectedEnd.isAtSameMomentAs(selectedStart)) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Bitiş zamanı başlangıç zamanından sonra olmalıdır.')),
+                            );
+                            return;
+                          }
+
+                          _socketService.createGroupEvent(
+                            groupId: _group.id,
+                            senderId: widget.currentUser.uid,
+                            title: title,
+                            description: desc,
+                            location: loc,
+                            startTime: selectedStart,
+                            endTime: selectedEnd,
+                            reminderValue: rVal,
+                            reminderUnit: reminderUnit,
+                            allowGuests: allowGuests,
+                          );
+
+                          Navigator.pop(ctx);
+                        },
+                        child: const Text(
+                          'Etkinliği Oluştur ve Paylaş',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showMediaPickerSheet() {
     showModalBottomSheet(
       context: context,
@@ -1848,7 +2907,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         }
                       },
                     ),
-                    const SizedBox(width: 80),
+                    _buildMediaOption(
+                      icon: Icons.event_available_rounded,
+                      label: 'Etkinlik',
+                      color: const Color(0xFFAB47BC),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        if (_group.isAdmin) {
+                          _openCreateEventDialog();
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Yalnızca grup yöneticileri etkinlik oluşturabilir.'),
+                              backgroundColor: AppColors.callRed,
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
+                    ),
                     const SizedBox(width: 80),
                   ],
                 ),

@@ -25,6 +25,7 @@ typedef OnGroupMessageSent = void Function(String tempId, String realId, String 
 typedef OnGroupMessageEdited = void Function(String messageId, String groupId, String newContent);
 typedef OnGroupDeleted = void Function(String groupId, String message);
 typedef OnGroupPollUpdated = void Function(Map<String, dynamic> data);
+typedef OnGroupEventUpdated = void Function(Map<String, dynamic> data);
 
 class SocketService {
   static final SocketService _instance = SocketService._internal();
@@ -58,6 +59,7 @@ class SocketService {
   OnGroupMessageEdited? onGroupMessageEdited;
   OnGroupDeleted? onGroupDeleted;
   OnGroupPollUpdated? onGroupPollUpdated;
+  OnGroupEventUpdated? onGroupEventUpdated;
 
   // Initialize and connect native WebSocket to Go backend (Port 3000 -> Nginx -> Go)
   void initSocket(String userId) {
@@ -332,6 +334,12 @@ class SocketService {
             onGroupPollUpdated!(Map<String, dynamic>.from(data));
           }
           break;
+
+        case 'group_event_updated':
+          if (onGroupEventUpdated != null && data is Map<String, dynamic>) {
+            onGroupEventUpdated!(Map<String, dynamic>.from(data));
+          }
+          break;
       }
     } catch (e) {
       debugPrint('[GORILLA WS] Parse error: $e');
@@ -564,6 +572,50 @@ class SocketService {
       'groupId': groupId,
       'pollId': pollId,
       'optionIndex': optionIndex,
+    });
+  }
+
+  // Create group event (admin only)
+  void createGroupEvent({
+    required int groupId,
+    required String senderId,
+    required String title,
+    String description = '',
+    required String location,
+    required DateTime startTime,
+    required DateTime endTime,
+    required int reminderValue,
+    required String reminderUnit,
+    required bool allowGuests,
+    String? clientTempId,
+  }) {
+    _emit('create_group_event', {
+      'groupId': groupId,
+      'senderId': senderId,
+      'title': title,
+      'description': description,
+      'location': location,
+      'startTime': startTime.toIso8601String(),
+      'endTime': endTime.toIso8601String(),
+      'reminderValue': reminderValue,
+      'reminderUnit': reminderUnit,
+      'allowGuests': allowGuests,
+      'clientTempId': clientTempId ?? '',
+    });
+  }
+
+  // RSVP response to a group event
+  void rsvpGroupEvent({
+    required int groupId,
+    required int eventId,
+    required String status,
+    int guestCount = 0,
+  }) {
+    _emit('rsvp_group_event', {
+      'groupId': groupId,
+      'eventId': eventId,
+      'status': status,
+      'guestCount': guestCount,
     });
   }
 

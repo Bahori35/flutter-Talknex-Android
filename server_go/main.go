@@ -167,6 +167,41 @@ func initDB() {
 			INDEX (poll_id),
 			INDEX (user_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+
+		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS group_events (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			message_id INT NOT NULL,
+			group_id INT NOT NULL,
+			creator_id INT NOT NULL,
+			title VARCHAR(255) NOT NULL,
+			description TEXT NULL,
+			location VARCHAR(255) NOT NULL,
+			start_time DATETIME NOT NULL,
+			end_time DATETIME NOT NULL,
+			reminder_value INT DEFAULT 1,
+			reminder_unit VARCHAR(20) DEFAULT 'hours',
+			allow_guests TINYINT(1) DEFAULT 0,
+			reminder_sent TINYINT(1) DEFAULT 0,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			INDEX (group_id),
+			INDEX (message_id),
+			INDEX (start_time),
+			INDEX (reminder_sent)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+
+		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS group_event_rsvps (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			event_id INT NOT NULL,
+			user_id INT NOT NULL,
+			status VARCHAR(20) NOT NULL,
+			guest_count INT DEFAULT 0,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			UNIQUE KEY unique_event_user (event_id, user_id),
+			INDEX (event_id),
+			INDEX (user_id),
+			INDEX (status)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
 	}
 }
 
@@ -256,6 +291,181 @@ func getPollData(pollID int, currUID int) (map[string]interface{}, error) {
 		"isExpired":     isExpired,
 		"canChangeVote": canChangeVote,
 	}, nil
+}
+
+func getEventData(eventID int, currUID int) (map[string]interface{}, error) {
+	var eID, msgID, gID, cID, reminderVal, allowGuests, reminderSent int
+	var title, desc, loc, reminderUnit string
+	var startTime, endTime, createdAt time.Time
+
+	err := db.QueryRow(`
+		SELECT id, message_id, group_id, creator_id, title, COALESCE(description, ''), location,
+		       start_time, end_time, reminder_value, reminder_unit, allow_guests, reminder_sent, created_at
+		FROM group_events WHERE id = ?`, eventID).
+		Scan(&eID, &msgID, &gID, &cID, &title, &desc, &loc,
+			&startTime, &endTime, &reminderVal, &reminderUnit, &allowGuests, &reminderSent, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+
+	var creatorName string
+	_ = db.QueryRow("SELECT COALESCE(NULLIF(display_name, ''), username) FROM users WHERE id = ?", cID).Scan(&creatorName)
+
+	rows, err := db.Query(`
+		SELECT r.user_id, r.status, r.guest_count,
+		       COALESCE(NULLIF(u.display_name, ''), u.username) AS user_name,
+		       COALESCE(u.photo_url, '') AS photo_url
+		FROM group_event_rsvps r
+		JOIN users u ON r.user_id = u.id
+		WHERE r.event_id = ?`, eventID)
+
+	goingCount := 0
+	maybeCount := 0
+	declinedCount := 0
+	totalGuests := 0
+	myStatus := ""
+	myGuestCount := 0
+
+	type attendeeInfo struct {
+		UserID     int    `json:"userId"`
+		Name       string `json:"name"`
+		PhotoURL   string `json:"photoUrl"`
+		Status     string `json:"status"`
+		GuestCount int    `json:"guestCount"`
+	}
+	attendees := make([]attendeeInfo, 0)
+
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var uID, gCount int
+			var stat, uName, pURL string
+			if scanErr := rows.Scan(&uID, &stat, &gCount, &uName, &pURL); scanErr == nil {
+				switch stat {
+				case "going":
+					goingCount++
+					totalGuests += gCount
+				case "maybe":
+					maybeCount++
+				case "declined":
+					declinedCount++
+				}
+				if uID == currUID {
+					myStatus = stat
+					myGuestCount = gCount
+				}
+				attendees = append(attendees, attendeeInfo{
+					UserID:     uID,
+					Name:       uName,
+					PhotoURL:   pURL,
+					Status:     stat,
+					GuestCount: gCount,
+				})
+			}
+		}
+	}
+
+	isPast := time.Now().After(endTime)
+
+	return map[string]interface{}{
+		"id":            eID,
+		"messageId":     msgID,
+		"groupId":       gID,
+		"creatorId":     cID,
+		"creatorName":   creatorName,
+		"title":         title,
+		"description":   desc,
+		"location":      loc,
+		"startTime":     startTime.Format("2006-01-02 15:04:05"),
+		"endTime":       endTime.Format("2006-01-02 15:04:05"),
+		"reminderValue": reminderVal,
+		"reminderUnit":  reminderUnit,
+		"allowGuests":   allowGuests == 1,
+		"goingCount":    goingCount,
+		"maybeCount":    maybeCount,
+		"declinedCount": declinedCount,
+		"totalGuests":   totalGuests,
+		"myStatus":      myStatus,
+		"myGuestCount":  myGuestCount,
+		"attendees":     attendees,
+		"isPast":        isPast,
+	}, nil
+}
+
+func startEventReminderWorker() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		now := time.Now()
+		rows, err := db.Query(`
+			SELECT e.id, e.group_id, e.title, e.location, e.start_time, e.reminder_value, e.reminder_unit, g.name
+			FROM group_events e
+			JOIN groups g ON e.group_id = g.id
+			WHERE e.reminder_sent = 0 AND e.start_time > ?`, now.Add(-10*time.Minute))
+		if err != nil {
+			continue
+		}
+
+		for rows.Next() {
+			var eID, gID, rVal int
+			var title, loc, rUnit, gName string
+			var startTime time.Time
+
+			if scanErr := rows.Scan(&eID, &gID, &title, &loc, &startTime, &rVal, &rUnit, &gName); scanErr != nil {
+				continue
+			}
+
+			var reminderTarget time.Time
+			switch strings.ToLower(rUnit) {
+			case "minutes", "dakika":
+				reminderTarget = startTime.Add(-time.Duration(rVal) * time.Minute)
+			case "days", "gün":
+				reminderTarget = startTime.AddDate(0, 0, -rVal)
+			default: // hours, saat
+				reminderTarget = startTime.Add(-time.Duration(rVal) * time.Hour)
+			}
+
+			if (now.After(reminderTarget) || now.Equal(reminderTarget)) && now.Before(startTime) {
+				_, _ = db.Exec("UPDATE group_events SET reminder_sent = 1 WHERE id = ?", eID)
+
+				rsvps, rErr := db.Query("SELECT user_id FROM group_event_rsvps WHERE event_id = ? AND status = 'going'", eID)
+				if rErr == nil {
+					for rsvps.Next() {
+						var uID int
+						_ = rsvps.Scan(&uID)
+						uidStr := strconv.Itoa(uID)
+
+						pushTitle := fmt.Sprintf("🔔 %s - Etkinlik Yaklaşıyor!", gName)
+						pushBody := fmt.Sprintf("'%s' etkinliğiniz yaklaşıyor! 📍 Konum: %s | 🕒 Başlangıç: %s", title, loc, startTime.Format("02.01.2006 15:04"))
+
+						go sendFCMPush(uID, pushTitle, pushBody, map[string]string{
+							"type":    "group_event_reminder",
+							"groupId": strconv.Itoa(gID),
+							"eventId": strconv.Itoa(eID),
+						})
+
+						if memVal, ok := wsClients.Load(uidStr); ok {
+							if memClient, ok := memVal.(*WSClient); ok {
+								_ = memClient.Send("group_event_reminder", gin.H{
+									"groupId":   gID,
+									"eventId":   eID,
+									"title":     title,
+									"location":  loc,
+									"startTime": startTime.Format("2006-01-02 15:04:05"),
+									"message":   pushBody,
+								})
+							}
+						}
+					}
+					rsvps.Close()
+				}
+			} else if now.After(startTime) {
+				_, _ = db.Exec("UPDATE group_events SET reminder_sent = 1 WHERE id = ?", eID)
+			}
+		}
+		rows.Close()
+	}
 }
 
 func initFirebase() {
@@ -1220,6 +1430,209 @@ func main() {
 									"pollId":  pollID,
 									"groupId": groupID,
 									"poll":    pollData,
+								})
+							}
+						}
+					}
+					mRows.Close()
+				}
+
+			case "create_group_event":
+				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))
+				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+				title := strings.TrimSpace(fmt.Sprintf("%v", data["title"]))
+				desc := strings.TrimSpace(fmt.Sprintf("%v", data["description"]))
+				location := strings.TrimSpace(fmt.Sprintf("%v", data["location"]))
+				startTimeStr := fmt.Sprintf("%v", data["startTime"])
+				endTimeStr := fmt.Sprintf("%v", data["endTime"])
+				reminderVal, _ := strconv.Atoi(fmt.Sprintf("%v", data["reminderValue"]))
+				reminderUnit := strings.ToLower(fmt.Sprintf("%v", data["reminderUnit"]))
+				allowGuestsVal := fmt.Sprintf("%v", data["allowGuests"])
+				allowGuests := 0
+				if allowGuestsVal == "true" || allowGuestsVal == "1" {
+					allowGuests = 1
+				}
+				clientTempID := fmt.Sprintf("%v", data["clientTempId"])
+
+				if groupID == 0 || senderID == 0 || title == "" || location == "" {
+					_ = client.Send("error", gin.H{"message": "Etkinlik başlığı ve konum zorunludur."})
+					continue
+				}
+
+				if reminderVal <= 0 {
+					reminderVal = 1
+				}
+				if reminderUnit == "" {
+					reminderUnit = "hours"
+				}
+
+				// Check that requester is admin
+				var userRole string
+				err := db.QueryRow("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?", groupID, senderID).Scan(&userRole)
+				if err != nil || userRole != "admin" {
+					_ = client.Send("error", gin.H{"message": "Yalnızca grup yöneticileri etkinlik oluşturabilir."})
+					continue
+				}
+
+				startTime, err := time.Parse(time.RFC3339, startTimeStr)
+				if err != nil {
+					startTime, _ = time.Parse("2006-01-02 15:04:05", startTimeStr)
+				}
+				endTime, err2 := time.Parse(time.RFC3339, endTimeStr)
+				if err2 != nil {
+					endTime, _ = time.Parse("2006-01-02 15:04:05", endTimeStr)
+				}
+				if startTime.IsZero() {
+					startTime = time.Now().Add(24 * time.Hour)
+				}
+				if endTime.IsZero() || endTime.Before(startTime) {
+					endTime = startTime.Add(2 * time.Hour)
+				}
+
+				// 1. Insert into group_messages
+				eventContent := "📅 " + title
+				res, err := db.Exec(
+					"INSERT INTO group_messages (group_id, sender_id, content, message_type) VALUES (?, ?, ?, 'event')",
+					groupID, senderID, eventContent,
+				)
+				if err != nil {
+					log.Printf("[DB ERR create_group_event msg]: %v", err)
+					continue
+				}
+				msgID, _ := res.LastInsertId()
+
+				// 2. Insert into group_events
+				eRes, eErr := db.Exec(
+					`INSERT INTO group_events (message_id, group_id, creator_id, title, description, location, start_time, end_time, reminder_value, reminder_unit, allow_guests)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					msgID, groupID, senderID, title, desc, location, startTime, endTime, reminderVal, reminderUnit, allowGuests,
+				)
+				if eErr != nil {
+					log.Printf("[DB ERR create_group_event event]: %v", eErr)
+					continue
+				}
+				eventID, _ := eRes.LastInsertId()
+
+				// Creator automatically joins as going
+				_, _ = db.Exec("INSERT INTO group_event_rsvps (event_id, user_id, status, guest_count) VALUES (?, ?, 'going', 0)", eventID, senderID)
+
+				var senderName, senderPhoto string
+				_ = db.QueryRow("SELECT COALESCE(NULLIF(display_name, ''), username), COALESCE(photo_url, '') FROM users WHERE id = ?", senderID).Scan(&senderName, &senderPhoto)
+				if senderName == "" {
+					senderName = "Grup Yöneticisi"
+				}
+
+				var groupName string
+				_ = db.QueryRow("SELECT name FROM groups WHERE id = ?", groupID).Scan(&groupName)
+
+				// Broadcast to all active group members
+				mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", groupID)
+				if mErr == nil {
+					for mRows.Next() {
+						var mUID int
+						_ = mRows.Scan(&mUID)
+						uidStr := strconv.Itoa(mUID)
+
+						eventData, _ := getEventData(int(eventID), mUID)
+						savedGroupMsg := gin.H{
+							"id":           msgID,
+							"groupId":      groupID,
+							"clientTempId": clientTempID,
+							"senderId":     senderID,
+							"senderName":   senderName,
+							"senderPhoto":  senderPhoto,
+							"content":      eventContent,
+							"type":         "event",
+							"mediaUrl":     "",
+							"event":        eventData,
+							"isDeleted":    false,
+							"isEdited":     false,
+							"timestamp":    time.Now().Format("2006-01-02 15:04:05"),
+						}
+
+						if memVal, ok := wsClients.Load(uidStr); ok {
+							if memClient, ok := memVal.(*WSClient); ok {
+								_ = memClient.Send("receive_group_message", savedGroupMsg)
+							}
+						} else if mUID != senderID {
+							go func(targetID int) {
+								pushText := fmt.Sprintf("%s yeni bir etkinlik oluşturdu: %s (📍 %s)", senderName, title, location)
+								sendFCMPush(targetID, groupName, pushText, map[string]string{
+									"type":      "group_chat",
+									"groupId":   strconv.Itoa(groupID),
+									"groupName": groupName,
+									"messageId": strconv.FormatInt(msgID, 10),
+								})
+							}(mUID)
+						}
+					}
+					mRows.Close()
+				}
+
+			case "rsvp_group_event":
+				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))
+				eventID, _ := strconv.Atoi(fmt.Sprintf("%v", data["eventId"]))
+				status := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", data["status"]))) // 'going', 'maybe', 'declined'
+				guestCount, _ := strconv.Atoi(fmt.Sprintf("%v", data["guestCount"]))
+				userID, _ := strconv.Atoi(client.userID)
+
+				if groupID == 0 || eventID == 0 || userID == 0 {
+					continue
+				}
+
+				var isMember int
+				_ = db.QueryRow("SELECT COUNT(*) FROM group_members WHERE group_id = ? AND user_id = ?", groupID, userID).Scan(&isMember)
+				if isMember == 0 {
+					_ = client.Send("error", gin.H{"message": "Bu grupta etkinlik yanıtı verme yetkiniz yok."})
+					continue
+				}
+
+				var eGroupID, allowGuests int
+				var endTime time.Time
+				err := db.QueryRow("SELECT group_id, allow_guests, end_time FROM group_events WHERE id = ?", eventID).Scan(&eGroupID, &allowGuests, &endTime)
+				if err != nil || eGroupID != groupID {
+					_ = client.Send("error", gin.H{"message": "Etkinlik bulunamadı."})
+					continue
+				}
+
+				if time.Now().After(endTime) {
+					_ = client.Send("error", gin.H{"message": "Bu etkinlik sona ermiştir."})
+					continue
+				}
+
+				if allowGuests == 0 || status != "going" {
+					guestCount = 0
+				}
+				if guestCount < 0 {
+					guestCount = 0
+				}
+
+				var existingStatus string
+				eErr := db.QueryRow("SELECT status FROM group_event_rsvps WHERE event_id = ? AND user_id = ?", eventID, userID).Scan(&existingStatus)
+				if eErr == nil && existingStatus == status && status != "going" {
+					_, _ = db.Exec("DELETE FROM group_event_rsvps WHERE event_id = ? AND user_id = ?", eventID, userID)
+				} else {
+					_, _ = db.Exec(`
+						INSERT INTO group_event_rsvps (event_id, user_id, status, guest_count)
+						VALUES (?, ?, ?, ?)
+						ON DUPLICATE KEY UPDATE status = VALUES(status), guest_count = VALUES(guest_count), updated_at = NOW()`,
+						eventID, userID, status, guestCount)
+				}
+
+				mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", groupID)
+				if mErr == nil {
+					for mRows.Next() {
+						var mUID int
+						_ = mRows.Scan(&mUID)
+						uidStr := strconv.Itoa(mUID)
+
+						if memVal, ok := wsClients.Load(uidStr); ok {
+							if memClient, ok := memVal.(*WSClient); ok {
+								eventData, _ := getEventData(eventID, mUID)
+								_ = memClient.Send("group_event_updated", gin.H{
+									"eventId": eventID,
+									"groupId": groupID,
+									"event":   eventData,
 								})
 							}
 						}
@@ -2240,6 +2653,16 @@ func main() {
 					}
 				}
 
+				var eventData map[string]interface{}
+				if mType == "event" {
+					var eventID int
+					eErr := db.QueryRow("SELECT id FROM group_events WHERE message_id = ?", id).Scan(&eventID)
+					if eErr == nil {
+						cUIDInt, _ := strconv.Atoi(currUID)
+						eventData, _ = getEventData(eventID, cUIDInt)
+					}
+				}
+
 				msgs = append(msgs, map[string]interface{}{
 					"id":          id,
 					"groupId":     gIDVal,
@@ -2250,6 +2673,7 @@ func main() {
 					"type":        mType,
 					"mediaUrl":    mURL.String,
 					"poll":        pollData,
+					"event":       eventData,
 					"isDeleted":   isDel == 1,
 					"isEdited":    isEd == 1,
 					"timestamp":   cAt.Format("2006-01-02 15:04:05"),
@@ -2258,6 +2682,8 @@ func main() {
 			c.JSON(http.StatusOK, msgs)
 		})
 	}
+
+	go startEventReminderWorker()
 
 	log.Printf("[*] Talknex Go Ultra-Fast Backend calisiyor (Port: %s)...", serverPort)
 	if err := router.Run(":" + serverPort); err != nil {
