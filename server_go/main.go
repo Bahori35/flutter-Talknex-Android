@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -139,7 +141,121 @@ func initDB() {
 			INDEX (group_id),
 			INDEX (sender_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+
+		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS group_polls (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			message_id INT NOT NULL,
+			group_id INT NOT NULL,
+			creator_id INT NOT NULL,
+			title TEXT NOT NULL,
+			options_json TEXT NOT NULL,
+			duration_type VARCHAR(20) DEFAULT 'hours',
+			duration_value INT DEFAULT 24,
+			expires_at DATETIME NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			INDEX (group_id),
+			INDEX (message_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+
+		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS group_poll_votes (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			poll_id INT NOT NULL,
+			user_id INT NOT NULL,
+			option_index INT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE KEY unique_poll_user_opt (poll_id, user_id, option_index),
+			INDEX (poll_id),
+			INDEX (user_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
 	}
+}
+
+func getPollData(pollID int, currUID int) (map[string]interface{}, error) {
+	var pID, msgID, gID, cID, durVal int
+	var title, optsJSON, durType string
+	var expiresAt, createdAt time.Time
+
+	err := db.QueryRow(`
+		SELECT id, message_id, group_id, creator_id, title, options_json, duration_type, duration_value, expires_at, created_at
+		FROM group_polls WHERE id = ?`, pollID).
+		Scan(&pID, &msgID, &gID, &cID, &title, &optsJSON, &durType, &durVal, &expiresAt, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+
+	var optTexts []string
+	_ = json.Unmarshal([]byte(optsJSON), &optTexts)
+
+	rows, err := db.Query(`
+		SELECT v.option_index, v.user_id, COALESCE(NULLIF(u.display_name, ''), u.username) AS voter_name
+		FROM group_poll_votes v
+		JOIN users u ON v.user_id = u.id
+		WHERE v.poll_id = ?`, pollID)
+
+	type voteInfo struct {
+		userID int
+		name   string
+	}
+	votesByOption := make(map[int][]voteInfo)
+	distinctVoters := make(map[int]bool)
+	totalVotes := 0
+
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var optIdx, uID int
+			var vName string
+			if err := rows.Scan(&optIdx, &uID, &vName); err == nil {
+				votesByOption[optIdx] = append(votesByOption[optIdx], voteInfo{userID: uID, name: vName})
+				distinctVoters[uID] = true
+				totalVotes++
+			}
+		}
+	}
+
+	isExpired := time.Now().After(expiresAt)
+	canChangeVote := !isExpired && time.Until(expiresAt) > 1*time.Hour
+
+	options := make([]map[string]interface{}, 0, len(optTexts))
+	for idx, text := range optTexts {
+		voters := votesByOption[idx]
+		voteCount := len(voters)
+		hasVoted := false
+		var voterNames []string
+		for _, v := range voters {
+			voterNames = append(voterNames, v.name)
+			if v.userID == currUID {
+				hasVoted = true
+			}
+		}
+
+		pct := 0.0
+		if len(distinctVoters) > 0 {
+			pct = math.Round((float64(voteCount)/float64(len(distinctVoters)))*1000) / 10
+		}
+
+		options = append(options, map[string]interface{}{
+			"index":      idx,
+			"text":       text,
+			"voteCount":  voteCount,
+			"percentage": pct,
+			"hasVoted":   hasVoted,
+			"voterNames": voterNames,
+		})
+	}
+
+	return map[string]interface{}{
+		"id":            pID,
+		"messageId":     msgID,
+		"groupId":       gID,
+		"creatorId":     cID,
+		"title":         title,
+		"options":       options,
+		"totalVotes":    len(distinctVoters),
+		"expiresAt":     expiresAt.Format("2006-01-02 15:04:05"),
+		"isExpired":     isExpired,
+		"canChangeVote": canChangeVote,
+	}, nil
 }
 
 func initFirebase() {
@@ -902,6 +1018,209 @@ func main() {
 						if memVal, ok := wsClients.Load(strconv.Itoa(mUID)); ok {
 							if memClient, ok := memVal.(*WSClient); ok {
 								_ = memClient.Send("group_message_edited", payload)
+							}
+						}
+					}
+					mRows.Close()
+				}
+
+			case "create_group_poll":
+				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))
+				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
+				title := strings.TrimSpace(fmt.Sprintf("%v", data["title"]))
+				durationType := strings.ToLower(fmt.Sprintf("%v", data["durationType"])) // hours, days, months
+				durationVal, _ := strconv.Atoi(fmt.Sprintf("%v", data["durationValue"]))
+				clientTempID := fmt.Sprintf("%v", data["clientTempId"])
+
+				var options []string
+				if rawOpts, ok := data["options"].([]interface{}); ok {
+					for _, opt := range rawOpts {
+						s := strings.TrimSpace(fmt.Sprintf("%v", opt))
+						if s != "" {
+							options = append(options, s)
+						}
+					}
+				}
+
+				if groupID == 0 || senderID == 0 || title == "" || len(options) < 2 {
+					_ = client.Send("error", gin.H{"message": "Anket için başlık ve en az 2 seçenek gereklidir."})
+					continue
+				}
+
+				if durationVal <= 0 {
+					durationVal = 24
+				}
+
+				// Check that requester is admin
+				var userRole string
+				err := db.QueryRow("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?", groupID, senderID).Scan(&userRole)
+				if err != nil || userRole != "admin" {
+					_ = client.Send("error", gin.H{"message": "Yalnızca grup yöneticileri anket başlatabilir."})
+					continue
+				}
+
+				var expiresAt time.Time
+				now := time.Now()
+				switch durationType {
+				case "days":
+					expiresAt = now.AddDate(0, 0, durationVal)
+				case "months":
+					expiresAt = now.AddDate(0, durationVal, 0)
+				default:
+					durationType = "hours"
+					expiresAt = now.Add(time.Duration(durationVal) * time.Hour)
+				}
+
+				optsJSON, _ := json.Marshal(options)
+
+				// 1. Insert into group_messages
+				pollContent := "📊 " + title
+				res, err := db.Exec(
+					"INSERT INTO group_messages (group_id, sender_id, content, message_type) VALUES (?, ?, ?, 'poll')",
+					groupID, senderID, pollContent,
+				)
+				if err != nil {
+					log.Printf("[DB ERR create_group_poll msg]: %v", err)
+					continue
+				}
+				msgID, _ := res.LastInsertId()
+
+				// 2. Insert into group_polls
+				pRes, pErr := db.Exec(
+					`INSERT INTO group_polls (message_id, group_id, creator_id, title, options_json, duration_type, duration_value, expires_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					msgID, groupID, senderID, title, string(optsJSON), durationType, durationVal, expiresAt,
+				)
+				if pErr != nil {
+					log.Printf("[DB ERR create_group_poll poll]: %v", pErr)
+					continue
+				}
+				pollID, _ := pRes.LastInsertId()
+
+				var senderName, senderPhoto string
+				_ = db.QueryRow("SELECT COALESCE(NULLIF(display_name, ''), username), COALESCE(photo_url, '') FROM users WHERE id = ?", senderID).Scan(&senderName, &senderPhoto)
+				if senderName == "" {
+					senderName = "Grup Yöneticisi"
+				}
+
+				var groupName string
+				_ = db.QueryRow("SELECT name FROM groups WHERE id = ?", groupID).Scan(&groupName)
+
+				// Broadcast to all active group members
+				mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", groupID)
+				if mErr == nil {
+					for mRows.Next() {
+						var mUID int
+						_ = mRows.Scan(&mUID)
+						uidStr := strconv.Itoa(mUID)
+
+						pollData, _ := getPollData(int(pollID), mUID)
+						savedGroupMsg := gin.H{
+							"id":           msgID,
+							"groupId":      groupID,
+							"clientTempId": clientTempID,
+							"senderId":     senderID,
+							"senderName":   senderName,
+							"senderPhoto":  senderPhoto,
+							"content":      pollContent,
+							"type":         "poll",
+							"mediaUrl":     "",
+							"poll":         pollData,
+							"isDeleted":    false,
+							"isEdited":     false,
+							"timestamp":    time.Now().Format("2006-01-02 15:04:05"),
+						}
+
+						if memVal, ok := wsClients.Load(uidStr); ok {
+							if memClient, ok := memVal.(*WSClient); ok {
+								_ = memClient.Send("receive_group_message", savedGroupMsg)
+							}
+						} else if mUID != senderID {
+							go func(targetID int) {
+								pushText := senderName + ": " + pollContent
+								sendFCMPush(targetID, groupName, pushText, map[string]string{
+									"type":      "group_chat",
+									"groupId":   strconv.Itoa(groupID),
+									"groupName": groupName,
+									"messageId": strconv.FormatInt(msgID, 10),
+								})
+							}(mUID)
+						}
+					}
+					mRows.Close()
+				}
+
+			case "vote_group_poll":
+				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))
+				pollID, _ := strconv.Atoi(fmt.Sprintf("%v", data["pollId"]))
+				optIndex, _ := strconv.Atoi(fmt.Sprintf("%v", data["optionIndex"]))
+				userID, _ := strconv.Atoi(client.userID)
+
+				if groupID == 0 || pollID == 0 || userID == 0 {
+					continue
+				}
+
+				// Check membership
+				var isMember int
+				_ = db.QueryRow("SELECT COUNT(*) FROM group_members WHERE group_id = ? AND user_id = ?", groupID, userID).Scan(&isMember)
+				if isMember == 0 {
+					_ = client.Send("error", gin.H{"message": "Bu grupta oy kullanma yetkiniz yok."})
+					continue
+				}
+
+				// Fetch poll details
+				var expiresAt time.Time
+				var pGroupID int
+				err := db.QueryRow("SELECT group_id, expires_at FROM group_polls WHERE id = ?", pollID).Scan(&pGroupID, &expiresAt)
+				if err != nil || pGroupID != groupID {
+					_ = client.Send("error", gin.H{"message": "Anket bulunamadı."})
+					continue
+				}
+
+				// 1. Check if poll has expired
+				if time.Now().After(expiresAt) {
+					_ = client.Send("error", gin.H{"message": "Bu anketin süresi dolduğu için oy kullanılamaz."})
+					continue
+				}
+
+				// 2. Check if user is changing existing vote in the last 1 hour
+				var existingVoteCount int
+				_ = db.QueryRow("SELECT COUNT(*) FROM group_poll_votes WHERE poll_id = ? AND user_id = ?", pollID, userID).Scan(&existingVoteCount)
+
+				timeUntilEnd := time.Until(expiresAt)
+				if existingVoteCount > 0 && timeUntilEnd <= 1*time.Hour {
+					_ = client.Send("error", gin.H{"message": "Anket bitimine 1 saatten az kaldığı için oyunuzu değiştiremezsiniz."})
+					continue
+				}
+
+				// Toggle vote for option
+				var alreadyVotedThisOption int
+				_ = db.QueryRow("SELECT COUNT(*) FROM group_poll_votes WHERE poll_id = ? AND user_id = ? AND option_index = ?", pollID, userID, optIndex).Scan(&alreadyVotedThisOption)
+
+				if alreadyVotedThisOption > 0 {
+					// Remove vote
+					_, _ = db.Exec("DELETE FROM group_poll_votes WHERE poll_id = ? AND user_id = ? AND option_index = ?", pollID, userID, optIndex)
+				} else {
+					// Cast vote
+					_, _ = db.Exec("INSERT INTO group_poll_votes (poll_id, user_id, option_index) VALUES (?, ?, ?)", pollID, userID, optIndex)
+				}
+
+				// Broadcast group_poll_updated to all online members
+				mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", groupID)
+				if mErr == nil {
+					for mRows.Next() {
+						var mUID int
+						_ = mRows.Scan(&mUID)
+						uidStr := strconv.Itoa(mUID)
+
+						if memVal, ok := wsClients.Load(uidStr); ok {
+							if memClient, ok := memVal.(*WSClient); ok {
+								pollData, _ := getPollData(pollID, mUID)
+								_ = memClient.Send("group_poll_updated", gin.H{
+									"pollId":  pollID,
+									"groupId": groupID,
+									"poll":    pollData,
+								})
 							}
 						}
 					}
@@ -1911,6 +2230,16 @@ func main() {
 					}
 				}
 
+				var pollData map[string]interface{}
+				if mType == "poll" {
+					var pollID int
+					pErr := db.QueryRow("SELECT id FROM group_polls WHERE message_id = ?", id).Scan(&pollID)
+					if pErr == nil {
+						cUIDInt, _ := strconv.Atoi(currUID)
+						pollData, _ = getPollData(pollID, cUIDInt)
+					}
+				}
+
 				msgs = append(msgs, map[string]interface{}{
 					"id":          id,
 					"groupId":     gIDVal,
@@ -1920,6 +2249,7 @@ func main() {
 					"content":     content,
 					"type":        mType,
 					"mediaUrl":    mURL.String,
+					"poll":        pollData,
 					"isDeleted":   isDel == 1,
 					"isEdited":    isEd == 1,
 					"timestamp":   cAt.Format("2006-01-02 15:04:05"),

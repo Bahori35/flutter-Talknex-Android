@@ -109,6 +109,116 @@ class GroupMemberModel {
   }
 }
 
+class GroupPollOptionModel {
+  final int index;
+  final String text;
+  final int voteCount;
+  final double percentage;
+  final bool hasVoted;
+  final List<String> voterNames;
+
+  GroupPollOptionModel({
+    required this.index,
+    required this.text,
+    this.voteCount = 0,
+    this.percentage = 0.0,
+    this.hasVoted = false,
+    this.voterNames = const [],
+  });
+
+  factory GroupPollOptionModel.fromJson(Map<String, dynamic> json) {
+    return GroupPollOptionModel(
+      index: json['index'] is int ? json['index'] : int.tryParse(json['index']?.toString() ?? '0') ?? 0,
+      text: json['text']?.toString() ?? '',
+      voteCount: json['voteCount'] is int ? json['voteCount'] : int.tryParse(json['voteCount']?.toString() ?? '0') ?? 0,
+      percentage: (json['percentage'] is num) ? (json['percentage'] as num).toDouble() : 0.0,
+      hasVoted: json['hasVoted'] == true || json['hasVoted'] == 1,
+      voterNames: (json['voterNames'] as List?)?.map((e) => e.toString()).toList() ?? [],
+    );
+  }
+}
+
+class GroupPollModel {
+  final int id;
+  final int messageId;
+  final int groupId;
+  final int creatorId;
+  final String title;
+  final List<GroupPollOptionModel> options;
+  final int totalVotes;
+  final DateTime expiresAt;
+  final bool isExpired;
+  final bool canChangeVote;
+
+  GroupPollModel({
+    required this.id,
+    required this.messageId,
+    required this.groupId,
+    required this.creatorId,
+    required this.title,
+    required this.options,
+    this.totalVotes = 0,
+    required this.expiresAt,
+    this.isExpired = false,
+    this.canChangeVote = true,
+  });
+
+  factory GroupPollModel.fromJson(Map<String, dynamic> json) {
+    DateTime exp = DateTime.now();
+    if (json['expiresAt'] != null && json['expiresAt'] != '') {
+      exp = DateTime.tryParse(json['expiresAt'].toString()) ?? DateTime.now();
+    }
+
+    final opts = (json['options'] as List?)
+            ?.map((e) => GroupPollOptionModel.fromJson(Map<String, dynamic>.from(e)))
+            .toList() ??
+        [];
+
+    final isExp = json['isExpired'] == true || DateTime.now().isAfter(exp);
+    final diff = exp.difference(DateTime.now());
+    final canChange = !isExp && diff.inMinutes > 60;
+
+    return GroupPollModel(
+      id: json['id'] is int ? json['id'] : int.tryParse(json['id']?.toString() ?? '0') ?? 0,
+      messageId: json['messageId'] is int ? json['messageId'] : int.tryParse(json['messageId']?.toString() ?? '0') ?? 0,
+      groupId: json['groupId'] is int ? json['groupId'] : int.tryParse(json['groupId']?.toString() ?? '0') ?? 0,
+      creatorId: json['creatorId'] is int ? json['creatorId'] : int.tryParse(json['creatorId']?.toString() ?? '0') ?? 0,
+      title: json['title']?.toString() ?? '',
+      options: opts,
+      totalVotes: json['totalVotes'] is int ? json['totalVotes'] : int.tryParse(json['totalVotes']?.toString() ?? '0') ?? 0,
+      expiresAt: exp,
+      isExpired: isExp,
+      canChangeVote: json['canChangeVote'] != null ? json['canChangeVote'] == true : canChange,
+    );
+  }
+
+  GroupPollModel copyWith({
+    int? id,
+    int? messageId,
+    int? groupId,
+    int? creatorId,
+    String? title,
+    List<GroupPollOptionModel>? options,
+    int? totalVotes,
+    DateTime? expiresAt,
+    bool? isExpired,
+    bool? canChangeVote,
+  }) {
+    return GroupPollModel(
+      id: id ?? this.id,
+      messageId: messageId ?? this.messageId,
+      groupId: groupId ?? this.groupId,
+      creatorId: creatorId ?? this.creatorId,
+      title: title ?? this.title,
+      options: options ?? this.options,
+      totalVotes: totalVotes ?? this.totalVotes,
+      expiresAt: expiresAt ?? this.expiresAt,
+      isExpired: isExpired ?? this.isExpired,
+      canChangeVote: canChangeVote ?? this.canChangeVote,
+    );
+  }
+}
+
 class GroupMessageModel {
   final String id;
   final int groupId;
@@ -116,8 +226,9 @@ class GroupMessageModel {
   final String senderName;
   final String senderPhoto;
   final String content;
-  final String type; // text, image, video, doc, location
+  final String type; // text, image, video, doc, location, poll
   final String? mediaUrl;
+  final GroupPollModel? poll;
   final bool isDeleted;
   final bool isEdited;
   final DateTime timestamp;
@@ -131,6 +242,7 @@ class GroupMessageModel {
     required this.content,
     this.type = 'text',
     this.mediaUrl,
+    this.poll,
     this.isDeleted = false,
     this.isEdited = false,
     required this.timestamp,
@@ -142,6 +254,11 @@ class GroupMessageModel {
       t = DateTime.tryParse(json['timestamp'].toString()) ?? DateTime.now();
     }
 
+    GroupPollModel? pModel;
+    if (json['poll'] != null && json['poll'] is Map) {
+      pModel = GroupPollModel.fromJson(Map<String, dynamic>.from(json['poll']));
+    }
+
     return GroupMessageModel(
       id: json['id']?.toString() ?? '',
       groupId: json['groupId'] is int ? json['groupId'] : int.tryParse(json['groupId']?.toString() ?? '0') ?? 0,
@@ -151,6 +268,7 @@ class GroupMessageModel {
       content: json['content']?.toString() ?? '',
       type: json['type']?.toString() ?? 'text',
       mediaUrl: json['mediaUrl']?.toString(),
+      poll: pModel,
       isDeleted: json['isDeleted'] == 1 || json['isDeleted'] == true,
       isEdited: json['isEdited'] == 1 || json['isEdited'] == true,
       timestamp: t,
@@ -166,6 +284,7 @@ class GroupMessageModel {
     String? content,
     String? type,
     String? mediaUrl,
+    GroupPollModel? poll,
     bool? isDeleted,
     bool? isEdited,
     DateTime? timestamp,
@@ -179,6 +298,7 @@ class GroupMessageModel {
       content: content ?? this.content,
       type: type ?? this.type,
       mediaUrl: mediaUrl ?? this.mediaUrl,
+      poll: poll ?? this.poll,
       isDeleted: isDeleted ?? this.isDeleted,
       isEdited: isEdited ?? this.isEdited,
       timestamp: timestamp ?? this.timestamp,

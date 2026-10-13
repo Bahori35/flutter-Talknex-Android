@@ -70,18 +70,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _socketService.onGroupMessageReceived = (data) {
       final gId = data['groupId'] is int ? data['groupId'] : int.tryParse(data['groupId']?.toString() ?? '0') ?? 0;
       final senderIdStr = data['senderId']?.toString() ?? '';
-      // Don't duplicate message if it was sent by current user (optimistic UI already added it)
-      if (senderIdStr == widget.currentUser.uid) return;
+      // Don't duplicate text/media if sent by current user, but DO process poll creation
+      if (senderIdStr == widget.currentUser.uid && data['type'] != 'poll') return;
 
       if (gId == _group.id && mounted) {
-        final rawContent = data['content']?.toString() ?? '';
-        final decrypted = EndToEndEncryptionService.decryptText(
-          rawContent,
-          senderIdStr,
-          'group_${_group.id}',
-        );
         final map = Map<String, dynamic>.from(data);
-        map['content'] = decrypted;
+        if (map['type'] != 'poll') {
+          final rawContent = data['content']?.toString() ?? '';
+          final decrypted = EndToEndEncryptionService.decryptText(
+            rawContent,
+            senderIdStr,
+            'group_${_group.id}',
+          );
+          map['content'] = decrypted;
+        }
 
         final newMsg = GroupMessageModel.fromJson(map);
         setState(() {
@@ -139,6 +141,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             return m;
           }).toList();
         });
+      }
+    // Listen for live group poll updates
+    _socketService.onGroupPollUpdated = (data) {
+      final gId = data['groupId'] is int ? data['groupId'] : int.tryParse(data['groupId']?.toString() ?? '0') ?? 0;
+      if (gId == _group.id && mounted) {
+        final pData = data['poll'];
+        if (pData != null && pData is Map<String, dynamic>) {
+          final updatedPoll = GroupPollModel.fromJson(Map<String, dynamic>.from(pData));
+          setState(() {
+            _messages = _messages.map((m) {
+              if (m.poll?.id == updatedPoll.id || m.id == updatedPoll.messageId.toString()) {
+                return m.copyWith(poll: updatedPoll);
+              }
+              return m;
+            }).toList();
+          });
+        }
       }
     };
 
@@ -790,6 +809,238 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  Widget _buildPollWidget(GroupMessageModel message) {
+    final poll = message.poll!;
+    final now = DateTime.now();
+    final isExpired = poll.isExpired || now.isAfter(poll.expiresAt);
+    final diff = poll.expiresAt.difference(now);
+    final canChange = !isExpired && diff.inMinutes > 60;
+
+    String remainingText = '';
+    if (isExpired) {
+      remainingText = 'Süresi Doldu • Kapandı';
+    } else if (diff.inDays > 0) {
+      remainingText = '${diff.inDays} gün ${diff.inHours % 24} saat kaldı';
+    } else if (diff.inHours > 0) {
+      remainingText = '${diff.inHours} saat ${diff.inMinutes % 60} dk kaldı';
+    } else {
+      remainingText = '${diff.inMinutes > 0 ? diff.inMinutes : 1} dakika kaldı';
+    }
+
+    final hasAnyVote = poll.options.any((o) => o.hasVoted);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withOpacity(0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.poll_rounded, color: Colors.amberAccent, size: 20),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  poll.title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    height: 1.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // Timer / Status Badge
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: isExpired
+                  ? AppColors.callRed.withOpacity(0.18)
+                  : (!canChange
+                      ? Colors.orange.withOpacity(0.18)
+                      : AppColors.onlineGreen.withOpacity(0.18)),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: isExpired
+                    ? AppColors.callRed.withOpacity(0.4)
+                    : (!canChange
+                        ? Colors.orange.withOpacity(0.4)
+                        : AppColors.onlineGreen.withOpacity(0.4)),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  isExpired
+                      ? Icons.lock_clock_rounded
+                      : (!canChange ? Icons.hourglass_bottom_rounded : Icons.timer_outlined),
+                  size: 13,
+                  color: isExpired
+                      ? AppColors.callRed
+                      : (!canChange ? Colors.orangeAccent : AppColors.onlineGreen),
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  remainingText,
+                  style: TextStyle(
+                    color: isExpired
+                        ? AppColors.callRed
+                        : (!canChange ? Colors.orangeAccent : AppColors.onlineGreen),
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (!canChange && !isExpired) ...[
+                  const SizedBox(width: 4),
+                  const Text('• Oylar Kilitli', style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Options List
+          ...poll.options.map((option) {
+            final pct = option.percentage;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () {
+                  if (isExpired) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Bu anketin süresi dolduğu için oy kullanılamaz.'),
+                        backgroundColor: AppColors.callRed,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    return;
+                  }
+
+                  if (!canChange && hasAnyVote) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Anket bitimine 1 saatten az kaldığı için oyunuzu değiştiremezsiniz.'),
+                        backgroundColor: Colors.orange,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    return;
+                  }
+
+                  _socketService.voteGroupPoll(
+                    groupId: _group.id,
+                    pollId: poll.id,
+                    optionIndex: option.index,
+                  );
+                },
+                child: Container(
+                  height: 44,
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: option.hasVoted ? AppColors.accent : Colors.white12,
+                      width: option.hasVoted ? 1.5 : 1,
+                    ),
+                  ),
+                  child: Stack(
+                    children: [
+                      // Progress fill in background
+                      FractionallySizedBox(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: (pct / 100).clamp(0.0, 1.0),
+                        child: Container(
+                          color: option.hasVoted
+                              ? AppColors.accent.withOpacity(0.3)
+                              : Colors.white.withOpacity(0.12),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Row(
+                          children: [
+                            Icon(
+                              option.hasVoted
+                                  ? Icons.check_circle_rounded
+                                  : Icons.radio_button_unchecked,
+                              color: option.hasVoted ? AppColors.accent : Colors.white38,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                option.text,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13.5,
+                                  fontWeight: option.hasVoted ? FontWeight.bold : FontWeight.w500,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Text(
+                              '${pct.toStringAsFixed(0)}% (${option.voteCount})',
+                              style: TextStyle(
+                                color: option.hasVoted ? AppColors.accent : Colors.white60,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Toplam ${poll.totalVotes} kişi oy kullandı',
+                style: const TextStyle(color: Colors.white54, fontSize: 11.5),
+              ),
+              const Text(
+                'Çoklu seçim yapılabilir',
+                style: TextStyle(color: Colors.white38, fontSize: 11),
+              ),
+            ],
+          ),
+          if (!canChange && !isExpired)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                '⚠️ Bitime 1 saatten az kaldığı için oylar kilitlenmiştir.',
+                style: TextStyle(color: Colors.orange.shade300, fontSize: 11),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLocationWidget(GroupMessageModel message) {
     final isLive = message.content.contains('Canlı Konum');
 
@@ -1015,6 +1266,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final isLocation = message.type == 'location';
     final isDoc = message.type == 'doc';
     final isVideo = message.type == 'video' || (message.mediaUrl != null && message.mediaUrl!.endsWith('.mp4'));
+    final isPoll = message.type == 'poll' && message.poll != null;
     final hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
 
     return Align(
@@ -1023,12 +1275,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         onLongPress: () => _showMessageOptions(message),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: EdgeInsets.all(hasMedia && !isDoc && !isLocation ? 4 : 10),
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+          padding: EdgeInsets.all(isPoll ? 2 : (hasMedia && !isDoc && !isLocation ? 4 : 10)),
+          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * (isPoll ? 0.85 : 0.78)),
           decoration: BoxDecoration(
             color: message.isDeleted
                 ? AppColors.surfaceLight.withOpacity(0.4)
-                : (isMe ? AppColors.primary : AppColors.surface),
+                : (isPoll ? Colors.transparent : (isMe ? AppColors.primary : AppColors.surface)),
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(16),
               topRight: const Radius.circular(16),
@@ -1036,7 +1288,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               bottomRight: Radius.circular(isMe ? 4 : 16),
             ),
             border: Border.all(
-              color: isMe ? Colors.transparent : AppColors.cardBorder,
+              color: (isMe || isPoll) ? Colors.transparent : AppColors.cardBorder,
               width: 0.8,
             ),
           ),
@@ -1071,7 +1323,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   ],
                 )
               else ...[
-                if (isLocation) ...[
+                if (isPoll) ...[
+                  _buildPollWidget(message),
+                ] else if (isLocation) ...[
                   _buildLocationWidget(message),
                 ] else if (isDoc) ...[
                   _buildDocumentWidget(message),
@@ -1220,6 +1474,276 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  void _openCreatePollDialog() {
+    final titleController = TextEditingController();
+    final optionControllers = [
+      TextEditingController(),
+      TextEditingController(),
+    ];
+    final durationController = TextEditingController(text: '24');
+    String durationType = 'hours';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+                top: 16,
+                left: 20,
+                right: 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: const [
+                        Icon(Icons.poll_rounded, color: Colors.amberAccent, size: 24),
+                        SizedBox(width: 8),
+                        Text(
+                          'Yeni Anket Başlat',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Anket Sorusu / Başlığı',
+                      style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: titleController,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: 'Örn: Toplantı hangi gün olsun?',
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        filled: true,
+                        fillColor: AppColors.surfaceLight,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Seçenekler (En az 2 seçenek)',
+                      style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    ...List.generate(optionControllers.length, (index) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: optionControllers[index],
+                                style: const TextStyle(color: Colors.white, fontSize: 14),
+                                decoration: InputDecoration(
+                                  hintText: '${index + 1}. Seçenek',
+                                  hintStyle: const TextStyle(color: Colors.white38),
+                                  filled: true,
+                                  fillColor: AppColors.surfaceLight,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                ),
+                              ),
+                            ),
+                            if (optionControllers.length > 2)
+                              IconButton(
+                                icon: const Icon(Icons.remove_circle_outline, color: AppColors.callRed),
+                                onPressed: () {
+                                  setModalState(() {
+                                    optionControllers.removeAt(index);
+                                  });
+                                },
+                              ),
+                          ],
+                        ),
+                      );
+                    }),
+                    TextButton.icon(
+                      onPressed: () {
+                        setModalState(() {
+                          optionControllers.add(TextEditingController());
+                        });
+                      },
+                      icon: const Icon(Icons.add_circle_outline_rounded, color: AppColors.accent),
+                      label: const Text('Seçenek Ekle', style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold)),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Anket Süresi',
+                      style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 80,
+                          child: TextField(
+                            controller: durationController,
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: AppColors.surfaceLight,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide.none,
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              color: AppColors.surfaceLight,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: durationType,
+                                dropdownColor: AppColors.surface,
+                                style: const TextStyle(color: Colors.white, fontSize: 14),
+                                icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
+                                items: const [
+                                  DropdownMenuItem(value: 'hours', child: Text('Saat')),
+                                  DropdownMenuItem(value: 'days', child: Text('Gün')),
+                                  DropdownMenuItem(value: 'months', child: Text('Ay')),
+                                ],
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setModalState(() {
+                                      durationType = val;
+                                    });
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.amber.withOpacity(0.3)),
+                      ),
+                      child: const Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.info_outline_rounded, color: Colors.amberAccent, size: 18),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Üyeler anket bitimine son 1 saat kalana kadar oylarını değiştirebilir. Süresi dolduğunda anket oy kullanımına kapanır.',
+                              style: TextStyle(color: Colors.white70, fontSize: 11.5, height: 1.3),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.accent,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        onPressed: () {
+                          final title = titleController.text.trim();
+                          final options = optionControllers
+                              .map((c) => c.text.trim())
+                              .where((s) => s.isNotEmpty)
+                              .toList();
+                          final durVal = int.tryParse(durationController.text.trim()) ?? 24;
+
+                          if (title.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Lütfen anket başlığı girin.')),
+                            );
+                            return;
+                          }
+                          if (options.length < 2) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('En az 2 seçenek yazmalısınız.')),
+                            );
+                            return;
+                          }
+                          if (durVal <= 0) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Geçerli bir süre girin.')),
+                            );
+                            return;
+                          }
+
+                          _socketService.createGroupPoll(
+                            groupId: _group.id,
+                            senderId: widget.currentUser.uid,
+                            title: title,
+                            options: options,
+                            durationType: durationType,
+                            durationValue: durVal,
+                          );
+
+                          Navigator.pop(ctx);
+                        },
+                        child: const Text(
+                          'Anketi Başlat',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showMediaPickerSheet() {
     showModalBottomSheet(
       context: context,
@@ -1297,6 +1821,33 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         _openLocationPicker();
                       },
                     ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildMediaOption(
+                      icon: Icons.poll_rounded,
+                      label: 'Anket',
+                      color: Colors.amberAccent,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        if (_group.isAdmin) {
+                          _openCreatePollDialog();
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Yalnızca grup yöneticileri anket başlatabilir.'),
+                              backgroundColor: AppColors.callRed,
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                    const SizedBox(width: 80),
+                    const SizedBox(width: 80),
                   ],
                 ),
               ],

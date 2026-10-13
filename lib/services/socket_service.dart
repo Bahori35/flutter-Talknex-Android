@@ -24,6 +24,7 @@ typedef OnGroupMessageDeleted = void Function(String messageId, String groupId, 
 typedef OnGroupMessageSent = void Function(String tempId, String realId, String groupId);
 typedef OnGroupMessageEdited = void Function(String messageId, String groupId, String newContent);
 typedef OnGroupDeleted = void Function(String groupId, String message);
+typedef OnGroupPollUpdated = void Function(Map<String, dynamic> data);
 
 class SocketService {
   static final SocketService _instance = SocketService._internal();
@@ -56,6 +57,7 @@ class SocketService {
   OnGroupMessageSent? onGroupMessageSent;
   OnGroupMessageEdited? onGroupMessageEdited;
   OnGroupDeleted? onGroupDeleted;
+  OnGroupPollUpdated? onGroupPollUpdated;
 
   // Initialize and connect native WebSocket to Go backend (Port 3000 -> Nginx -> Go)
   void initSocket(String userId) {
@@ -324,6 +326,12 @@ class SocketService {
             onGroupMessageEdited!(msgId, gId, newText);
           }
           break;
+
+        case 'group_poll_updated':
+          if (onGroupPollUpdated != null && data is Map<String, dynamic>) {
+            onGroupPollUpdated!(Map<String, dynamic>.from(data));
+          }
+          break;
       }
     } catch (e) {
       debugPrint('[GORILLA WS] Parse error: $e');
@@ -522,6 +530,40 @@ class SocketService {
       'messageId': messageId,
       'groupId': groupId,
       'newContent': newContent,
+    });
+  }
+
+  // Create group poll (admin only)
+  void createGroupPoll({
+    required int groupId,
+    required String senderId,
+    required String title,
+    required List<String> options,
+    required String durationType,
+    required int durationValue,
+    String? clientTempId,
+  }) {
+    _emit('create_group_poll', {
+      'groupId': groupId,
+      'senderId': senderId,
+      'title': title,
+      'options': options,
+      'durationType': durationType,
+      'durationValue': durationValue,
+      'clientTempId': clientTempId ?? '',
+    });
+  }
+
+  // Vote or toggle option on a group poll
+  void voteGroupPoll({
+    required int groupId,
+    required int pollId,
+    required int optionIndex,
+  }) {
+    _emit('vote_group_poll', {
+      'groupId': groupId,
+      'pollId': pollId,
+      'optionIndex': optionIndex,
     });
   }
 
