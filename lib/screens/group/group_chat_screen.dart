@@ -142,6 +142,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           }).toList();
         });
       }
+    };
+
     // Listen for live group poll updates
     _socketService.onGroupPollUpdated = (data) {
       final gId = data['groupId'] is int ? data['groupId'] : int.tryParse(data['groupId']?.toString() ?? '0') ?? 0;
