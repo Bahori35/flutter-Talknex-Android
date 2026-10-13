@@ -756,6 +756,8 @@ func main() {
 									pushText = senderName + ": 🎥 Video"
 								} else if msgType == "doc" {
 									pushText = senderName + ": 📄 Belge"
+								} else if msgType == "location" {
+									pushText = senderName + ": 📍 Konum"
 								}
 								sendFCMPush(targetID, groupName, pushText, map[string]string{
 									"type":      "group_chat",
@@ -853,6 +855,57 @@ func main() {
 						"mode":      "me",
 						"deletedBy": currentUidStr,
 					})
+				}
+
+			case "edit_group_message":
+				msgID, _ := strconv.Atoi(fmt.Sprintf("%v", data["messageId"]))
+				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))
+				newContent := fmt.Sprintf("%v", data["newContent"])
+
+				if msgID == 0 || groupID == 0 || newContent == "" {
+					continue
+				}
+
+				currentUidStr := client.userID
+				currentUID, _ := strconv.Atoi(currentUidStr)
+
+				var msgSenderID int
+				var createdAt time.Time
+				err := db.QueryRow("SELECT sender_id, created_at FROM group_messages WHERE id = ? AND group_id = ?", msgID, groupID).Scan(&msgSenderID, &createdAt)
+				if err != nil {
+					continue
+				}
+
+				if msgSenderID != currentUID {
+					_ = client.Send("error", gin.H{"message": "Yalnızca kendi mesajlarınızı düzenleyebilirsiniz."})
+					continue
+				}
+
+				if time.Since(createdAt) > 15*time.Minute {
+					_ = client.Send("error", gin.H{"message": "Mesajlar yalnızca 15 dakika içinde düzenlenebilir."})
+					continue
+				}
+
+				_, _ = db.Exec("UPDATE group_messages SET content = ?, is_edited = 1 WHERE id = ?", newContent, msgID)
+
+				payload := gin.H{
+					"messageId":  strconv.Itoa(msgID),
+					"groupId":    strconv.Itoa(groupID),
+					"newContent": newContent,
+				}
+
+				mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", groupID)
+				if mErr == nil {
+					for mRows.Next() {
+						var mUID int
+						_ = mRows.Scan(&mUID)
+						if memVal, ok := wsClients.Load(strconv.Itoa(mUID)); ok {
+							if memClient, ok := memVal.(*WSClient); ok {
+								_ = memClient.Send("group_message_edited", payload)
+							}
+						}
+					}
+					mRows.Close()
 				}
 			}
 		}

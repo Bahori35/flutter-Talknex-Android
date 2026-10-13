@@ -22,6 +22,7 @@ typedef OnMessageSent = void Function(String tempId, String realId);
 typedef OnGroupMessageReceived = void Function(Map<String, dynamic> data);
 typedef OnGroupMessageDeleted = void Function(String messageId, String groupId, [String mode]);
 typedef OnGroupMessageSent = void Function(String tempId, String realId, String groupId);
+typedef OnGroupMessageEdited = void Function(String messageId, String groupId, String newContent);
 typedef OnGroupDeleted = void Function(String groupId, String message);
 
 class SocketService {
@@ -53,6 +54,7 @@ class SocketService {
   OnGroupMessageReceived? onGroupMessageReceived;
   OnGroupMessageDeleted? onGroupMessageDeleted;
   OnGroupMessageSent? onGroupMessageSent;
+  OnGroupMessageEdited? onGroupMessageEdited;
   OnGroupDeleted? onGroupDeleted;
 
   // Initialize and connect native WebSocket to Go backend (Port 3000 -> Nginx -> Go)
@@ -313,6 +315,15 @@ class SocketService {
             onGroupDeleted!(gId, msg);
           }
           break;
+
+        case 'group_message_edited':
+          if (onGroupMessageEdited != null && data is Map<String, dynamic>) {
+            final msgId = data['messageId']?.toString() ?? '';
+            final gId = data['groupId']?.toString() ?? '';
+            final newText = data['newContent']?.toString() ?? '';
+            onGroupMessageEdited!(msgId, gId, newText);
+          }
+          break;
       }
     } catch (e) {
       debugPrint('[GORILLA WS] Parse error: $e');
@@ -498,6 +509,19 @@ class SocketService {
       'messageId': messageId,
       'groupId': groupId,
       'mode': mode,
+    });
+  }
+
+  // Edit group message
+  void editGroupMessage({
+    required String messageId,
+    required int groupId,
+    required String newContent,
+  }) {
+    _emit('edit_group_message', {
+      'messageId': messageId,
+      'groupId': groupId,
+      'newContent': newContent,
     });
   }
 
