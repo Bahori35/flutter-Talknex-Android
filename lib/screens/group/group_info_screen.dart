@@ -667,7 +667,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                       tileColor: AppColors.callRed.withOpacity(0.12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
-                        side: Border.all(color: AppColors.callRed.withOpacity(0.4)),
+                        side: BorderSide(color: AppColors.callRed.withOpacity(0.4)),
                       ),
                       leading: const Icon(Icons.delete_forever_rounded, color: AppColors.callRed),
                       title: const Text(
