@@ -363,6 +363,16 @@ class ServerManagerGUI:
 
         nginx_dir = self.get_nginx_exe()
         if nginx_dir:
+            # Sync latest nginx.conf if running from C:\nginx
+            local_conf = os.path.join(NGINX_LOCAL_DIR, "conf", "nginx.conf")
+            c_conf = os.path.join(nginx_dir, "conf", "nginx.conf")
+            if os.path.exists(local_conf) and nginx_dir != NGINX_LOCAL_DIR:
+                try:
+                    import shutil
+                    shutil.copy2(local_conf, c_conf)
+                except Exception:
+                    pass
+
             nginx_exe = os.path.join(nginx_dir, "nginx.exe")
             self.log(f"[2/3] Nginx Web Hızlandırıcı başlatılıyor ({nginx_exe})...")
             try:

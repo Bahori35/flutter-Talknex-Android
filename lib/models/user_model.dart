@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../utils/media_url_helper.dart';
 
 class UserModel {
   final String uid;
@@ -18,14 +19,14 @@ class UserModel {
     required this.username,
     required this.email,
     required this.displayName,
-    this.photoUrl = '',
+    String photoUrl = '',
     this.phoneNumber = '',
     this.status = 'Hey there! I am using this app.',
     this.isOnline = false,
     this.lastSeen,
     this.lastMessage = '',
     this.lastTime,
-  });
+  }) : photoUrl = formatMediaUrl(photoUrl);
 
   Map<String, dynamic> toMap() {
     return {

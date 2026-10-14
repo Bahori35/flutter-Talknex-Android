@@ -77,6 +77,30 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func getServerBaseURL(c *gin.Context) string {
+	if pub := os.Getenv("PUBLIC_BASE_URL"); pub != "" {
+		return strings.TrimSuffix(pub, "/")
+	}
+	proto := "http"
+	if c.Request.TLS != nil || c.Request.Header.Get("X-Forwarded-Proto") == "https" {
+		proto = "https"
+	}
+	host := c.Request.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = c.Request.Host
+	}
+	// If host is an IP or domain without port, check X-Forwarded-Port or default to 3000
+	if !strings.Contains(host, ":") {
+		if port := c.Request.Header.Get("X-Forwarded-Port"); port != "" && port != "80" && port != "443" {
+			host = host + ":" + port
+		} else if proto == "http" {
+			// Talknex Nginx standard port is 3000
+			host = host + ":3000"
+		}
+	}
+	return fmt.Sprintf("%s://%s", proto, host)
+}
+
 func initDB() {
 	// 1. Ensure Database Exists
 	rootDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/?charset=utf8mb4&parseTime=True&loc=Local", dbUser, dbPassword, dbHost, dbPort)
@@ -1741,11 +1765,7 @@ func main() {
 			defer file.Close()
 
 			contentType := header.Header.Get("Content-Type")
-			proto := "http"
-			if c.Request.TLS != nil || c.Request.Header.Get("X-Forwarded-Proto") == "https" {
-				proto = "https"
-			}
-			serverBase := fmt.Sprintf("%s://%s", proto, c.Request.Host)
+			serverBase := getServerBaseURL(c)
 
 			publicURL, err := uploadFileStream(file, header.Filename, header.Size, contentType, serverBase)
 			if err != nil {

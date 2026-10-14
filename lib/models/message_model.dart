@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../utils/media_url_helper.dart';
 
 enum MessageType { text, image, video, doc, audio, call, location, gif, sticker }
 
@@ -27,11 +28,11 @@ class MessageModel {
     required this.timestamp,
     this.isDelivered = false,
     this.isRead = false,
-    this.mediaUrl,
+    String? mediaUrl,
     this.isDeleted = false,
     this.isEdited = false,
     this.originalContent,
-  });
+  }) : mediaUrl = formatMediaUrl(mediaUrl);
 
   Map<String, dynamic> toMap() {
     return {

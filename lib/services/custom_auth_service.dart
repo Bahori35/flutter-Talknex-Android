@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_model.dart';
+import '../utils/media_url_helper.dart';
 
 class CustomAuthService extends ChangeNotifier {
   // Server Public IP Address
@@ -124,7 +125,7 @@ class CustomAuthService extends ChangeNotifier {
             username: data['user']['username'],
             email: '${data['user']['username']}@custom.server',
             displayName: data['user']['displayName'],
-            photoUrl: data['user']['photoUrl'] ?? '',
+            photoUrl: formatMediaUrl(data['user']['photoUrl'] ?? ''),
             phoneNumber: data['user']['phoneNumber'] ?? '',
             isOnline: true,
           );
@@ -181,7 +182,7 @@ class CustomAuthService extends ChangeNotifier {
             username: data['user']['username'],
             email: '${data['user']['username']}@custom.server',
             displayName: data['user']['displayName'],
-            photoUrl: data['user']['photoUrl'] ?? '',
+            photoUrl: formatMediaUrl(data['user']['photoUrl'] ?? ''),
             phoneNumber: data['user']['phoneNumber'] ?? '',
             status: data['user']['status'] ?? 'Hey there! I am using this app.',
             isOnline: true,
@@ -237,7 +238,7 @@ class CustomAuthService extends ChangeNotifier {
         if (data['user'] != null) {
           _currentUser = _currentUser!.copyWith(
             displayName: data['user']['displayName'],
-            photoUrl: data['user']['photoUrl'],
+            photoUrl: formatMediaUrl(data['user']['photoUrl']),
             status: data['user']['status'],
             phoneNumber: data['user']['phoneNumber'] ?? _currentUser!.phoneNumber,
           );
@@ -272,7 +273,7 @@ class CustomAuthService extends ChangeNotifier {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        return data['url'];
+        return formatMediaUrl(data['url']);
       }
     } catch (e) {
       debugPrint('[UPLOAD] Error uploading file: $e');

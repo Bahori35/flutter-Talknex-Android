@@ -1,3 +1,5 @@
+import '../utils/media_url_helper.dart';
+
 class GroupModel {
   final int id;
   final String name;
@@ -13,7 +15,7 @@ class GroupModel {
   GroupModel({
     required this.id,
     required this.name,
-    this.photoUrl = '',
+    String photoUrl = '',
     this.description = '',
     required this.createdBy,
     this.myRole = 'member',
@@ -21,7 +23,7 @@ class GroupModel {
     this.lastMessage = '',
     this.lastSenderId = '',
     this.lastTime,
-  });
+  }) : photoUrl = formatMediaUrl(photoUrl);
 
   bool get isAdmin => myRole == 'admin';
 
@@ -419,16 +421,17 @@ class GroupMessageModel {
     required this.groupId,
     required this.senderId,
     required this.senderName,
-    this.senderPhoto = '',
+    String senderPhoto = '',
     required this.content,
     this.type = 'text',
-    this.mediaUrl,
+    String? mediaUrl,
     this.poll,
     this.event,
     this.isDeleted = false,
     this.isEdited = false,
     required this.timestamp,
-  });
+  })  : senderPhoto = formatMediaUrl(senderPhoto),
+        mediaUrl = formatMediaUrl(mediaUrl);
 
   factory GroupMessageModel.fromJson(Map<String, dynamic> json) {
     DateTime t = DateTime.now();

@@ -1,3 +1,5 @@
+import '../utils/media_url_helper.dart';
+
 class StoryItem {
   final int id;
   final int userId;
@@ -11,13 +13,13 @@ class StoryItem {
   StoryItem({
     required this.id,
     required this.userId,
-    required this.mediaUrl,
+    required String mediaUrl,
     required this.caption,
     this.mediaType = 'image',
     required this.createdAt,
     this.isViewed = false,
     this.viewCount = 0,
-  });
+  }) : mediaUrl = formatMediaUrl(mediaUrl);
 
   factory StoryItem.fromJson(Map<String, dynamic> json) {
     return StoryItem(
@@ -46,11 +48,11 @@ class UserStoryGroup {
     required this.userId,
     required this.username,
     required this.displayName,
-    required this.userPhotoUrl,
+    required String userPhotoUrl,
     required this.stories,
     required this.allViewed,
     required this.latestTimestamp,
-  });
+  }) : userPhotoUrl = formatMediaUrl(userPhotoUrl);
 
   factory UserStoryGroup.fromJson(Map<String, dynamic> json) {
     var storyList = (json['stories'] as List<dynamic>? ?? [])
