@@ -232,7 +232,8 @@ class ServerManagerGUI:
 
     def _detect_ram_speed(self):
         try:
-            out = subprocess.check_output(['wmic', 'memorychip', 'get', 'speed'], text=True, stderr=subprocess.DEVNULL)
+            raw_out = subprocess.check_output(['wmic', 'memorychip', 'get', 'speed'], stderr=subprocess.DEVNULL)
+            out = raw_out.decode('utf-8', errors='ignore')
             speeds = [int(s) for s in out.split() if s.isdigit() and int(s) > 0]
             if speeds:
                 return f"{max(speeds)} MHz"
@@ -384,6 +385,8 @@ class ServerManagerGUI:
         # 2. Start Go Backend
         env = os.environ.copy()
         env["PORT"] = "3001"
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
 
         go_server_exe = os.path.join(CURRENT_DIR, "talknex_server.exe")
         if not os.path.exists(go_server_exe):
@@ -400,8 +403,7 @@ class ServerManagerGUI:
                 cwd=launch_cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                bufsize=0,
                 env=env,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
@@ -423,14 +425,23 @@ class ServerManagerGUI:
             self.btn_stop.config(state=tk.NORMAL)
             self.rebuild_core_widgets(assigned_threads)
 
-            # Start reading logs
+            # Start reading logs with automatic UTF-8 & Turkish encoding support
             def stream_logs():
                 proc = self.server_process
                 if not proc or not proc.stdout:
                     return
                 try:
-                    for line in iter(proc.stdout.readline, ''):
-                        if line:
+                    for raw_line in iter(proc.stdout.readline, b''):
+                        if raw_line:
+                            line = None
+                            for enc in ("utf-8", "cp1254", "cp857", "latin-1"):
+                                try:
+                                    line = raw_line.decode(enc)
+                                    break
+                                except UnicodeDecodeError:
+                                    continue
+                            if line is None:
+                                line = raw_line.decode("utf-8", errors="replace")
                             self.log(line.strip())
                 except Exception:
                     pass

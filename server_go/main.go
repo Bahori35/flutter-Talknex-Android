@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"net/http"
@@ -206,6 +203,11 @@ func initDB() {
 			INDEX (user_id),
 			INDEX (status)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+
+		// 500k Kullanıcı için Yüksek Performanslı Sayfalama İndeksleri
+		_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_messages_pair_id ON messages (sender_id, receiver_id, id)")
+		_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_messages_recv_send_id ON messages (receiver_id, sender_id, id)")
+		_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_group_messages_gid_id ON group_messages (group_id, id)")
 	}
 }
 
@@ -569,6 +571,8 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	initDB()
 	initFirebase()
+	initRedis()
+	initS3Storage()
 
 	// Ensure uploads directory exists (use C:\talknex_uploads if available to avoid Windows unicode path issues)
 	uploadDir = `C:\talknex_uploads`
@@ -593,16 +597,12 @@ func main() {
 				wsClients.Delete(client.userID)
 				log.Printf("[WS USER] Kullanici ayrildi: ID %s", client.userID)
 				_, _ = db.Exec("UPDATE users SET is_online = 0, last_seen = NOW() WHERE id = ?", client.userID)
+				setClusterUserOnline(client.userID, false)
 
-				// Broadcast offline status
-				wsClients.Range(func(key, value interface{}) bool {
-					if other, ok := value.(*WSClient); ok && other.userID != client.userID {
-						_ = other.Send("user_status_change", gin.H{
-							"userId":   client.userID,
-							"isOnline": false,
-						})
-					}
-					return true
+				// Cluster-wide broadcast offline status
+				dispatchBroadcastEvent("user_status_change", gin.H{
+					"userId":   client.userID,
+					"isOnline": false,
 				})
 			}
 		}()
@@ -645,16 +645,12 @@ func main() {
 
 					_, _ = db.Exec("UPDATE users SET is_online = 1 WHERE id = ?", uidStr)
 					_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE receiver_id = ? AND is_delivered = 0", uidStr)
+					setClusterUserOnline(uidStr, true)
 
-					// Broadcast online status
-					wsClients.Range(func(key, value interface{}) bool {
-						if other, ok := value.(*WSClient); ok && other.userID != client.userID {
-							_ = other.Send("user_status_change", gin.H{
-								"userId":   uidStr,
-								"isOnline": true,
-							})
-						}
-						return true
+					// Cluster-wide broadcast online status
+					dispatchBroadcastEvent("user_status_change", gin.H{
+						"userId":   uidStr,
+						"isOnline": true,
 					})
 				}
 
@@ -675,7 +671,8 @@ func main() {
 					clientTempID = c
 				}
 
-				receiverVal, isReceiverOnline := wsClients.Load(strconv.Itoa(receiverID))
+				receiverIDStr := strconv.Itoa(receiverID)
+				isReceiverOnline := isUserOnlineInCluster(receiverIDStr)
 				isDelivered := isReceiverOnline
 
 				// Insert Message into MariaDB
@@ -713,9 +710,7 @@ func main() {
 				}
 
 				if isReceiverOnline {
-					if rClient, ok := receiverVal.(*WSClient); ok {
-						_ = rClient.Send("receive_message", savedMessage)
-					}
+					dispatchUserEvent(receiverIDStr, "receive_message", savedMessage)
 				}
 				_ = client.Send("message_sent", savedMessage)
 
@@ -785,11 +780,7 @@ func main() {
 					"isEdited":   true,
 				}
 
-				if rVal, ok := wsClients.Load(strconv.Itoa(receiverID)); ok {
-					if rClient, ok := rVal.(*WSClient); ok {
-						_ = rClient.Send("message_edited", payload)
-					}
-				}
+				dispatchUserEvent(strconv.Itoa(receiverID), "message_edited", payload)
 				_ = client.Send("message_edited", payload)
 
 			case "delete_message":
@@ -835,11 +826,7 @@ func main() {
 						"mode":       "everyone",
 					}
 
-					if rVal, ok := wsClients.Load(strconv.Itoa(receiverID)); ok {
-						if rClient, ok := rVal.(*WSClient); ok {
-							_ = rClient.Send("message_deleted", payload)
-						}
-					}
+					dispatchUserEvent(strconv.Itoa(receiverID), "message_deleted", payload)
 					_ = client.Send("message_deleted", payload)
 				} else {
 					// Benden Sil (Delete for me)
@@ -883,15 +870,11 @@ func main() {
 					_, _ = db.Exec("UPDATE messages SET is_delivered = 1 WHERE sender_id = ? AND receiver_id = ?", senderID, receiverID)
 				}
 
-				if sVal, ok := wsClients.Load(strconv.Itoa(senderID)); ok {
-					if sClient, ok := sVal.(*WSClient); ok {
-						_ = sClient.Send("messages_delivered", gin.H{
-							"senderId":   strconv.Itoa(senderID),
-							"receiverId": strconv.Itoa(receiverID),
-							"messageId":  msgID,
-						})
-					}
-				}
+				dispatchUserEvent(strconv.Itoa(senderID), "messages_delivered", gin.H{
+					"senderId":   strconv.Itoa(senderID),
+					"receiverId": strconv.Itoa(receiverID),
+					"messageId":  msgID,
+				})
 
 			case "message_read":
 				senderID, _ := strconv.Atoi(fmt.Sprintf("%v", data["senderId"]))
@@ -904,41 +887,24 @@ func main() {
 					_, _ = db.Exec("UPDATE messages SET is_delivered = 1, is_read = 1 WHERE sender_id = ? AND receiver_id = ?", senderID, receiverID)
 				}
 
-				if sVal, ok := wsClients.Load(strconv.Itoa(senderID)); ok {
-					if sClient, ok := sVal.(*WSClient); ok {
-						_ = sClient.Send("messages_read", gin.H{
-							"senderId":   strconv.Itoa(senderID),
-							"receiverId": strconv.Itoa(receiverID),
-							"messageId":  msgID,
-						})
-					}
-				}
+				dispatchUserEvent(strconv.Itoa(senderID), "messages_read", gin.H{
+					"senderId":   strconv.Itoa(senderID),
+					"receiverId": strconv.Itoa(receiverID),
+					"messageId":  msgID,
+				})
 
 			case "live_location_update":
 				receiverID := fmt.Sprintf("%v", data["receiverId"])
-				if rVal, ok := wsClients.Load(receiverID); ok {
-					if rClient, ok := rVal.(*WSClient); ok {
-						_ = rClient.Send("live_location_received", data)
-					}
-				}
+				dispatchUserEvent(receiverID, "live_location_received", data)
 
 			case "stop_live_location":
 				receiverID := fmt.Sprintf("%v", data["receiverId"])
-				if rVal, ok := wsClients.Load(receiverID); ok {
-					if rClient, ok := rVal.(*WSClient); ok {
-						_ = rClient.Send("live_location_stopped", data)
-					}
-				}
+				dispatchUserEvent(receiverID, "live_location_stopped", data)
 
 			case "call_user":
 				receiverID := fmt.Sprintf("%v", data["receiverId"])
 				activePendingCalls.Store(receiverID, data)
-
-				if rVal, ok := wsClients.Load(receiverID); ok {
-					if rClient, ok := rVal.(*WSClient); ok {
-						_ = rClient.Send("incoming_call", data)
-					}
-				}
+				dispatchUserEvent(receiverID, "incoming_call", data)
 
 				go func() {
 					callerData, _ := data["caller"].(map[string]interface{})
@@ -968,20 +934,11 @@ func main() {
 					activePendingCalls.Delete(key)
 					return true
 				})
-
-				if cVal, ok := wsClients.Load(callerID); ok {
-					if cClient, ok := cVal.(*WSClient); ok {
-						_ = cClient.Send("call_answered", data)
-					}
-				}
+				dispatchUserEvent(callerID, "call_answered", data)
 
 			case "ice_candidate":
 				targetUserID := fmt.Sprintf("%v", data["targetUserId"])
-				if tVal, ok := wsClients.Load(targetUserID); ok {
-					if tClient, ok := tVal.(*WSClient); ok {
-						_ = tClient.Send("ice_candidate", data)
-					}
-				}
+				dispatchUserEvent(targetUserID, "ice_candidate", data)
 
 			case "end_call":
 				activePendingCalls.Range(func(key, value interface{}) bool {
@@ -995,18 +952,9 @@ func main() {
 				}
 
 				if targetUserID != "" {
-					if tVal, ok := wsClients.Load(targetUserID); ok {
-						if tClient, ok := tVal.(*WSClient); ok {
-							_ = tClient.Send("call_ended", gin.H{})
-						}
-					}
+					dispatchUserEvent(targetUserID, "call_ended", gin.H{})
 				} else {
-					wsClients.Range(func(key, val interface{}) bool {
-						if other, ok := val.(*WSClient); ok && other.userID != client.userID {
-							_ = other.Send("call_ended", gin.H{})
-						}
-						return true
-					})
+					dispatchBroadcastEvent("call_ended", gin.H{})
 				}
 
 			case "send_group_message":
@@ -1080,10 +1028,8 @@ func main() {
 						var mUID int
 						_ = mRows.Scan(&mUID)
 						uidStr := strconv.Itoa(mUID)
-						if memVal, ok := wsClients.Load(uidStr); ok {
-							if memClient, ok := memVal.(*WSClient); ok {
-								_ = memClient.Send("receive_group_message", savedGroupMsg)
-							}
+						if isUserOnlineInCluster(uidStr) {
+							dispatchUserEvent(uidStr, "receive_group_message", savedGroupMsg)
 						} else if mUID != senderID {
 							// Push notification to offline member
 							go func(targetID int) {
@@ -1164,11 +1110,7 @@ func main() {
 						for mRows.Next() {
 							var mUID int
 							_ = mRows.Scan(&mUID)
-							if memVal, ok := wsClients.Load(strconv.Itoa(mUID)); ok {
-								if memClient, ok := memVal.(*WSClient); ok {
-									_ = memClient.Send("group_message_deleted", payload)
-								}
-							}
+							dispatchUserEvent(strconv.Itoa(mUID), "group_message_deleted", payload)
 						}
 						mRows.Close()
 					}
@@ -1241,11 +1183,7 @@ func main() {
 					for mRows.Next() {
 						var mUID int
 						_ = mRows.Scan(&mUID)
-						if memVal, ok := wsClients.Load(strconv.Itoa(mUID)); ok {
-							if memClient, ok := memVal.(*WSClient); ok {
-								_ = memClient.Send("group_message_edited", payload)
-							}
-						}
+						dispatchUserEvent(strconv.Itoa(mUID), "group_message_edited", payload)
 					}
 					mRows.Close()
 				}
@@ -1357,10 +1295,8 @@ func main() {
 							"timestamp":    time.Now().Format("2006-01-02 15:04:05"),
 						}
 
-						if memVal, ok := wsClients.Load(uidStr); ok {
-							if memClient, ok := memVal.(*WSClient); ok {
-								_ = memClient.Send("receive_group_message", savedGroupMsg)
-							}
+						if isUserOnlineInCluster(uidStr) {
+							dispatchUserEvent(uidStr, "receive_group_message", savedGroupMsg)
 						} else if mUID != senderID {
 							go func(targetID int) {
 								pushText := senderName + ": " + pollContent
@@ -1439,16 +1375,12 @@ func main() {
 						_ = mRows.Scan(&mUID)
 						uidStr := strconv.Itoa(mUID)
 
-						if memVal, ok := wsClients.Load(uidStr); ok {
-							if memClient, ok := memVal.(*WSClient); ok {
-								pollData, _ := getPollData(pollID, mUID)
-								_ = memClient.Send("group_poll_updated", gin.H{
-									"pollId":  pollID,
-									"groupId": groupID,
-									"poll":    pollData,
-								})
-							}
-						}
+						pollData, _ := getPollData(pollID, mUID)
+						dispatchUserEvent(uidStr, "group_poll_updated", gin.H{
+							"pollId":  pollID,
+							"groupId": groupID,
+							"poll":    pollData,
+						})
 					}
 					mRows.Close()
 				}
@@ -1568,10 +1500,8 @@ func main() {
 							"timestamp":    time.Now().Format("2006-01-02 15:04:05"),
 						}
 
-						if memVal, ok := wsClients.Load(uidStr); ok {
-							if memClient, ok := memVal.(*WSClient); ok {
-								_ = memClient.Send("receive_group_message", savedGroupMsg)
-							}
+						if isUserOnlineInCluster(uidStr) {
+							dispatchUserEvent(uidStr, "receive_group_message", savedGroupMsg)
 						} else if mUID != senderID {
 							go func(targetID int) {
 								pushText := fmt.Sprintf("%s yeni bir etkinlik oluşturdu: %s (📍 %s)", senderName, title, location)
@@ -1644,16 +1574,12 @@ func main() {
 						_ = mRows.Scan(&mUID)
 						uidStr := strconv.Itoa(mUID)
 
-						if memVal, ok := wsClients.Load(uidStr); ok {
-							if memClient, ok := memVal.(*WSClient); ok {
-								eventData, _ := getEventData(eventID, mUID)
-								_ = memClient.Send("group_event_updated", gin.H{
-									"eventId": eventID,
-									"groupId": groupID,
-									"event":   eventData,
-								})
-							}
-						}
+						eventData, _ := getEventData(eventID, mUID)
+						dispatchUserEvent(uidStr, "group_event_updated", gin.H{
+							"eventId": eventID,
+							"groupId": groupID,
+							"event":   eventData,
+						})
 					}
 					mRows.Close()
 				}
@@ -1805,7 +1731,7 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"status": "success", "user": u})
 		})
 
-		// 4. File Upload (Photos, Encrypted Videos, Docs)
+		// 4. File Upload (S3 / Cloudflare R2 with automatic fallback to local disk)
 		api.POST("/upload", func(c *gin.Context) {
 			file, header, err := c.Request.FormFile("file")
 			if err != nil {
@@ -1814,26 +1740,45 @@ func main() {
 			}
 			defer file.Close()
 
-			ext := filepath.Ext(header.Filename)
-			if ext == "" {
-				ext = ".jpg"
+			contentType := header.Header.Get("Content-Type")
+			proto := "http"
+			if c.Request.TLS != nil || c.Request.Header.Get("X-Forwarded-Proto") == "https" {
+				proto = "https"
 			}
-			randBytes := make([]byte, 16)
-			_, _ = rand.Read(randBytes)
-			filename := hex.EncodeToString(randBytes) + ext
-			dstPath := filepath.Join(uploadDir, filename)
+			serverBase := fmt.Sprintf("%s://%s", proto, c.Request.Host)
 
-			out, err := os.Create(dstPath)
+			publicURL, err := uploadFileStream(file, header.Filename, header.Size, contentType, serverBase)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Dosya kaydedilemedi"})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
-			defer out.Close()
-			_, _ = io.Copy(out, file)
 
 			c.JSON(http.StatusOK, gin.H{
 				"status": "success",
-				"url":    fmt.Sprintf("http://46.197.188.20:3000/uploads/%s", filename),
+				"url":    publicURL,
+			})
+		})
+
+		// 4b. Presigned Upload URL for direct client-to-R2/S3 upload (bypasses server bandwidth entirely!)
+		api.POST("/upload/presign", func(c *gin.Context) {
+			var req struct {
+				Ext         string `json:"ext"`
+				ContentType string `json:"contentType"`
+			}
+			_ = c.ShouldBindJSON(&req)
+			uploadURL, downloadURL, err := generatePresignedUploadURL(req.Ext, req.ContentType, 15*time.Minute)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error":   err.Error(),
+					"enabled": false,
+				})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"status":      "success",
+				"enabled":     true,
+				"uploadUrl":   uploadURL,
+				"downloadUrl": downloadURL,
 			})
 		})
 
@@ -1995,19 +1940,52 @@ func main() {
 			c.JSON(http.StatusOK, matched)
 		})
 
-		// 7. Get Messages Between Two Users
+		// 7. Get Messages Between Two Users (With High-Performance Cursor & Limit Pagination)
 		api.GET("/messages/:user1/:user2", func(c *gin.Context) {
 			user1 := c.Param("user1")
 			user2 := c.Param("user2")
 
-			rows, err := db.Query(
-				`SELECT id, sender_id, receiver_id, content, message_type, is_delivered, is_read, 
-				        media_url, is_deleted, deleted_by_users, is_edited, original_content, created_at 
-				 FROM messages 
-				 WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) 
-				 ORDER BY created_at ASC`,
-				user1, user2, user2, user1,
-			)
+			limitStr := c.DefaultQuery("limit", "50")
+			beforeIDStr := c.DefaultQuery("beforeId", c.DefaultQuery("before_id", "0"))
+			offsetStr := c.DefaultQuery("offset", "0")
+
+			limit, _ := strconv.Atoi(limitStr)
+			if limit <= 0 {
+				limit = 50
+			} else if limit > 100 {
+				limit = 100
+			}
+
+			beforeID, _ := strconv.Atoi(beforeIDStr)
+			offset, _ := strconv.Atoi(offsetStr)
+			if offset < 0 {
+				offset = 0
+			}
+
+			var query string
+			var args []interface{}
+
+			if beforeID > 0 {
+				// Cursor-based pagination: lightning fast with B-Tree composite index
+				query = `SELECT id, sender_id, receiver_id, content, message_type, is_delivered, is_read, 
+						        media_url, is_deleted, deleted_by_users, is_edited, original_content, created_at 
+						 FROM messages 
+						 WHERE ((sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?))
+						   AND id < ?
+						 ORDER BY id DESC 
+						 LIMIT ?`
+				args = []interface{}{user1, user2, user2, user1, beforeID, limit}
+			} else {
+				query = `SELECT id, sender_id, receiver_id, content, message_type, is_delivered, is_read, 
+						        media_url, is_deleted, deleted_by_users, is_edited, original_content, created_at 
+						 FROM messages 
+						 WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) 
+						 ORDER BY id DESC 
+						 LIMIT ? OFFSET ?`
+				args = []interface{}{user1, user2, user2, user1, limit, offset}
+			}
+
+			rows, err := db.Query(query, args...)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Mesajlar yuklenemedi"})
 				return
@@ -2052,6 +2030,13 @@ func main() {
 					"timestamp":       cAt.Format("2006-01-02 15:04:05"),
 				})
 			}
+
+			// Chronological reverse [oldest -> newest] for seamless UI rendering
+			for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+				messages[i], messages[j] = messages[j], messages[i]
+			}
+
+			c.Header("X-Has-More", strconv.FormatBool(len(messages) >= limit))
 			c.JSON(http.StatusOK, messages)
 		})
 
@@ -2621,18 +2606,51 @@ func main() {
 		api.GET("/groups/:groupId/messages", func(c *gin.Context) {
 			gID := c.Param("groupId")
 			currUID := c.DefaultQuery("userId", "0")
+			limitStr := c.DefaultQuery("limit", "50")
+			beforeIDStr := c.DefaultQuery("beforeId", c.DefaultQuery("before_id", "0"))
+			offsetStr := c.DefaultQuery("offset", "0")
 
-			rows, err := db.Query(
-				`SELECT gm.id, gm.group_id, gm.sender_id, gm.content, gm.message_type, gm.media_url,
-				        gm.is_deleted, gm.deleted_by_users, gm.is_edited, gm.created_at,
-				        COALESCE(NULLIF(u.display_name, ''), u.username) AS sender_name,
-				        COALESCE(u.photo_url, '') AS sender_photo
-				 FROM group_messages gm
-				 JOIN users u ON gm.sender_id = u.id
-				 WHERE gm.group_id = ?
-				 ORDER BY gm.created_at ASC`,
-				gID,
-			)
+			limit, _ := strconv.Atoi(limitStr)
+			if limit <= 0 {
+				limit = 50
+			} else if limit > 100 {
+				limit = 100
+			}
+
+			beforeID, _ := strconv.Atoi(beforeIDStr)
+			offset, _ := strconv.Atoi(offsetStr)
+			if offset < 0 {
+				offset = 0
+			}
+
+			var query string
+			var args []interface{}
+
+			if beforeID > 0 {
+				query = `SELECT gm.id, gm.group_id, gm.sender_id, gm.content, gm.message_type, gm.media_url,
+						        gm.is_deleted, gm.deleted_by_users, gm.is_edited, gm.created_at,
+						        COALESCE(NULLIF(u.display_name, ''), u.username) AS sender_name,
+						        COALESCE(u.photo_url, '') AS sender_photo
+						 FROM group_messages gm
+						 JOIN users u ON gm.sender_id = u.id
+						 WHERE gm.group_id = ? AND gm.id < ?
+						 ORDER BY gm.id DESC
+						 LIMIT ?`
+				args = []interface{}{gID, beforeID, limit}
+			} else {
+				query = `SELECT gm.id, gm.group_id, gm.sender_id, gm.content, gm.message_type, gm.media_url,
+						        gm.is_deleted, gm.deleted_by_users, gm.is_edited, gm.created_at,
+						        COALESCE(NULLIF(u.display_name, ''), u.username) AS sender_name,
+						        COALESCE(u.photo_url, '') AS sender_photo
+						 FROM group_messages gm
+						 JOIN users u ON gm.sender_id = u.id
+						 WHERE gm.group_id = ?
+						 ORDER BY gm.id DESC
+						 LIMIT ? OFFSET ?`
+				args = []interface{}{gID, limit, offset}
+			}
+
+			rows, err := db.Query(query, args...)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Grup mesajlari alinamadi"})
 				return
@@ -2697,6 +2715,13 @@ func main() {
 					"timestamp":   cAt.Format("2006-01-02 15:04:05"),
 				})
 			}
+
+			// Chronological reverse [oldest -> newest] for seamless UI rendering
+			for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+				msgs[i], msgs[j] = msgs[j], msgs[i]
+			}
+
+			c.Header("X-Has-More", strconv.FormatBool(len(msgs) >= limit))
 			c.JSON(http.StatusOK, msgs)
 		})
 	}

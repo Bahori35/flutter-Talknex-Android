@@ -50,6 +50,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   late GroupModel _group;
   List<GroupMessageModel> _messages = [];
   bool _isLoading = true;
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
   bool _isUploadingMedia = false;
   bool _showEmojiPicker = false;
 
@@ -71,12 +73,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void initState() {
     super.initState();
     _group = widget.group;
+    _scrollController.addListener(_onScroll);
     _setupSocketListeners();
     _loadMessages();
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
     _messageController.dispose();
     _focusNode.dispose();
     _scrollController.dispose();
@@ -227,12 +231,49 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     };
   }
 
+  void _onScroll() {
+    if (_scrollController.hasClients &&
+        _scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 250 &&
+        !_isLoadingMore &&
+        _hasMore) {
+      _loadMoreMessages();
+    }
+  }
+
+  void _loadMoreMessages() async {
+    if (_isLoadingMore || !_hasMore || _messages.isEmpty) return;
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    final oldestMsg = _messages.last;
+    final beforeId = oldestMsg.id;
+
+    final olderMessages = await _chatService.getGroupMessages(
+      _group.id,
+      widget.currentUser.uid,
+      limit: 40,
+      beforeId: beforeId,
+    );
+
+    if (mounted) {
+      setState(() {
+        _isLoadingMore = false;
+        if (olderMessages.isEmpty || olderMessages.length < 40) {
+          _hasMore = false;
+        }
+        _messages.addAll(olderMessages.reversed);
+      });
+    }
+  }
+
   void _loadMessages() async {
-    final msgs = await _chatService.getGroupMessages(_group.id, widget.currentUser.uid);
+    final msgs = await _chatService.getGroupMessages(_group.id, widget.currentUser.uid, limit: 40);
     if (mounted) {
       setState(() {
         _messages = msgs.reversed.toList();
         _isLoading = false;
+        _hasMore = msgs.length >= 40;
       });
     }
   }

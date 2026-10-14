@@ -41,12 +41,18 @@ app.*.map.json
 
 # Nginx portable & server uploads
 nginx/temp/
-nginx/logs/*.log
-nginx/logs/*.pid
+nginx/logs/
+nginx/html/
+nginx/conf/fastcgi*
+nginx/conf/koi*
+nginx/conf/mime*
+nginx/conf/scgi*
+nginx/conf/uwsgi*
+nginx/conf/win*
 server_python/uploads/
 server_go/uploads/
 go/
-server_go/*.exe
+*.exe
 
 # Android Studio will place build artifacts here
 /android/app/debug

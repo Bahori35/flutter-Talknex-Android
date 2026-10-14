@@ -39,11 +39,18 @@ class CustomChatService {
     return [];
   }
 
-  // Get chat history between two users
-  Future<List<MessageModel>> getMessages(String user1, String user2) async {
+  // Get chat history between two users with cursor & limit pagination
+  Future<List<MessageModel>> getMessages(String user1, String user2, {int limit = 50, int? beforeId, int? offset}) async {
     try {
+      String url = '$baseUrl/messages/$user1/$user2?limit=$limit';
+      if (beforeId != null && beforeId > 0) {
+        url += '&beforeId=$beforeId';
+      } else if (offset != null && offset > 0) {
+        url += '&offset=$offset';
+      }
+
       final response = await http.get(
-        Uri.parse('$baseUrl/messages/$user1/$user2'),
+        Uri.parse(url),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
@@ -403,10 +410,17 @@ class CustomChatService {
     }
   }
 
-  Future<List<GroupMessageModel>> getGroupMessages(int groupId, String currentUserId) async {
+  Future<List<GroupMessageModel>> getGroupMessages(int groupId, String currentUserId, {int limit = 50, int? beforeId, int? offset}) async {
     try {
+      String url = '$baseUrl/groups/$groupId/messages?userId=$currentUserId&limit=$limit';
+      if (beforeId != null && beforeId > 0) {
+        url += '&beforeId=$beforeId';
+      } else if (offset != null && offset > 0) {
+        url += '&offset=$offset';
+      }
+
       final response = await http.get(
-        Uri.parse('$baseUrl/groups/$groupId/messages?userId=$currentUserId'),
+        Uri.parse(url),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {

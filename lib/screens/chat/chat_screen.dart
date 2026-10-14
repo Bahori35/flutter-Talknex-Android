@@ -51,6 +51,8 @@ class _ChatScreenState extends State<ChatScreen> {
   final ImagePicker _picker = ImagePicker();
   List<MessageModel> _messages = [];
   bool _isLoading = true;
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
   bool _isUploadingMedia = false;
   late UserModel _peer;
   StreamSubscription<Position>? _liveLocationSubscription;
@@ -75,6 +77,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _peer = widget.peerUser;
+    _scrollController.addListener(_onScroll);
     _loadMessages();
 
     // Mark all existing messages as read when opening chat
@@ -194,12 +197,50 @@ class _ChatScreenState extends State<ChatScreen> {
     };
   }
 
+  void _onScroll() {
+    if (_scrollController.hasClients &&
+        _scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 250 &&
+        !_isLoadingMore &&
+        _hasMore) {
+      _loadMoreMessages();
+    }
+  }
+
+  void _loadMoreMessages() async {
+    if (_isLoadingMore || !_hasMore || _messages.isEmpty) return;
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    final oldestMsg = _messages.last;
+    final beforeId = int.tryParse(oldestMsg.id);
+
+    final olderMessages = await _chatService.getMessages(
+      widget.currentUser.uid,
+      widget.peerUser.uid,
+      limit: 40,
+      beforeId: beforeId,
+    );
+
+    if (mounted) {
+      setState(() {
+        _isLoadingMore = false;
+        if (olderMessages.isEmpty || olderMessages.length < 40) {
+          _hasMore = false;
+        }
+        // Append older messages to end of reversed list
+        _messages.addAll(olderMessages.reversed);
+      });
+    }
+  }
+
   void _loadMessages() async {
-    final messages = await _chatService.getMessages(widget.currentUser.uid, widget.peerUser.uid);
+    final messages = await _chatService.getMessages(widget.currentUser.uid, widget.peerUser.uid, limit: 40);
     if (mounted) {
       setState(() {
         _messages = messages.reversed.toList();
         _isLoading = false;
+        _hasMore = messages.length >= 40;
       });
       // Mark as read
       _socketService.emitMessageRead(
@@ -211,6 +252,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
     _liveLocationSubscription?.cancel();
     _messageController.dispose();
     _focusNode.dispose();
