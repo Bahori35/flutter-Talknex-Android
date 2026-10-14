@@ -128,6 +128,10 @@ func uploadFileStream(file io.Reader, originalFilename string, size int64, conte
 	}
 	defer out.Close()
 
+	if _, err := io.Copy(out, file); err != nil {
+		return "", fmt.Errorf("Dosya yazilamadi: %w", err)
+	}
+
 	if strings.TrimSpace(serverBaseURL) == "" {
 		serverBaseURL = "http://46.197.188.20:3000"
 	} else if !strings.Contains(serverBaseURL, ":") && strings.HasPrefix(serverBaseURL, "http") {
