@@ -1529,33 +1529,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               },
                             ),
                           ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: Container(
-                                  padding: const EdgeInsets.all(7),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.primary.withOpacity(0.12),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(Icons.call_rounded, color: AppColors.primaryLight, size: 18),
-                                ),
-                                onPressed: () => _startAudioOrVideoCall(user, CallType.audio),
-                              ),
-                              IconButton(
-                                icon: Container(
-                                  padding: const EdgeInsets.all(7),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.accent.withOpacity(0.12),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(Icons.videocam_rounded, color: AppColors.accent, size: 18),
-                                ),
-                                onPressed: () => _startAudioOrVideoCall(user, CallType.video),
-                              ),
-                            ],
-                          ),
                           onTap: () {
                             Navigator.push(
                               context,
@@ -1702,6 +1675,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       fontWeight: FontWeight.w500,
                     ),
                   ),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ChatScreen(peerUser: user, currentUser: currentUser),
+                      ),
+                    ).then((_) => _loadUsers());
+                  },
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1714,6 +1695,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           ),
                           child: const Icon(Icons.call_rounded, color: AppColors.primaryLight, size: 18),
                         ),
+                        tooltip: 'Sesli Ara',
                         onPressed: () => _startAudioOrVideoCall(user, CallType.audio),
                       ),
                       IconButton(
@@ -1723,16 +1705,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             color: AppColors.accent.withOpacity(0.12),
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(Icons.chat_bubble_rounded, color: AppColors.accent, size: 18),
+                          child: const Icon(Icons.videocam_rounded, color: AppColors.accent, size: 18),
                         ),
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => ChatScreen(peerUser: user, currentUser: currentUser),
-                            ),
-                          );
-                        },
+                        tooltip: 'Görüntülü Ara',
+                        onPressed: () => _startAudioOrVideoCall(user, CallType.video),
                       ),
                     ],
                   ),

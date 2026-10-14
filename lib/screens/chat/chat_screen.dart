@@ -1071,6 +1071,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               child: const Icon(Icons.videocam_rounded, color: AppColors.accent, size: 20),
             ),
+            tooltip: 'Görüntülü Arama',
             onPressed: () => _startCall(CallType.video),
           ),
           IconButton(
@@ -1082,6 +1083,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               child: const Icon(Icons.call_rounded, color: AppColors.primaryLight, size: 18),
             ),
+            tooltip: 'Sesli Arama',
             onPressed: () => _startCall(CallType.audio),
           ),
           const SizedBox(width: 4),
