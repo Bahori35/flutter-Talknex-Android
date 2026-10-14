@@ -9,6 +9,8 @@ import '../../../constants/app_colors.dart';
 import '../../../services/encryption_service.dart';
 import '../video_player_screen.dart';
 
+import '../../../utils/media_url_helper.dart';
+
 class VideoMessageBubble extends StatefulWidget {
   final String videoUrl;
   final String title;
@@ -67,47 +69,98 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
   }
 
   Future<void> _loadOrGenerateThumbnail() async {
-    final url = widget.videoUrl;
+    final rawUrl = widget.videoUrl.trim();
+    if (rawUrl.isEmpty) {
+      if (mounted) setState(() { _isProcessing = false; _hasError = true; });
+      return;
+    }
+
+    final url = formatMediaUrl(rawUrl);
+
+    // Build candidate keys to cover historical URLs without :3000 and normalized URLs
+    final candidateKeys = <String>{
+      url,
+      rawUrl,
+      if (url.contains(':3000')) url.replaceAll(':3000', ''),
+      if (!url.contains(':3000') && url.contains('46.197.188.20/'))
+        url.replaceFirst('46.197.188.20/', '46.197.188.20:3000/'),
+    };
 
     // 1. Check if controller already exists in memory pool
-    if (_persistentControllers.containsKey(url)) {
-      final existingController = _persistentControllers[url]!;
-      if (existingController.value.isInitialized) {
-        if (mounted) {
-          setState(() {
-            _controller = existingController;
-            _durationText = _cachedDurations[url] ?? _formatDuration(existingController.value.duration);
-            _isProcessing = false;
-          });
+    for (final key in candidateKeys) {
+      if (_persistentControllers.containsKey(key)) {
+        final existingController = _persistentControllers[key]!;
+        if (existingController.value.isInitialized) {
+          if (mounted) {
+            setState(() {
+              _controller = existingController;
+              _durationText = _cachedDurations[key] ?? _formatDuration(existingController.value.duration);
+              _isProcessing = false;
+              _hasError = false;
+            });
+          }
+          return;
         }
-        return;
       }
     }
 
-    // 2. Check local memory/disk file cache (e.g. sender's original file or downloaded file)
-    String? localFilePath = _cachedFilePaths[url];
-    String? cachedDuration = _cachedDurations[url];
+    // 2. Check local memory/disk file cache
+    String? localFilePath;
+    String? cachedDuration;
+
+    for (final key in candidateKeys) {
+      if (_cachedFilePaths.containsKey(key) && File(_cachedFilePaths[key]!).existsSync()) {
+        localFilePath = _cachedFilePaths[key];
+        cachedDuration = _cachedDurations[key];
+        break;
+      }
+    }
 
     if (localFilePath == null || !File(localFilePath).existsSync()) {
       try {
         final prefs = await SharedPreferences.getInstance();
-        final savedFile = prefs.getString('vfile_${url.hashCode}');
-        final savedDur = prefs.getString('vdur_${url.hashCode}');
-        if (savedFile != null && File(savedFile).existsSync()) {
-          localFilePath = savedFile;
-          _cachedFilePaths[url] = savedFile;
-        }
-        if (savedDur != null && savedDur.isNotEmpty) {
-          cachedDuration = savedDur;
-          _cachedDurations[url] = savedDur;
+        for (final key in candidateKeys) {
+          final savedFile = prefs.getString('vfile_${key.hashCode}');
+          final savedDur = prefs.getString('vdur_${key.hashCode}');
+          if (savedFile != null && File(savedFile).existsSync() && File(savedFile).lengthSync() > 100) {
+            localFilePath = savedFile;
+            _cachedFilePaths[url] = savedFile;
+            if (savedDur != null && savedDur.isNotEmpty) {
+              cachedDuration = savedDur;
+              _cachedDurations[url] = savedDur;
+            }
+            break;
+          }
         }
       } catch (e) {
         debugPrint('[PREF CACHE CHECK ERR] $e');
       }
     }
 
-    // If local file is found on phone storage, initialize directly from disk with ZERO network usage!
-    if (localFilePath != null && File(localFilePath).existsSync()) {
+    // Check disk video cache directory by hash and by filename
+    final dir = await getApplicationDocumentsDirectory();
+    final cacheDir = Directory(p.join(dir.path, 'video_cache'));
+    if (!cacheDir.existsSync()) {
+      cacheDir.createSync(recursive: true);
+    }
+
+    final fileBasename = p.basenameWithoutExtension(url);
+    if (localFilePath == null || !File(localFilePath).existsSync()) {
+      final candidateFiles = <File>[
+        for (final key in candidateKeys) File(p.join(cacheDir.path, '${key.hashCode}.mp4')),
+        if (fileBasename.isNotEmpty) File(p.join(cacheDir.path, '$fileBasename.mp4')),
+      ];
+
+      for (final diskFile in candidateFiles) {
+        if (diskFile.existsSync() && diskFile.lengthSync() > 100) {
+          localFilePath = diskFile.path;
+          break;
+        }
+      }
+    }
+
+    // If local file is found on phone storage, initialize directly from disk
+    if (localFilePath != null && File(localFilePath).existsSync() && File(localFilePath).lengthSync() > 100) {
       try {
         final fileController = VideoPlayerController.file(File(localFilePath));
         await fileController.initialize();
@@ -134,40 +187,36 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
 
     // 3. For remote URL: download encrypted file, decrypt locally and initialize controller
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final cacheDir = Directory(p.join(dir.path, 'video_cache'));
-      if (!cacheDir.existsSync()) {
-        cacheDir.createSync(recursive: true);
-      }
       final cachedTargetFile = File(p.join(cacheDir.path, '${url.hashCode}.mp4'));
+      final namedTargetFile = File(p.join(cacheDir.path, '$fileBasename.mp4'));
 
-      // Check if target mp4 is already cached and valid
-      if (cachedTargetFile.existsSync() && cachedTargetFile.lengthSync() > 100) {
-        localFilePath = cachedTargetFile.path;
-      } else {
-        // Download encrypted file (.enc) from server
-        final uri = Uri.parse(url);
-        final rawEncryptedFile = File(p.join(cacheDir.path, '${url.hashCode}.enc'));
-        
-        final response = await http.get(uri).timeout(const Duration(seconds: 30));
-        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
-          await rawEncryptedFile.writeAsBytes(response.bodyBytes, flush: true);
+      // Download encrypted file (.enc) from server
+      final uri = Uri.parse(url);
+      final rawEncryptedFile = File(p.join(cacheDir.path, '${url.hashCode}.enc'));
+      
+      final response = await http.get(uri).timeout(const Duration(seconds: 40));
+      if (response.statusCode == 200 && response.bodyBytes.length > 16) {
+        await rawEncryptedFile.writeAsBytes(response.bodyBytes, flush: true);
 
-          // Decrypt to MP4
-          await EndToEndEncryptionService.decryptFile(
-            rawEncryptedFile,
-            widget.senderId,
-            widget.receiverId,
-            cachedTargetFile.path,
-          );
+        // Decrypt to MP4
+        await EndToEndEncryptionService.decryptFile(
+          rawEncryptedFile,
+          widget.senderId,
+          widget.receiverId,
+          cachedTargetFile.path,
+        );
 
+        try {
+          if (await rawEncryptedFile.exists()) await rawEncryptedFile.delete();
+        } catch (_) {}
+
+        if (cachedTargetFile.existsSync() && cachedTargetFile.lengthSync() > 100) {
+          localFilePath = cachedTargetFile.path;
           try {
-            if (await rawEncryptedFile.exists()) await rawEncryptedFile.delete();
+            if (fileBasename.isNotEmpty) {
+              await cachedTargetFile.copy(namedTargetFile.path);
+            }
           } catch (_) {}
-
-          if (cachedTargetFile.existsSync() && cachedTargetFile.lengthSync() > 100) {
-            localFilePath = cachedTargetFile.path;
-          }
         }
       }
 
@@ -179,6 +228,9 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
 
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('vfile_${url.hashCode}', localFilePath);
+        if (rawUrl.isNotEmpty) {
+          await prefs.setString('vfile_${rawUrl.hashCode}', localFilePath);
+        }
 
         // Seek slightly ahead so the first frame renders as a preview thumbnail
         if (controller.value.duration.inMilliseconds > 300) {
@@ -198,7 +250,6 @@ class _VideoMessageBubbleState extends State<VideoMessageBubble> {
           });
         }
       } else {
-        // Could not decrypt or download valid video
         if (mounted) {
           setState(() {
             _hasError = true;

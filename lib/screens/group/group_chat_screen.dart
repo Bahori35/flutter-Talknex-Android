@@ -381,8 +381,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             final prefs = await SharedPreferences.getInstance();
             await prefs.setString('vfile_${mediaUrl.hashCode}', persistentCopy.path);
           } else {
+            final appDocDir = await getApplicationDocumentsDirectory();
+            final imageCacheDir = Directory(p.join(appDocDir.path, 'image_cache'));
+            if (!imageCacheDir.existsSync()) imageCacheDir.createSync(recursive: true);
+            final persistentCopy = File(p.join(imageCacheDir.path, '${mediaUrl.hashCode}.jpg'));
+            if (!persistentCopy.existsSync()) {
+              await File(file.path).copy(persistentCopy.path);
+            }
+            final fileBasename = p.basenameWithoutExtension(mediaUrl);
+            if (fileBasename.isNotEmpty) {
+              final namedCopy = File(p.join(imageCacheDir.path, '$fileBasename.jpg'));
+              if (!namedCopy.existsSync()) {
+                await File(file.path).copy(namedCopy.path);
+              }
+            }
             final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('ifile_${mediaUrl.hashCode}', file.path);
+            await prefs.setString('ifile_${mediaUrl.hashCode}', persistentCopy.path);
           }
         } catch (e) {
           debugPrint('[GROUP SENDER LOCAL CACHE ERR] $e');

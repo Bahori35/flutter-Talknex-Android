@@ -1494,7 +1494,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               CircleAvatar(
                                 radius: 26,
                                 backgroundColor: AppColors.surfaceLight,
-                                backgroundImage: CachedNetworkImageProvider(user.photoUrl),
+                                backgroundImage: user.photoUrl.isNotEmpty ? CachedNetworkImageProvider(user.photoUrl) : null,
+                                child: user.photoUrl.isEmpty
+                                    ? Text(
+                                        user.displayName.isNotEmpty ? user.displayName[0].toUpperCase() : '?',
+                                        style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 18),
+                                      )
+                                    : null,
                               ),
                               if (user.isOnline)
                                 Positioned(

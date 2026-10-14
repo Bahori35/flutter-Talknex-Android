@@ -406,8 +406,22 @@ class _ChatScreenState extends State<ChatScreen> {
             final prefs = await SharedPreferences.getInstance();
             await prefs.setString('vfile_${mediaUrl.hashCode}', persistentCopy.path);
           } else {
+            final appDocDir = await getApplicationDocumentsDirectory();
+            final imageCacheDir = Directory(p.join(appDocDir.path, 'image_cache'));
+            if (!imageCacheDir.existsSync()) imageCacheDir.createSync(recursive: true);
+            final persistentCopy = File(p.join(imageCacheDir.path, '${mediaUrl.hashCode}.jpg'));
+            if (!persistentCopy.existsSync()) {
+              await File(file.path).copy(persistentCopy.path);
+            }
+            final fileBasename = p.basenameWithoutExtension(mediaUrl);
+            if (fileBasename.isNotEmpty) {
+              final namedCopy = File(p.join(imageCacheDir.path, '$fileBasename.jpg'));
+              if (!namedCopy.existsSync()) {
+                await File(file.path).copy(namedCopy.path);
+              }
+            }
             final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('ifile_${mediaUrl.hashCode}', file.path);
+            await prefs.setString('ifile_${mediaUrl.hashCode}', persistentCopy.path);
           }
         } catch (e) {
           debugPrint('[SENDER LOCAL CACHE ERR] $e');
@@ -936,7 +950,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _openFullScreenImage(String imageUrl) {
+  void _openFullScreenImage(String imageUrl, {String? senderId, String? receiverId}) {
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -950,8 +964,8 @@ class _ChatScreenState extends State<ChatScreen> {
             child: InteractiveViewer(
               child: DecryptedImageWidget(
                 imageUrl: imageUrl,
-                senderId: widget.currentUser.uid,
-                receiverId: widget.peerUser.uid,
+                senderId: senderId ?? widget.currentUser.uid,
+                receiverId: receiverId ?? widget.peerUser.uid,
                 fit: BoxFit.contain,
               ),
             ),
@@ -1004,7 +1018,13 @@ class _ChatScreenState extends State<ChatScreen> {
                 CircleAvatar(
                   radius: 20,
                   backgroundColor: AppColors.surfaceLight,
-                  backgroundImage: CachedNetworkImageProvider(_peer.photoUrl),
+                  backgroundImage: _peer.photoUrl.isNotEmpty ? CachedNetworkImageProvider(_peer.photoUrl) : null,
+                  child: _peer.photoUrl.isEmpty
+                      ? Text(
+                          _peer.displayName.isNotEmpty ? _peer.displayName[0].toUpperCase() : '?',
+                          style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 16),
+                        )
+                      : null,
                 ),
                 if (_peer.isOnline)
                   Positioned(
@@ -1665,7 +1685,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             receiverId: message.receiverId,
                           )
                         : GestureDetector(
-                            onTap: () => _openFullScreenImage(message.mediaUrl!),
+                            onTap: () => _openFullScreenImage(message.mediaUrl!, senderId: message.senderId, receiverId: message.receiverId),
                             child: DecryptedImageWidget(
                               imageUrl: message.mediaUrl!,
                               senderId: message.senderId,
