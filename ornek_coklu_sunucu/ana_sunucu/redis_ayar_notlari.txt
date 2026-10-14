@@ -1,0 +1,22 @@
+==============================================================================
+ANA SUNUCU REDIS YAPILANDIRMASI (Dışarıdan Bağlantıya İzin Verme)
+==============================================================================
+
+Yeni eklediğiniz 3 sunucu, ana sunucudaki Redis Pub/Sub'a bağlanabilmelidir.
+Bunun için Ana Sunucu'daki redis.conf dosyasını açıp şu iki satırı kontrol edin:
+
+1. 'bind' satırını 0.0.0.0 yapın:
+   bind 0.0.0.0
+
+2. 'protected-mode' satırını kapatın (veya requirepass ile şifre koyun):
+   protected-mode no
+
+3. Güvenlik için şifre koymak isterseniz:
+   requirepass TalknexRedis2026!
+
+4. Redis servisini yeniden başlatın:
+   Windows için: net stop redis && net start redis
+   Linux için: sudo systemctl restart redis
+
+5. Güvenlik Duvarı (Firewall):
+   Ana sunucuda TCP 6379 portunun açık olduğundan emin olun.

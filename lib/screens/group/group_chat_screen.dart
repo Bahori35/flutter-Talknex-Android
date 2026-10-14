@@ -247,7 +247,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     });
 
     final oldestMsg = _messages.last;
-    final beforeId = oldestMsg.id;
+    final beforeId = int.tryParse(oldestMsg.id);
 
     final olderMessages = await _chatService.getGroupMessages(
       _group.id,

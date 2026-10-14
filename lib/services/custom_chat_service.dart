@@ -40,11 +40,14 @@ class CustomChatService {
   }
 
   // Get chat history between two users with cursor & limit pagination
-  Future<List<MessageModel>> getMessages(String user1, String user2, {int limit = 50, int? beforeId, int? offset}) async {
+  Future<List<MessageModel>> getMessages(String user1, String user2, {int limit = 50, dynamic beforeId, int? offset}) async {
     try {
       String url = '$baseUrl/messages/$user1/$user2?limit=$limit';
-      if (beforeId != null && beforeId > 0) {
-        url += '&beforeId=$beforeId';
+      if (beforeId != null) {
+        final bId = int.tryParse(beforeId.toString());
+        if (bId != null && bId > 0) {
+          url += '&beforeId=$bId';
+        }
       } else if (offset != null && offset > 0) {
         url += '&offset=$offset';
       }
@@ -410,11 +413,14 @@ class CustomChatService {
     }
   }
 
-  Future<List<GroupMessageModel>> getGroupMessages(int groupId, String currentUserId, {int limit = 50, int? beforeId, int? offset}) async {
+  Future<List<GroupMessageModel>> getGroupMessages(int groupId, String currentUserId, {int limit = 50, dynamic beforeId, int? offset}) async {
     try {
       String url = '$baseUrl/groups/$groupId/messages?userId=$currentUserId&limit=$limit';
-      if (beforeId != null && beforeId > 0) {
-        url += '&beforeId=$beforeId';
+      if (beforeId != null) {
+        final bId = int.tryParse(beforeId.toString());
+        if (bId != null && bId > 0) {
+          url += '&beforeId=$bId';
+        }
       } else if (offset != null && offset > 0) {
         url += '&offset=$offset';
       }
