@@ -23,6 +23,9 @@ import '../chat/widgets/video_message_bubble.dart';
 import '../chat/widgets/decrypted_image_widget.dart';
 import '../../widgets/emoji_gif_sticker_picker.dart';
 import '../../widgets/app_avatar.dart';
+import '../chat/chat_screen.dart';
+import '../call/call_screen.dart';
+import '../../models/call_model.dart';
 
 class GroupChatScreen extends StatefulWidget {
   final GroupModel group;
@@ -2177,6 +2180,164 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  String _getSenderPhoto(GroupMessageModel message) {
+    if (message.senderPhoto.isNotEmpty) {
+      return message.senderPhoto;
+    }
+    for (final contact in widget.contacts) {
+      if (contact.uid == message.senderId && contact.photoUrl.isNotEmpty) {
+        return contact.photoUrl;
+      }
+    }
+    return '';
+  }
+
+  Color _getSenderColor(String senderId, String senderName) {
+    const senderColors = [
+      Color(0xFF00E676), // Bright Green
+      Color(0xFFFF9100), // Vibrant Orange
+      Color(0xFF00E5FF), // Cyan
+      Color(0xFFE040FB), // Magenta
+      Color(0xFFFFD600), // Amber Gold
+      Color(0xFFFF5252), // Coral
+      Color(0xFF69F0AE), // Mint
+      Color(0xFF40C4FF), // Sky Blue
+      Color(0xFFB388FF), // Lavender
+      Color(0xFFFF8A80), // Rose
+    ];
+    final hash = (senderId + senderName).hashCode.abs();
+    return senderColors[hash % senderColors.length];
+  }
+
+  void _showSenderQuickProfile(GroupMessageModel message) {
+    if (message.senderId == widget.currentUser.uid) return;
+
+    final senderPhoto = _getSenderPhoto(message);
+    UserModel? peerUser;
+    for (final c in widget.contacts) {
+      if (c.uid == message.senderId) {
+        peerUser = c;
+        break;
+      }
+    }
+    peerUser ??= UserModel(
+      uid: message.senderId,
+      username: message.senderName,
+      email: '',
+      displayName: message.senderName,
+      photoUrl: senderPhoto,
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Padding(
+          padding: const EdgeInsets.all(22.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppAvatar(
+                radius: 42,
+                imageUrl: senderPhoto,
+                name: message.senderName,
+              ),
+              const SizedBox(height: 14),
+              Text(
+                message.senderName,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  IconButton(
+                    icon: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withOpacity(0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.chat_bubble_rounded, color: AppColors.accent, size: 20),
+                    ),
+                    tooltip: 'Mesaj Gönder',
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ChatScreen(
+                            peerUser: peerUser!,
+                            currentUser: widget.currentUser,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  IconButton(
+                    icon: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.call_rounded, color: AppColors.primaryLight, size: 20),
+                    ),
+                    tooltip: 'Sesli Arama',
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => CallScreen(
+                            currentUser: widget.currentUser,
+                            peerUser: peerUser!,
+                            callType: CallType.audio,
+                            isCaller: true,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  IconButton(
+                    icon: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withOpacity(0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.videocam_rounded, color: AppColors.accent, size: 20),
+                    ),
+                    tooltip: 'Görüntülü Arama',
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => CallScreen(
+                            currentUser: widget.currentUser,
+                            peerUser: peerUser!,
+                            callType: CallType.video,
+                            isCaller: true,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildGroupMessageBubble(GroupMessageModel message, bool isMe) {
     final timeStr = DateFormat('HH:mm').format(message.timestamp);
     final isLocation = message.type == 'location';
@@ -2190,154 +2351,190 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final isVideo = message.type == 'video' ||
         (hasMedia && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
 
-    return Align(
-      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: GestureDetector(
-        onLongPress: () => _showMessageOptions(message),
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: EdgeInsets.all(isSticker ? 0 : (isSpecialCard ? 2 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * (isSpecialCard ? 0.88 : 0.78)),
-          decoration: isSticker
-              ? null
-              : BoxDecoration(
-                  color: message.isDeleted
-                      ? AppColors.surfaceLight.withOpacity(0.4)
-                      : (isSpecialCard ? Colors.transparent : (isMe ? AppColors.primary : AppColors.surface)),
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(16),
-                    topRight: const Radius.circular(16),
-                    bottomLeft: Radius.circular(isMe ? 16 : 4),
-                    bottomRight: Radius.circular(isMe ? 4 : 16),
-                  ),
-                  border: Border.all(
-                    color: (isMe || isSpecialCard) ? Colors.transparent : AppColors.cardBorder,
-                    width: 0.8,
-                  ),
-                ),
-          child: Column(
-            crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-            children: [
-              // Show sender name for other members
-              if (!isMe && !message.isDeleted && !isSticker)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4, left: 4),
-                  child: Text(
-                    message.senderName,
-                    style: const TextStyle(
-                      color: AppColors.accent,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
+    final senderPhoto = _getSenderPhoto(message);
+    final senderColor = _getSenderColor(message.senderId, message.senderName);
 
-              // Deleted message text
-              if (message.isDeleted)
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.block, size: 14, color: Colors.white54),
-                    const SizedBox(width: 6),
-                    Text(
-                      message.content,
-                      style: const TextStyle(color: Colors.white54, fontStyle: FontStyle.italic, fontSize: 13),
-                    ),
-                  ],
-                )
-              else ...[
-                if (isSticker) ...[
-                  _buildGroupStickerWidget(message, isMe),
-                ] else if (isGif) ...[
-                  _buildGroupGifWidget(message, isMe),
-                ] else if (isPoll) ...[
-                  _buildPollWidget(message),
-                ] else if (isEvent) ...[
-                  _buildEventWidget(message),
-                ] else if (isLocation) ...[
-                  _buildLocationWidget(message),
-                ] else if (isDoc) ...[
-                  _buildDocumentWidget(message),
-                ] else if (hasMedia) ...[
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: isVideo
-                        ? VideoMessageBubble(
-                            videoUrl: message.mediaUrl!,
-                            title: message.content.isNotEmpty && message.content != '🎥 Video'
-                                ? message.content
-                                : 'Video Mesajı',
-                            senderId: message.senderId,
-                            receiverId: 'group_${_group.id}',
-                          )
-                        : GestureDetector(
-                            onTap: () => _openFullScreenImage(message.mediaUrl!, senderId: message.senderId),
-                            child: DecryptedImageWidget(
-                              imageUrl: message.mediaUrl!,
-                              senderId: message.senderId,
-                              receiverId: 'group_${_group.id}',
-                              width: double.infinity,
-                              height: 200,
-                              fit: BoxFit.cover,
-                            ),
-                          ),
+    final bubbleWidget = GestureDetector(
+      onLongPress: () => _showMessageOptions(message),
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 3),
+        padding: EdgeInsets.all(isSticker ? 0 : (isSpecialCard ? 2 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * (isSpecialCard ? (isMe ? 0.88 : 0.80) : (isMe ? 0.78 : 0.72)),
+        ),
+        decoration: isSticker
+            ? null
+            : BoxDecoration(
+                color: message.isDeleted
+                    ? AppColors.surfaceLight.withOpacity(0.4)
+                    : (isSpecialCard ? Colors.transparent : (isMe ? AppColors.primary : AppColors.surface)),
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(isMe ? 16 : 4),
+                  topRight: const Radius.circular(16),
+                  bottomLeft: Radius.circular(isMe ? 16 : 4),
+                  bottomRight: Radius.circular(isMe ? 4 : 16),
+                ),
+                border: Border.all(
+                  color: (isMe || isSpecialCard) ? Colors.transparent : AppColors.cardBorder,
+                  width: 0.8,
+                ),
+              ),
+        child: Column(
+          crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Show sender name for other members in their distinctive color
+            if (!isMe && !message.isDeleted && !isSticker)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4, left: 2),
+                child: Text(
+                  message.senderName,
+                  style: TextStyle(
+                    color: senderColor,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.bold,
                   ),
-                  if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
-                      child: Text(
-                        message.content,
-                        style: const TextStyle(color: Colors.white, fontSize: 14.5),
-                      ),
-                    ),
-                ] else ...[
+                ),
+              ),
+
+            // Deleted message text
+            if (message.isDeleted)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.block, size: 14, color: Colors.white54),
+                  const SizedBox(width: 6),
                   Text(
                     message.content,
-                    style: const TextStyle(color: Colors.white, fontSize: 14.5),
+                    style: const TextStyle(color: Colors.white54, fontStyle: FontStyle.italic, fontSize: 13),
                   ),
                 ],
-              ],
-
-              if (!isSticker) ...[
-                const SizedBox(height: 4),
-                Padding(
-                  padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (message.isEdited && !message.isDeleted) ...[
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.edit_rounded,
-                              size: 11,
-                              color: isMe ? Colors.white70 : AppColors.accent,
-                            ),
-                            const SizedBox(width: 3),
-                            Text(
-                              'düzenlendi • ',
-                              style: TextStyle(
-                                color: isMe ? Colors.white70 : AppColors.accent,
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w600,
-                                fontStyle: FontStyle.italic,
-                              ),
-                            ),
-                          ],
+              )
+            else ...[
+              if (isSticker) ...[
+                _buildGroupStickerWidget(message, isMe),
+              ] else if (isGif) ...[
+                _buildGroupGifWidget(message, isMe),
+              ] else if (isPoll) ...[
+                _buildPollWidget(message),
+              ] else if (isEvent) ...[
+                _buildEventWidget(message),
+              ] else if (isLocation) ...[
+                _buildLocationWidget(message),
+              ] else if (isDoc) ...[
+                _buildDocumentWidget(message),
+              ] else if (hasMedia) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: isVideo
+                      ? VideoMessageBubble(
+                          videoUrl: message.mediaUrl!,
+                          title: message.content.isNotEmpty && message.content != '🎥 Video'
+                              ? message.content
+                              : 'Video Mesajı',
+                          senderId: message.senderId,
+                          receiverId: 'group_${_group.id}',
+                        )
+                      : GestureDetector(
+                          onTap: () => _openFullScreenImage(message.mediaUrl!, senderId: message.senderId),
+                          child: DecryptedImageWidget(
+                            imageUrl: message.mediaUrl!,
+                            senderId: message.senderId,
+                            receiverId: 'group_${_group.id}',
+                            width: double.infinity,
+                            height: 200,
+                            fit: BoxFit.cover,
+                          ),
                         ),
-                      ],
-                      Text(
-                        timeStr,
-                        style: const TextStyle(color: Colors.white54, fontSize: 10),
-                      ),
-                    ],
+                ),
+                if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
+                    child: Text(
+                      message.content,
+                      style: const TextStyle(color: Colors.white, fontSize: 14.5),
+                    ),
                   ),
+              ] else ...[
+                Text(
+                  message.content,
+                  style: const TextStyle(color: Colors.white, fontSize: 14.5),
                 ),
               ],
             ],
-          ),
+
+            if (!isSticker) ...[
+              const SizedBox(height: 4),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (message.isEdited && !message.isDeleted) ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.edit_rounded,
+                            size: 11,
+                            color: isMe ? Colors.white70 : AppColors.accent,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'düzenlendi • ',
+                            style: TextStyle(
+                              color: isMe ? Colors.white70 : AppColors.accent,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    Text(
+                      timeStr,
+                      style: const TextStyle(color: Colors.white54, fontSize: 10),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
         ),
+      ),
+    );
+
+    // If sent by current user: right-aligned without left avatar
+    if (isMe) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: bubbleWidget,
+      );
+    }
+
+    // If sent by another group member: WhatsApp-style profile avatar on the LEFT, message bubble on the RIGHT
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.start,
+        children: [
+          GestureDetector(
+            onTap: () => _showSenderQuickProfile(message),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 3, right: 8),
+              child: AppAvatar(
+                radius: 16,
+                imageUrl: senderPhoto,
+                name: message.senderName,
+              ),
+            ),
+          ),
+          Flexible(
+            child: bubbleWidget,
+          ),
+        ],
       ),
     );
   }
