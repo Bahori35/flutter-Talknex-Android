@@ -5,6 +5,7 @@ import '../../constants/app_colors.dart';
 import '../../models/story_model.dart';
 import '../../models/user_model.dart';
 import '../../services/custom_chat_service.dart';
+import '../../widgets/app_avatar.dart';
 
 class StoryViewScreen extends StatefulWidget {
   final List<UserStoryGroup> storyGroups;
@@ -316,15 +317,10 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                     child: Row(
                       children: [
-                        CircleAvatar(
+                        AppAvatar(
                           radius: 20,
-                          backgroundColor: AppColors.surfaceLight,
-                          backgroundImage: currentGroup.userPhotoUrl.isNotEmpty
-                              ? CachedNetworkImageProvider(currentGroup.userPhotoUrl)
-                              : null,
-                          child: currentGroup.userPhotoUrl.isEmpty
-                              ? const Icon(Icons.person, color: Colors.white)
-                              : null,
+                          imageUrl: currentGroup.userPhotoUrl,
+                          name: currentGroup.displayName,
                         ),
                         const SizedBox(width: 10),
                         Expanded(

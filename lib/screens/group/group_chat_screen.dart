@@ -22,6 +22,7 @@ import '../chat/location_picker_screen.dart';
 import '../chat/widgets/video_message_bubble.dart';
 import '../chat/widgets/decrypted_image_widget.dart';
 import '../../widgets/emoji_gif_sticker_picker.dart';
+import '../../widgets/app_avatar.dart';
 
 class GroupChatScreen extends StatefulWidget {
   final GroupModel group;
@@ -841,15 +842,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           onTap: _openGroupInfo,
           child: Row(
             children: [
-              CircleAvatar(
+              AppAvatar(
                 radius: 20,
-                backgroundColor: AppColors.surfaceLight,
-                backgroundImage: _group.photoUrl.isNotEmpty
-                    ? CachedNetworkImageProvider(_group.photoUrl)
-                    : null,
-                child: _group.photoUrl.isEmpty
-                    ? const Icon(Icons.group_rounded, color: AppColors.textSecondary)
-                    : null,
+                imageUrl: _group.photoUrl,
+                isGroup: true,
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -1827,16 +1823,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ),
       child: Row(
         children: [
-          CircleAvatar(
+          AppAvatar(
             radius: 16,
-            backgroundColor: badgeColor.withOpacity(0.2),
-            backgroundImage: attendee.photoUrl.isNotEmpty ? CachedNetworkImageProvider(attendee.photoUrl) : null,
-            child: attendee.photoUrl.isEmpty
-                ? Text(
-                    attendee.name.isNotEmpty ? attendee.name[0].toUpperCase() : '?',
-                    style: TextStyle(color: badgeColor, fontWeight: FontWeight.bold, fontSize: 13),
-                  )
-                : null,
+            imageUrl: attendee.photoUrl,
+            name: attendee.name,
           ),
           const SizedBox(width: 10),
           Expanded(

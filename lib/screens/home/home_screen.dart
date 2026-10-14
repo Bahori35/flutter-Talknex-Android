@@ -24,6 +24,7 @@ import '../story/add_story_screen.dart';
 import '../group/create_group_screen.dart';
 import '../group/group_chat_screen.dart';
 import '../../services/encryption_service.dart';
+import '../../widgets/app_avatar.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -300,9 +301,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                CircleAvatar(
+                AppAvatar(
                   radius: 40,
-                  backgroundImage: CachedNetworkImageProvider(callerUser.photoUrl),
+                  imageUrl: callerUser.photoUrl,
+                  name: callerUser.displayName,
                 ),
                 const SizedBox(height: 16),
                 Text(
@@ -643,9 +645,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 value: 'profile',
                 child: Row(
                   children: [
-                    CircleAvatar(
+                    AppAvatar(
                       radius: 14,
-                      backgroundImage: CachedNetworkImageProvider(currentUser.photoUrl),
+                      imageUrl: currentUser.photoUrl,
+                      name: currentUser.displayName,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -877,15 +880,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         ? Border.all(color: AppColors.primaryLight, width: 2.5)
                         : null,
                   ),
-                  child: CircleAvatar(
+                  child: AppAvatar(
                     radius: 24,
-                    backgroundColor: AppColors.surfaceLight,
-                    backgroundImage: currentUser.photoUrl.isNotEmpty
-                        ? CachedNetworkImageProvider(currentUser.photoUrl)
-                        : null,
-                    child: currentUser.photoUrl.isEmpty
-                        ? const Icon(Icons.person, color: AppColors.textSecondary)
-                        : null,
+                    imageUrl: currentUser.photoUrl,
+                    name: currentUser.displayName,
                   ),
                 ),
                 if (myStoryGroup == null || myStoryGroup.stories.isEmpty)
@@ -948,15 +946,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       shape: BoxShape.circle,
                       gradient: AppColors.storyRingGradient,
                     ),
-                    child: CircleAvatar(
+                    child: AppAvatar(
                       radius: 23,
-                      backgroundColor: AppColors.surfaceLight,
-                      backgroundImage: group.userPhotoUrl.isNotEmpty
-                          ? CachedNetworkImageProvider(group.userPhotoUrl)
-                          : null,
-                      child: group.userPhotoUrl.isEmpty
-                          ? const Icon(Icons.person, color: AppColors.textSecondary)
-                          : null,
+                      imageUrl: group.userPhotoUrl,
+                      name: group.displayName,
                     ),
                   ),
                   title: Text(
@@ -1000,15 +993,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       shape: BoxShape.circle,
                       border: Border.all(color: AppColors.textMuted, width: 2),
                     ),
-                    child: CircleAvatar(
+                    child: AppAvatar(
                       radius: 23,
-                      backgroundColor: AppColors.surfaceLight,
-                      backgroundImage: group.userPhotoUrl.isNotEmpty
-                          ? CachedNetworkImageProvider(group.userPhotoUrl)
-                          : null,
-                      child: group.userPhotoUrl.isEmpty
-                          ? const Icon(Icons.person, color: AppColors.textSecondary)
-                          : null,
+                      imageUrl: group.userPhotoUrl,
+                      name: group.displayName,
                     ),
                   ),
                   title: Text(
@@ -1138,15 +1126,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                     ? AppColors.storyRingGradient
                                     : null,
                               ),
-                              child: CircleAvatar(
+                              child: AppAvatar(
                                 radius: 25,
-                                backgroundColor: AppColors.surfaceLight,
-                                backgroundImage: currentUser.photoUrl.isNotEmpty
-                                    ? CachedNetworkImageProvider(currentUser.photoUrl)
-                                    : null,
-                                child: currentUser.photoUrl.isEmpty
-                                    ? const Icon(Icons.person, color: AppColors.textSecondary)
-                                    : null,
+                                imageUrl: currentUser.photoUrl,
+                                name: currentUser.displayName,
                               ),
                             ),
                             if (!allowedStoryGroups.any((g) => g.userId.toString() == currentUser.uid))
@@ -1192,15 +1175,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               gradient: group.allViewed ? null : AppColors.storyRingGradient,
                               border: group.allViewed ? Border.all(color: AppColors.textMuted, width: 2) : null,
                             ),
-                            child: CircleAvatar(
+                            child: AppAvatar(
                               radius: 25,
-                              backgroundColor: AppColors.surfaceLight,
-                              backgroundImage: group.userPhotoUrl.isNotEmpty
-                                  ? CachedNetworkImageProvider(group.userPhotoUrl)
-                                  : null,
-                              child: group.userPhotoUrl.isEmpty
-                                  ? const Icon(Icons.person, color: AppColors.textSecondary)
-                                  : null,
+                              imageUrl: group.userPhotoUrl,
+                              name: group.displayName,
                             ),
                           ),
                           const SizedBox(height: 5),
@@ -1369,15 +1347,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                           leading: Stack(
                             children: [
-                              CircleAvatar(
+                              AppAvatar(
                                 radius: 26,
-                                backgroundColor: AppColors.surfaceLight,
-                                backgroundImage: group.photoUrl.isNotEmpty
-                                    ? CachedNetworkImageProvider(group.photoUrl)
-                                    : null,
-                                child: group.photoUrl.isEmpty
-                                    ? const Icon(Icons.group_rounded, color: AppColors.accent, size: 28)
-                                    : null,
+                                imageUrl: group.photoUrl,
+                                isGroup: true,
                               ),
                               Positioned(
                                 bottom: 0,
@@ -1491,16 +1464,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                           leading: Stack(
                             children: [
-                              CircleAvatar(
+                              AppAvatar(
                                 radius: 26,
-                                backgroundColor: AppColors.surfaceLight,
-                                backgroundImage: user.photoUrl.isNotEmpty ? CachedNetworkImageProvider(user.photoUrl) : null,
-                                child: user.photoUrl.isEmpty
-                                    ? Text(
-                                        user.displayName.isNotEmpty ? user.displayName[0].toUpperCase() : '?',
-                                        style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 18),
-                                      )
-                                    : null,
+                                imageUrl: user.photoUrl,
+                                name: user.displayName,
                               ),
                               if (user.isOnline)
                                 Positioned(
@@ -1701,10 +1668,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                   leading: Stack(
                     children: [
-                      CircleAvatar(
+                      AppAvatar(
                         radius: 24,
-                        backgroundColor: AppColors.surfaceLight,
-                        backgroundImage: CachedNetworkImageProvider(user.photoUrl),
+                        imageUrl: user.photoUrl,
+                        name: user.displayName,
                       ),
                       if (user.isOnline)
                         Positioned(
@@ -1918,11 +1885,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   ),
                   child: ListTile(
                     contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                    leading: CircleAvatar(
+                    leading: AppAvatar(
                       radius: 24,
-                      backgroundColor: AppColors.surfaceLight,
-                      backgroundImage: otherUserPic.isNotEmpty ? CachedNetworkImageProvider(otherUserPic) : null,
-                      child: otherUserPic.isEmpty ? const Icon(Icons.person, color: AppColors.textSecondary) : null,
+                      imageUrl: otherUserPic,
+                      name: otherUserName,
                     ),
                     title: Text(
                       otherUserName,

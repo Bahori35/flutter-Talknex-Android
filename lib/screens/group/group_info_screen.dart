@@ -7,6 +7,7 @@ import '../../models/user_model.dart';
 import '../../models/group_model.dart';
 import '../../services/custom_auth_service.dart';
 import '../../services/custom_chat_service.dart';
+import '../../widgets/app_avatar.dart';
 
 class GroupInfoScreen extends StatefulWidget {
   final GroupModel group;
@@ -83,9 +84,6 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     try {
       final XFile? file = await _picker.pickImage(
         source: ImageSource.gallery,
-        maxWidth: 800,
-        maxHeight: 800,
-        imageQuality: 85,
       );
       if (file == null) return;
 
@@ -206,9 +204,10 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         child: Wrap(
           children: [
             ListTile(
-              leading: CircleAvatar(
-                backgroundImage: member.photoUrl.isNotEmpty ? CachedNetworkImageProvider(member.photoUrl) : null,
-                child: member.photoUrl.isEmpty ? const Icon(Icons.person) : null,
+              leading: AppAvatar(
+                imageUrl: member.photoUrl,
+                name: member.displayName,
+                radius: 20,
               ),
               title: Text(member.displayName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               subtitle: Text(
@@ -473,17 +472,11 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 Center(
                   child: Stack(
                     children: [
-                      CircleAvatar(
+                      AppAvatar(
                         radius: 54,
-                        backgroundColor: AppColors.surfaceLight,
-                        backgroundImage: _group.photoUrl.isNotEmpty
-                            ? CachedNetworkImageProvider(_group.photoUrl)
-                            : null,
-                        child: _isUploadingPhoto
-                            ? const CircularProgressIndicator(color: AppColors.primaryLight)
-                            : (_group.photoUrl.isEmpty
-                                ? const Icon(Icons.group_rounded, size: 54, color: AppColors.textSecondary)
-                                : null),
+                        imageUrl: _group.photoUrl,
+                        isGroup: true,
+                        isLoading: _isUploadingPhoto,
                       ),
                       if (_isAdmin)
                         Positioned(
@@ -606,11 +599,10 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                     ),
                     child: ListTile(
                       onTap: () => _showMemberOptions(member),
-                      leading: CircleAvatar(
+                      leading: AppAvatar(
                         radius: 20,
-                        backgroundColor: AppColors.surfaceLight,
-                        backgroundImage: member.photoUrl.isNotEmpty ? CachedNetworkImageProvider(member.photoUrl) : null,
-                        child: member.photoUrl.isEmpty ? const Icon(Icons.person, color: AppColors.textSecondary) : null,
+                        imageUrl: member.photoUrl,
+                        name: member.displayName,
                       ),
                       title: Row(
                         children: [
@@ -927,15 +919,10 @@ class _AddMembersBottomSheetState extends State<_AddMembersBottomSheet> {
                                 }
                               });
                             },
-                            secondary: CircleAvatar(
+                            secondary: AppAvatar(
                               radius: 20,
-                              backgroundColor: AppColors.surfaceLight,
-                              backgroundImage: user.photoUrl.isNotEmpty
-                                  ? CachedNetworkImageProvider(user.photoUrl)
-                                  : null,
-                              child: user.photoUrl.isEmpty
-                                  ? const Icon(Icons.person, color: AppColors.textSecondary)
-                                  : null,
+                              imageUrl: user.photoUrl,
+                              name: user.displayName,
                             ),
                             title: Text(
                               user.displayName,

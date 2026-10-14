@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../constants/app_colors.dart';
 import '../../services/custom_auth_service.dart';
+import '../../widgets/app_avatar.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -21,16 +22,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _isUploading = false;
   final ImagePicker _picker = ImagePicker();
 
-  // Preset avatar choices
+  // Preset avatar choices (including animated GIFs!)
   final List<String> _avatarPresets = [
+    // Animated GIFs
+    'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif',
+    'https://media.giphy.com/media/ICOgUNjpvO0PC/giphy.gif',
+    'https://media.giphy.com/media/vFKqnCdLPNOKc/giphy.gif',
+    'https://media.giphy.com/media/3o7TKSjRrfIPjeiVyM/giphy.gif',
+    // Photos
     'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400',
     'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=400',
     'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400',
     'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
-    'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400',
-    'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400',
-    'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=400',
-    'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400',
   ];
 
   @override
@@ -54,11 +57,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _pickAndUploadImage(ImageSource source) async {
     try {
+      // NOTE: We do NOT pass maxWidth/maxHeight/imageQuality so that animated GIFs
+      // retain all their animation frames and format without being converted to JPEG!
       final XFile? pickedFile = await _picker.pickImage(
         source: source,
-        maxWidth: 1024,
-        maxHeight: 1024,
-        imageQuality: 85,
       );
 
       if (pickedFile == null) return;
@@ -251,8 +253,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         });
                         Navigator.pop(ctx);
                       },
-                      child: CircleAvatar(
-                        backgroundImage: CachedNetworkImageProvider(url),
+                      child: AppAvatar(
+                        imageUrl: url,
+                        radius: 24,
                       ),
                     );
                   },
@@ -296,21 +299,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
           key: _formKey,
           child: Column(
             children: [
-              // Avatar Preview & Change Button
+              // Avatar Preview & Change Button (Supports animated GIFs)
               Center(
                 child: Stack(
                   children: [
-                    CircleAvatar(
+                    AppAvatar(
                       radius: 56,
-                      backgroundColor: AppColors.surfaceLight,
-                      backgroundImage: currentPhoto.isNotEmpty
-                          ? CachedNetworkImageProvider(currentPhoto)
-                          : null,
-                      child: _isUploading
-                          ? const CircularProgressIndicator(color: AppColors.primaryLight)
-                          : (currentPhoto.isEmpty
-                              ? const Icon(Icons.person, size: 56, color: AppColors.textSecondary)
-                              : null),
+                      imageUrl: currentPhoto,
+                      name: user?.displayName,
+                      isLoading: _isUploading,
                     ),
                     Positioned(
                       bottom: 0,

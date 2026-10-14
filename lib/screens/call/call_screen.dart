@@ -8,6 +8,7 @@ import '../../models/user_model.dart';
 import '../../services/custom_chat_service.dart';
 import '../../services/socket_service.dart';
 import '../../services/notification_service.dart';
+import '../../widgets/app_avatar.dart';
 
 class CallScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -424,9 +425,10 @@ class _CallScreenState extends State<CallScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    CircleAvatar(
+                    AppAvatar(
                       radius: 65,
-                      backgroundImage: CachedNetworkImageProvider(widget.peerUser.photoUrl),
+                      imageUrl: widget.peerUser.photoUrl,
+                      name: widget.peerUser.displayName,
                     ),
                     const SizedBox(height: 24),
                     Text(

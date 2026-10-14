@@ -27,6 +27,7 @@ import 'widgets/video_message_bubble.dart';
 import 'widgets/decrypted_image_widget.dart';
 import '../../services/encryption_service.dart';
 import '../../widgets/emoji_gif_sticker_picker.dart';
+import '../../widgets/app_avatar.dart';
 
 class ChatScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -1015,16 +1016,10 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             Stack(
               children: [
-                CircleAvatar(
+                AppAvatar(
                   radius: 20,
-                  backgroundColor: AppColors.surfaceLight,
-                  backgroundImage: _peer.photoUrl.isNotEmpty ? CachedNetworkImageProvider(_peer.photoUrl) : null,
-                  child: _peer.photoUrl.isEmpty
-                      ? Text(
-                          _peer.displayName.isNotEmpty ? _peer.displayName[0].toUpperCase() : '?',
-                          style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 16),
-                        )
-                      : null,
+                  imageUrl: _peer.photoUrl,
+                  name: _peer.displayName,
                 ),
                 if (_peer.isOnline)
                   Positioned(

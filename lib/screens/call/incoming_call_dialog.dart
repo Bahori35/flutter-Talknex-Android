@@ -5,6 +5,7 @@ import '../../models/call_model.dart';
 import '../../models/user_model.dart';
 import '../../services/signaling_service.dart';
 import 'call_screen.dart';
+import '../../widgets/app_avatar.dart';
 
 class IncomingCallDialog extends StatelessWidget {
   final CallModel call;
@@ -40,9 +41,10 @@ class IncomingCallDialog extends StatelessWidget {
               Column(
                 children: [
                   const SizedBox(height: 30),
-                  CircleAvatar(
+                  AppAvatar(
                     radius: 60,
-                    backgroundImage: CachedNetworkImageProvider(call.callerPic),
+                    imageUrl: call.callerPic,
+                    name: call.callerName,
                   ),
                   const SizedBox(height: 20),
                   Text(

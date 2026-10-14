@@ -6,6 +6,7 @@ import '../../constants/app_colors.dart';
 import '../../models/user_model.dart';
 import '../../services/custom_auth_service.dart';
 import '../../services/custom_chat_service.dart';
+import '../../widgets/app_avatar.dart';
 
 class CreateGroupScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -44,9 +45,6 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     try {
       final XFile? file = await _picker.pickImage(
         source: ImageSource.gallery,
-        maxWidth: 800,
-        maxHeight: 800,
-        imageQuality: 85,
       );
       if (file == null) return;
 
@@ -161,17 +159,11 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                   onTap: _isUploadingPhoto ? null : _pickGroupPhoto,
                   child: Stack(
                     children: [
-                      CircleAvatar(
+                      AppAvatar(
                         radius: 36,
-                        backgroundColor: AppColors.surfaceLight,
-                        backgroundImage: _photoUrl.isNotEmpty
-                            ? CachedNetworkImageProvider(_photoUrl)
-                            : null,
-                        child: _isUploadingPhoto
-                            ? const CircularProgressIndicator(color: AppColors.primaryLight)
-                            : (_photoUrl.isEmpty
-                                ? const Icon(Icons.group_rounded, size: 36, color: AppColors.textSecondary)
-                                : null),
+                        imageUrl: _photoUrl,
+                        isGroup: true,
+                        isLoading: _isUploadingPhoto,
                       ),
                       Positioned(
                         bottom: 0,
@@ -319,15 +311,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                         });
                       }
                     },
-                    secondary: CircleAvatar(
+                    secondary: AppAvatar(
                       radius: 20,
-                      backgroundColor: AppColors.surfaceLight,
-                      backgroundImage: contact.photoUrl.isNotEmpty
-                          ? CachedNetworkImageProvider(contact.photoUrl)
-                          : null,
-                      child: contact.photoUrl.isEmpty
-                          ? const Icon(Icons.person, color: AppColors.textSecondary)
-                          : null,
+                      imageUrl: contact.photoUrl,
+                      name: contact.displayName,
                     ),
                     title: Text(
                       contact.displayName,
