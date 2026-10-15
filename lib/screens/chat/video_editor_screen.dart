@@ -74,6 +74,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   AudioPlayer? _bgMusicPlayer;
   Duration _bgMusicTotalDuration = Duration.zero;
   Duration _bgMusicStartTrim = Duration.zero;
+  Duration _bgMusicEndTrim = Duration.zero;
+  int _activeEditorTab = 0; // 0: Video Kırp, 1: Şarkı Kırp, 2: Ses Mikseri
+
+  Duration get _bgMusicTrimmedDuration {
+    if (_bgMusicEndTrim <= _bgMusicStartTrim) return Duration.zero;
+    return _bgMusicEndTrim - _bgMusicStartTrim;
+  }
 
   bool _isProcessing = false;
   double _processingProgress = 0.0;
@@ -274,7 +281,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   }
 
   void _seekMergedPosition(Duration targetPos) {
-    _bgMusicPlayer?.seek(_bgMusicStartTrim + targetPos);
+    final musicWindow = _bgMusicTrimmedDuration;
+    if (musicWindow > Duration.zero) {
+      final offset = targetPos.inMilliseconds % musicWindow.inMilliseconds;
+      _bgMusicPlayer?.seek(_bgMusicStartTrim + Duration(milliseconds: offset));
+    } else {
+      _bgMusicPlayer?.seek(_bgMusicStartTrim);
+    }
     Duration accumulated = Duration.zero;
     for (int i = 0; i < _clips.length; i++) {
       final clipDur = _clips[i].trimmedDuration;
@@ -340,7 +353,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
             activeController.play();
           }
         }
-        _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
+        final musicWindow = _bgMusicTrimmedDuration;
+        if (musicWindow > Duration.zero) {
+          final offset = _currentMergedPosition.inMilliseconds % musicWindow.inMilliseconds;
+          _bgMusicPlayer?.seek(_bgMusicStartTrim + Duration(milliseconds: offset));
+        } else {
+          _bgMusicPlayer?.seek(_bgMusicStartTrim);
+        }
         _bgMusicPlayer?.resume();
       } else {
         _pauseAllControllers();
@@ -385,21 +404,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     });
   }
 
-  double _calcMaxMusicStartTrim() {
-    if (_bgMusicTotalDuration > _totalMergedDuration && _totalMergedDuration > Duration.zero) {
-      return (_bgMusicTotalDuration - _totalMergedDuration).inMilliseconds.toDouble();
-    } else if (_bgMusicTotalDuration.inMilliseconds > 0) {
-      return _bgMusicTotalDuration.inMilliseconds.toDouble();
-    }
-    return 60000.0;
-  }
 
-  void _setMusicStartTrim(Duration startOffset, {bool immediate = false}) {
+  void _setMusicTrimRange(Duration start, Duration end, {bool immediate = false}) {
     setState(() {
-      _bgMusicStartTrim = startOffset;
+      _bgMusicStartTrim = start;
+      _bgMusicEndTrim = end;
     });
+    final musicWindow = _bgMusicTrimmedDuration;
     final target = _isPlaying
-        ? (_bgMusicStartTrim + _currentMergedPosition)
+        ? (_bgMusicStartTrim + ((musicWindow.inMilliseconds > 0)
+            ? Duration(milliseconds: _currentMergedPosition.inMilliseconds % musicWindow.inMilliseconds)
+            : Duration.zero))
         : _bgMusicStartTrim;
     if (immediate) {
       _musicSeekDebounceTimer?.cancel();
@@ -407,6 +422,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     } else {
       _debouncedMusicSeek(target);
     }
+  }
+
+  void _alignMusicWithVideo() {
+    if (_bgMusicTotalDuration <= Duration.zero || _totalMergedDuration <= Duration.zero) return;
+    setState(() {
+      final neededDur = _totalMergedDuration;
+      if (_bgMusicStartTrim + neededDur <= _bgMusicTotalDuration) {
+        _bgMusicEndTrim = _bgMusicStartTrim + neededDur;
+      } else {
+        _bgMusicStartTrim = Duration.zero;
+        _bgMusicEndTrim = neededDur <= _bgMusicTotalDuration ? neededDur : _bgMusicTotalDuration;
+      }
+    });
+    _setMusicTrimRange(_bgMusicStartTrim, _bgMusicEndTrim, immediate: true);
   }
 
   Future<void> _pickMusic() async {
@@ -448,18 +477,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         }
       } catch (_) {}
 
+      final defaultEnd = (musicDur > Duration.zero) ? musicDur : const Duration(seconds: 30);
       setState(() {
         _bgMusicFile = pickedFile;
         _bgMusicName = name;
         _bgMusicPlayer = player;
         _bgMusicTotalDuration = musicDur;
         _bgMusicStartTrim = Duration.zero;
+        _bgMusicEndTrim = defaultEnd;
+        _activeEditorTab = 1; // Direct user to the music trimming tab!
       });
 
       player.onDurationChanged.listen((d) {
         if (mounted && d > Duration.zero && _bgMusicTotalDuration != d) {
           setState(() {
             _bgMusicTotalDuration = d;
+            if (_bgMusicEndTrim == Duration.zero || _bgMusicEndTrim > d) {
+              _bgMusicEndTrim = d;
+            }
           });
         }
       });
@@ -517,6 +552,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       _bgMusicPlayer = null;
       _bgMusicTotalDuration = Duration.zero;
       _bgMusicStartTrim = Duration.zero;
+      _bgMusicEndTrim = Duration.zero;
+      _activeEditorTab = 0;
     });
 
     if (mounted) {
@@ -529,512 +566,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         ),
       );
     }
-  }
-
-  void _openAudioMixerSheet() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (sheetContext, setSheetState) {
-            final effectiveVideoVol = _isMuted ? 0.0 : _videoVolume;
-            return Container(
-              decoration: const BoxDecoration(
-                color: Color(0xFF141D22),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                border: Border(
-                  top: BorderSide(color: Colors.white12, width: 1),
-                ),
-              ),
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-              child: SafeArea(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Handle Bar
-                    Center(
-                      child: Container(
-                        width: 40,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: Colors.white24,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    // Header
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Row(
-                          children: [
-                            Icon(Icons.tune_rounded, color: AppColors.accent, size: 22),
-                            SizedBox(width: 8),
-                            Text(
-                              'Ses ve Müzik Mikseri',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 17,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close_rounded, color: Colors.white70),
-                          onPressed: () => Navigator.pop(ctx),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-
-                    // Quick Preset Chips
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: [
-                          _buildPresetChip(
-                            label: 'Orijinal Video',
-                            icon: Icons.videocam_rounded,
-                            isActive: !_isMuted && _videoVolume == 1.0 && _bgMusicFile == null,
-                            onTap: () {
-                              setSheetState(() {
-                                _setVideoVolume(1.0);
-                              });
-                              setState(() {});
-                            },
-                          ),
-                          const SizedBox(width: 8),
-                          _buildPresetChip(
-                            label: 'Dengeli (%50 / %50)',
-                            icon: Icons.balance_rounded,
-                            isActive: !_isMuted && _videoVolume == 0.5 && _bgMusicVolume == 0.5,
-                            onTap: () {
-                              setSheetState(() {
-                                _setVideoVolume(0.5);
-                                _setBgMusicVolume(0.5);
-                              });
-                              setState(() {});
-                            },
-                          ),
-                          const SizedBox(width: 8),
-                          _buildPresetChip(
-                            label: 'Müzik Öncelikli',
-                            icon: Icons.music_note_rounded,
-                            isActive: _videoVolume <= 0.2 && _bgMusicVolume >= 0.8,
-                            onTap: () {
-                              setSheetState(() {
-                                _setVideoVolume(0.15);
-                                _setBgMusicVolume(0.85);
-                              });
-                              setState(() {});
-                            },
-                          ),
-                          const SizedBox(width: 8),
-                          _buildPresetChip(
-                            label: 'Sadece Müzik',
-                            icon: Icons.volume_off_rounded,
-                            isActive: _isMuted || _videoVolume == 0.0,
-                            onTap: () {
-                              setSheetState(() {
-                                _setVideoVolume(0.0);
-                                _setBgMusicVolume(1.0);
-                              });
-                              setState(() {});
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-
-                    // --- VIDEO AUDIO CARD ---
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1F2C34),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                    _isMuted || _videoVolume == 0.0
-                                        ? Icons.volume_off_rounded
-                                        : Icons.videocam_rounded,
-                                    color: _isMuted || _videoVolume == 0.0
-                                        ? AppColors.callRed
-                                        : AppColors.accent,
-                                    size: 20,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  const Text(
-                                    'Orijinal Video Sesi',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: (_isMuted || _videoVolume == 0.0)
-                                      ? AppColors.callRed.withValues(alpha: 0.2)
-                                      : AppColors.accent.withValues(alpha: 0.2),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(
-                                  _isMuted || _videoVolume == 0.0
-                                      ? 'Sessiz'
-                                      : '%${(effectiveVideoVol * 100).round()}',
-                                  style: TextStyle(
-                                    color: (_isMuted || _videoVolume == 0.0)
-                                        ? AppColors.callRed
-                                        : AppColors.accent,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              IconButton(
-                                icon: Icon(
-                                  _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                                  color: _isMuted ? AppColors.callRed : Colors.white70,
-                                  size: 22,
-                                ),
-                                onPressed: () {
-                                  setSheetState(() {
-                                    _toggleMute();
-                                  });
-                                  setState(() {});
-                                },
-                              ),
-                              Expanded(
-                                child: SliderTheme(
-                                  data: SliderTheme.of(context).copyWith(
-                                    activeTrackColor: AppColors.accent,
-                                    inactiveTrackColor: Colors.white24,
-                                    thumbColor: AppColors.accent,
-                                    overlayColor: AppColors.accent.withValues(alpha: 0.2),
-                                    trackHeight: 4,
-                                  ),
-                                  child: Slider(
-                                    min: 0.0,
-                                    max: 1.0,
-                                    value: _isMuted ? 0.0 : _videoVolume,
-                                    onChanged: (val) {
-                                      setSheetState(() {
-                                        _setVideoVolume(val);
-                                      });
-                                      setState(() {});
-                                    },
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-
-                    // --- BACKGROUND MUSIC CARD ---
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1F2C34),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: _bgMusicFile != null
-                              ? AppColors.accent.withValues(alpha: 0.4)
-                              : Colors.white12,
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Row(
-                                children: [
-                                  Icon(Icons.music_note_rounded,
-                                      color: AppColors.accent, size: 20),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Arka Plan Müziği',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              if (_bgMusicFile != null)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.accent.withValues(alpha: 0.2),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    '%${(_bgMusicVolume * 100).round()}',
-                                    style: const TextStyle(
-                                      color: AppColors.accent,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-
-                          if (_bgMusicFile == null)
-                            InkWell(
-                              onTap: () async {
-                                await _pickMusic();
-                                setSheetState(() {});
-                                setState(() {});
-                              },
-                              borderRadius: BorderRadius.circular(12),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.05),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: AppColors.accent.withValues(alpha: 0.5),
-                                  ),
-                                ),
-                                child: const Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.add_circle_outline_rounded,
-                                        color: AppColors.accent, size: 20),
-                                    SizedBox(width: 8),
-                                    Text(
-                                      'Cihazdan Müzik veya Ses Seç',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            )
-                          else ...[
-                            // Selected music file row
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: Colors.black38,
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.audiotrack_rounded,
-                                      color: AppColors.accent, size: 18),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      _bgMusicName ?? 'Müzik Parçası',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12.5,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                  ),
-                                  // Change music button
-                                  TextButton(
-                                    onPressed: () async {
-                                      await _pickMusic();
-                                      setSheetState(() {});
-                                      setState(() {});
-                                    },
-                                    style: TextButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                                      minimumSize: Size.zero,
-                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                    ),
-                                    child: const Text(
-                                      'Değiştir',
-                                      style: TextStyle(color: AppColors.accent, fontSize: 12),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  // Remove music button
-                                  GestureDetector(
-                                    onTap: () async {
-                                      await _removeMusic();
-                                      setSheetState(() {});
-                                      setState(() {});
-                                    },
-                                    child: const Icon(Icons.delete_outline_rounded,
-                                        color: AppColors.callRed, size: 20),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            // Music volume slider
-                            Row(
-                              children: [
-                                const Icon(Icons.volume_down_rounded,
-                                    color: Colors.white70, size: 20),
-                                Expanded(
-                                  child: SliderTheme(
-                                    data: SliderTheme.of(context).copyWith(
-                                      activeTrackColor: AppColors.accent,
-                                      inactiveTrackColor: Colors.white24,
-                                      thumbColor: AppColors.accent,
-                                      overlayColor: AppColors.accent.withValues(alpha: 0.2),
-                                      trackHeight: 4,
-                                    ),
-                                    child: Slider(
-                                      min: 0.0,
-                                      max: 1.0,
-                                      value: _bgMusicVolume,
-                                      onChanged: (val) {
-                                        setSheetState(() {
-                                          _setBgMusicVolume(val);
-                                        });
-                                        setState(() {});
-                                      },
-                                    ),
-                                  ),
-                                ),
-                                const Icon(Icons.volume_up_rounded,
-                                    color: Colors.white70, size: 20),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            // Music Trimming / Start Offset Section
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF141D22),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: Colors.white12),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      const Row(
-                                        children: [
-                                          Icon(Icons.content_cut_rounded,
-                                              color: AppColors.accent, size: 16),
-                                          SizedBox(width: 6),
-                                          Text(
-                                            'Şarkı Kesme / Başlangıç Aralığı',
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12.5,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      if (_bgMusicTotalDuration > Duration.zero)
-                                        Text(
-                                          'Toplam: ${_formatDuration(_bgMusicTotalDuration)}',
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    'Çalınacak Aralık: ${_formatDuration(_bgMusicStartTrim)} - ${_formatDuration(_bgMusicStartTrim + _totalMergedDuration)} (Video: ${_formatDuration(_totalMergedDuration)})',
-                                    style: const TextStyle(
-                                      color: AppColors.accent,
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  Builder(
-                                    builder: (context) {
-                                      final maxTrim = _calcMaxMusicStartTrim();
-                                      final currentMs = _bgMusicStartTrim.inMilliseconds
-                                          .toDouble()
-                                          .clamp(0.0, maxTrim > 0 ? maxTrim : 1.0);
-                                      return SliderTheme(
-                                        data: SliderTheme.of(context).copyWith(
-                                          activeTrackColor: AppColors.accent,
-                                          inactiveTrackColor: Colors.white24,
-                                          thumbColor: AppColors.accent,
-                                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                                          trackHeight: 3.5,
-                                        ),
-                                        child: Slider(
-                                          min: 0.0,
-                                          max: maxTrim > 0 ? maxTrim : 1.0,
-                                          value: currentMs,
-                                          onChanged: maxTrim > 0
-                                              ? (val) {
-                                                  setSheetState(() {
-                                                    _setMusicStartTrim(Duration(milliseconds: val.toInt()), immediate: false);
-                                                  });
-                                                  setState(() {});
-                                                }
-                                              : null,
-                                          onChangeEnd: maxTrim > 0
-                                              ? (val) {
-                                                  setSheetState(() {
-                                                    _setMusicStartTrim(Duration(milliseconds: val.toInt()), immediate: true);
-                                                  });
-                                                  setState(() {});
-                                                }
-                                              : null,
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
   }
 
   Widget _buildPresetChip({
@@ -1072,24 +603,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildQuickChip(String label, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1F2C34),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.white24),
-        ),
-        child: Text(
-          label,
-          style: const TextStyle(color: Colors.white70, fontSize: 10.5, fontWeight: FontWeight.bold),
         ),
       ),
     );
@@ -1259,6 +772,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
             'audioTrackPath': _bgMusicFile?.path,
             'audioTrackVolume': _bgMusicVolume,
             'audioTrackStartMs': _bgMusicStartTrim.inMilliseconds,
+            'audioTrackEndMs': _bgMusicEndTrim.inMilliseconds,
             'trimStarts': trimStarts,
             'trimEnds': trimEnds,
             'totalDurations': totalDurations,
@@ -1318,956 +832,1305 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         _controllers[_playingClipIndex]!.value.isInitialized;
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF0B1014),
       body: SafeArea(
         child: Stack(
           children: [
             Column(
               children: [
-                // Top Bar
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  color: Colors.black87,
-                  child: Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded, color: Colors.white, size: 26),
-                        onPressed: () => Navigator.pop(context),
-                      ),
-                      const SizedBox(width: 4),
-                      const Text(
-                        'Video Düzenle',
-                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
-                      ),
-                      const Spacer(),
-                      // Prominent Ses & Müzik Labeled Button
-                      GestureDetector(
-                        onTap: _openAudioMixerSheet,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: _bgMusicFile != null
-                                ? AppColors.accent.withValues(alpha: 0.25)
-                                : const Color(0xFF1F2C34),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(
-                              color: _bgMusicFile != null ? AppColors.accent : Colors.white30,
-                              width: 1.2,
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.music_note_rounded,
-                                color: _bgMusicFile != null ? AppColors.accent : Colors.white,
-                                size: 16,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _bgMusicFile != null
-                                    ? 'Müzik (%${(_bgMusicVolume * 100).round()})'
-                                    : '🎵 Ses & Müzik',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      // Mute toggle
-                      IconButton(
-                        icon: Icon(
-                          _isMuted || _videoVolume == 0.0
-                              ? Icons.volume_off_rounded
-                              : Icons.volume_up_rounded,
-                          color: (_isMuted || _videoVolume == 0.0) ? AppColors.callRed : Colors.white,
-                          size: 22,
-                        ),
-                        tooltip: _isMuted ? 'Sesi Aç' : 'Sesi Kapat',
-                        onPressed: _toggleMute,
-                      ),
-                      // Merged Total Duration Badge
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1F2C34),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.white12),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.movie_filter_rounded, color: AppColors.accent, size: 15),
-                            const SizedBox(width: 4),
-                            Text(
-                              '${_formatDuration(currentMerged)} / ${_formatDuration(totalMerged)}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12.5,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                  ),
-                ),
+                // 1. Sleek Glass Header Bar
+                _buildHeaderBar(currentMerged, totalMerged),
 
-                // Unified Continuous Merged Video Player Center Preview (IndexedStack for instant switching)
+                // 2. Center Video Canvas Viewport (Rounded studio frame with overlays)
                 Expanded(
-                  child: Center(
-                    child: isInitialized
-                        ? GestureDetector(
-                            onTap: _togglePlayPause,
-                            child: Stack(
-                              alignment: Alignment.center,
-                              children: [
-                                Builder(
-                                  builder: (context) {
-                                    final activeController = _controllers[_playingClipIndex];
-                                    if (activeController != null && activeController.value.isInitialized) {
-                                      return AspectRatio(
-                                        aspectRatio: activeController.value.aspectRatio,
-                                        child: VideoPlayer(activeController),
-                                      );
-                                    }
-                                    return const SizedBox.shrink();
-                                  },
-                                ),
-                                // Play / Pause Indicator
-                                AnimatedOpacity(
-                                  opacity: _isPlaying ? 0.0 : 0.85,
-                                  duration: const Duration(milliseconds: 200),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(16),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black54,
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.white24, width: 2),
-                                    ),
-                                    child: const Icon(
-                                      Icons.play_arrow_rounded,
-                                      color: Colors.white,
-                                      size: 42,
-                                    ),
-                                  ),
-                                ),
-                                // Overlay info: Currently playing clip tag & Floating Music Pill
-                                Positioned(
-                                  top: 12,
-                                  left: 12,
-                                  right: 12,
-                                  child: Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black.withValues(alpha: 0.7),
-                                          borderRadius: BorderRadius.circular(16),
-                                          border: Border.all(color: AppColors.accent.withValues(alpha: 0.6)),
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Icon(Icons.auto_awesome_motion_rounded,
-                                                color: AppColors.accent, size: 14),
-                                            const SizedBox(width: 6),
-                                            Text(
-                                              _clips.length > 1
-                                                  ? 'Klip ${_playingClipIndex + 1}/${_clips.length}'
-                                                  : 'Önizleme',
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 11.5,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      const Spacer(),
-                                      // FLOATING MUSIC PILL (DIRECTLY ACCESSIBLE OVER VIDEO)
-                                      GestureDetector(
-                                        onTap: _bgMusicFile == null ? _pickMusic : _openAudioMixerSheet,
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                          decoration: BoxDecoration(
-                                            color: _bgMusicFile != null
-                                                ? AppColors.accent.withValues(alpha: 0.9)
-                                                : Colors.black.withValues(alpha: 0.75),
-                                            borderRadius: BorderRadius.circular(16),
-                                            border: Border.all(
-                                              color: AppColors.accent,
-                                              width: 1.2,
-                                            ),
-                                            boxShadow: [
-                                              BoxShadow(
-                                                color: AppColors.accent.withValues(alpha: 0.35),
-                                                blurRadius: 6,
-                                              ),
-                                            ],
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Icon(
-                                                _bgMusicFile != null
-                                                    ? Icons.audiotrack_rounded
-                                                    : Icons.library_music_rounded,
-                                                color: _bgMusicFile != null ? Colors.white : AppColors.accent,
-                                                size: 14,
-                                              ),
-                                              const SizedBox(width: 5),
-                                              ConstrainedBox(
-                                                constraints: const BoxConstraints(maxWidth: 110),
-                                                child: Text(
-                                                  _bgMusicFile != null
-                                                      ? (_bgMusicName ?? 'Müzik')
-                                                      : '🎵 + Müzik Ekle',
-                                                  overflow: TextOverflow.ellipsis,
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 11.5,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                      if (_clips.length > 1) ...[
-                                        const SizedBox(width: 6),
-                                        GestureDetector(
-                                          onTap: () {
-                                            _seekMergedPosition(Duration.zero);
-                                            if (!_isPlaying) _togglePlayPause();
-                                          },
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFF1F2C34).withValues(alpha: 0.9),
-                                              borderRadius: BorderRadius.circular(16),
-                                              border: Border.all(color: Colors.white24),
-                                            ),
-                                            child: const Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(Icons.replay_rounded, color: AppColors.accent, size: 14),
-                                                SizedBox(width: 4),
-                                                Text(
-                                                  'Baştan',
-                                                  style: TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 11,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-                              ],
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    child: Center(
+                      child: isInitialized
+                          ? _buildVideoCanvas(currentMerged, totalMerged)
+                          : const Center(
+                              child: CircularProgressIndicator(
+                                color: AppColors.accent,
+                                strokeWidth: 3,
+                              ),
                             ),
-                          )
-                        : const CircularProgressIndicator(color: AppColors.accent),
+                    ),
                   ),
                 ),
 
-                // UNIFIED MERGED TIMELINE SCRUBBER (Scrub entire merged sequence)
+                // 3. Merged Timeline Scrubber
                 if (totalMerged.inMilliseconds > 0)
-                  Container(
-                    color: const Color(0xFF0F171B),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                    child: Row(
-                      children: [
-                        Text(
-                          _formatDuration(currentMerged),
-                          style: const TextStyle(color: Colors.white70, fontSize: 11.5),
-                        ),
-                        Expanded(
-                          child: SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              activeTrackColor: AppColors.accent,
-                              inactiveTrackColor: Colors.white24,
-                              thumbColor: AppColors.accent,
-                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                              trackHeight: 3,
-                            ),
-                            child: Slider(
-                              min: 0.0,
-                              max: totalMerged.inMilliseconds.toDouble(),
-                              value: currentMerged.inMilliseconds
-                                  .toDouble()
-                                  .clamp(0.0, totalMerged.inMilliseconds.toDouble()),
-                              onChanged: (val) {
-                                _seekMergedPosition(Duration(milliseconds: val.toInt()));
-                              },
-                            ),
-                          ),
-                        ),
-                        Text(
-                          _formatDuration(totalMerged),
-                          style: const TextStyle(color: Colors.white70, fontSize: 11.5),
-                        ),
-                      ],
-                    ),
-                  ),
+                  _buildMergedTimelineScrubber(currentMerged, totalMerged),
 
-                // DIRECT ON-SCREEN AUDIO & MUSIC TOOLBAR (PROMINENT & ALWAYS VISIBLE)
+                // 4. Studio Segmented Mode Switcher (Klip Kırp / Şarkı Kırp / Mikser)
+                _buildStudioTabBar(),
+
+                // 5. Active Tool Panel (Switches smoothly between tabs)
                 Container(
-                  color: const Color(0xFF141D22),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Header & Quick Presets
-                      Row(
-                        children: [
-                          const Icon(Icons.tune_rounded, color: AppColors.accent, size: 16),
-                          const SizedBox(width: 6),
-                          const Text(
-                            'Ses & Mikser',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12.5,
-                            ),
-                          ),
-                          const Spacer(),
-                          _buildQuickChip('Dengeli %50', () {
-                            _setVideoVolume(0.5);
-                            _setBgMusicVolume(0.5);
-                          }),
-                          const SizedBox(width: 4),
-                          _buildQuickChip('Müzik %85', () {
-                            _setVideoVolume(0.15);
-                            _setBgMusicVolume(0.85);
-                          }),
-                          const SizedBox(width: 4),
-                          _buildQuickChip('Sessiz', () {
-                            _setVideoVolume(0.0);
-                            _setBgMusicVolume(1.0);
-                          }),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-
-                      // Row 1: Ana Video Sesi Slider
-                      Row(
-                        children: [
-                          GestureDetector(
-                            onTap: _toggleMute,
-                            child: Icon(
-                              _isMuted || _videoVolume == 0.0
-                                  ? Icons.volume_off_rounded
-                                  : Icons.videocam_rounded,
-                              color: _isMuted || _videoVolume == 0.0
-                                  ? AppColors.callRed
-                                  : AppColors.accent,
-                              size: 19,
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          const Text(
-                            'Video Sesi:',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Expanded(
-                            child: SliderTheme(
-                              data: SliderTheme.of(context).copyWith(
-                                activeTrackColor: AppColors.accent,
-                                inactiveTrackColor: Colors.white24,
-                                thumbColor: AppColors.accent,
-                                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                                trackHeight: 3,
-                              ),
-                              child: Slider(
-                                min: 0.0,
-                                max: 1.0,
-                                value: _isMuted ? 0.0 : _videoVolume,
-                                onChanged: (val) {
-                                  _setVideoVolume(val);
-                                },
-                              ),
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: (_isMuted || _videoVolume == 0.0)
-                                  ? AppColors.callRed.withValues(alpha: 0.2)
-                                  : AppColors.accent.withValues(alpha: 0.2),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              _isMuted || _videoVolume == 0.0
-                                  ? 'Sessiz'
-                                  : '%${((_isMuted ? 0.0 : _videoVolume) * 100).round()}',
-                              style: TextStyle(
-                                color: (_isMuted || _videoVolume == 0.0)
-                                    ? AppColors.callRed
-                                    : AppColors.accent,
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      // Row 2: Arka Plan Müziği
-                      if (_bgMusicFile == null)
-                        GestureDetector(
-                          onTap: _pickMusic,
-                          child: Container(
-                            margin: const EdgeInsets.only(top: 4),
-                            padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 12),
-                            decoration: BoxDecoration(
-                              color: AppColors.accent.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: AppColors.accent.withValues(alpha: 0.6),
-                                width: 1.2,
-                              ),
-                            ),
-                            child: const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.add_circle_outline_rounded,
-                                    color: AppColors.accent, size: 16),
-                                SizedBox(width: 6),
-                                Text(
-                                  '➕ Arka Plan Müziği / Ses Parçası Ekle (MP3, M4A)',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        )
-                      else
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Row(
-                                children: [
-                                  const Icon(Icons.music_note_rounded,
-                                      color: AppColors.accent, size: 18),
-                                  const SizedBox(width: 6),
-                                  ConstrainedBox(
-                                    constraints: const BoxConstraints(maxWidth: 80),
-                                    child: Text(
-                                      _bgMusicName ?? 'Müzik',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                  Expanded(
-                                    child: SliderTheme(
-                                      data: SliderTheme.of(context).copyWith(
-                                        activeTrackColor: AppColors.accent,
-                                        inactiveTrackColor: Colors.white24,
-                                        thumbColor: AppColors.accent,
-                                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                                        trackHeight: 3,
-                                      ),
-                                      child: Slider(
-                                        min: 0.0,
-                                        max: 1.0,
-                                        value: _bgMusicVolume,
-                                        onChanged: (val) {
-                                          _setBgMusicVolume(val);
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    '%${(_bgMusicVolume * 100).round()}',
-                                    style: const TextStyle(
-                                      color: AppColors.accent,
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  GestureDetector(
-                                    onTap: _pickMusic,
-                                    child: const Padding(
-                                      padding: EdgeInsets.symmetric(horizontal: 4),
-                                      child: Icon(Icons.swap_horiz_rounded,
-                                          color: AppColors.accent, size: 18),
-                                    ),
-                                  ),
-                                  GestureDetector(
-                                    onTap: _removeMusic,
-                                    child: const Padding(
-                                      padding: EdgeInsets.symmetric(horizontal: 4),
-                                      child: Icon(Icons.close_rounded,
-                                          color: AppColors.callRed, size: 18),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.only(top: 3),
-                                child: Row(
-                                  children: [
-                                    const Icon(Icons.content_cut_rounded,
-                                        color: AppColors.accent, size: 14),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      'Kes: ${_formatDuration(_bgMusicStartTrim)} - ${_formatDuration(_bgMusicStartTrim + _totalMergedDuration)}',
-                                      style: const TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 10.5,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Builder(
-                                        builder: (context) {
-                                          final maxTrim = _calcMaxMusicStartTrim();
-                                          final currentMs = _bgMusicStartTrim.inMilliseconds
-                                              .toDouble()
-                                              .clamp(0.0, maxTrim > 0 ? maxTrim : 1.0);
-                                          return SliderTheme(
-                                            data: SliderTheme.of(context).copyWith(
-                                              activeTrackColor: AppColors.accent,
-                                              inactiveTrackColor: Colors.white24,
-                                              thumbColor: AppColors.accent,
-                                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
-                                              trackHeight: 2.5,
-                                            ),
-                                            child: Slider(
-                                              min: 0.0,
-                                              max: maxTrim > 0 ? maxTrim : 1.0,
-                                              value: currentMs,
-                                              onChanged: maxTrim > 0
-                                                  ? (val) {
-                                                      _setMusicStartTrim(Duration(milliseconds: val.toInt()), immediate: false);
-                                                    }
-                                                  : null,
-                                              onChangeEnd: maxTrim > 0
-                                                  ? (val) {
-                                                      _setMusicStartTrim(Duration(milliseconds: val.toInt()), immediate: true);
-                                                    }
-                                                  : null,
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                    if (_bgMusicTotalDuration > Duration.zero)
-                                      Text(
-                                        _formatDuration(_bgMusicTotalDuration),
-                                        style: const TextStyle(
-                                          color: Colors.white38,
-                                          fontSize: 10,
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
+                  color: const Color(0xFF131D24),
+                  constraints: const BoxConstraints(minHeight: 110),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    child: _buildActiveTabContent(selectedClip),
                   ),
                 ),
 
-                // Trimming Timeline Slider for selected clip
-                if (selectedClip != null && selectedClip.totalDuration.inMilliseconds > 0)
-                  Container(
-                    color: const Color(0xFF141D22),
-                    padding: const EdgeInsets.fromLTRB(14, 8, 14, 6),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // Selected clip trim info
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Row(
-                              children: [
-                                const Icon(Icons.content_cut_rounded, color: AppColors.accent, size: 15),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'Klip ${_selectedClipIndex + 1} Kesme Aralığı:',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            Text(
-                              '${_formatDuration(selectedClip.startTrim)} - ${_formatDuration(selectedClip.endTrim)} (${_formatDuration(selectedClip.trimmedDuration)})',
-                              style: const TextStyle(
-                                color: AppColors.accent,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12.5,
-                              ),
-                            ),
-                          ],
-                        ),
-                        // Range Slider for In-Out Points
-                        SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            activeTrackColor: AppColors.accent,
-                            inactiveTrackColor: Colors.white24,
-                            thumbColor: Colors.white,
-                            rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 8),
-                            trackHeight: 4,
-                            overlayColor: AppColors.accent.withValues(alpha: 0.2),
-                          ),
-                          child: Builder(
-                            builder: (context) {
-                              final maxDur = selectedClip.totalDuration.inMilliseconds.toDouble();
-                              final startVal = selectedClip.startTrim.inMilliseconds
-                                  .toDouble()
-                                  .clamp(0.0, maxDur > 0 ? maxDur : 1.0);
-                              final endVal = selectedClip.endTrim.inMilliseconds
-                                  .toDouble()
-                                  .clamp(startVal, maxDur > 0 ? maxDur : 1.0);
+                // 6. Multi-Video Clips Carousel
+                _buildClipsCarousel(),
 
-                              return RangeSlider(
-                                min: 0.0,
-                                max: maxDur > 0 ? maxDur : 1.0,
-                                values: RangeValues(startVal, endVal),
-                                onChanged: (RangeValues values) {
-                                  setState(() {
-                                    selectedClip.startTrim = Duration(milliseconds: values.start.toInt());
-                                    selectedClip.endTrim = Duration(milliseconds: values.end.toInt());
-                                  });
-                                  if (_playingClipIndex == _selectedClipIndex) {
-                                    _debouncedVideoSeek(_selectedClipIndex, selectedClip.startTrim);
-                                  }
-                                },
-                                onChangeEnd: (RangeValues values) {
-                                  if (_playingClipIndex == _selectedClipIndex) {
-                                    _videoSeekDebounceTimer?.cancel();
-                                    _controllers[_selectedClipIndex]?.seekTo(selectedClip.startTrim);
-                                    _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
-                                  }
-                                },
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                // 7. Bottom Bar (Caption Input + Send FAB)
+                _buildBottomBar(),
+              ],
+            ),
 
-                // Multi-Video Clips Carousel
-                Container(
-                  color: const Color(0xFF182229),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.layers_rounded, color: AppColors.accent, size: 16),
-                              const SizedBox(width: 6),
-                              Text(
-                                'Birleştirilen Klipler (${_clips.length})',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ],
-                          ),
-                          Text(
-                            _clips.length > 1
-                                ? '▶ Arka arkaya kesintisiz oynatılır'
-                                : 'Tek Video',
-                            style: const TextStyle(
-                                color: AppColors.accent, fontSize: 11.5, fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        height: 64,
-                        child: ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          itemCount: _clips.length + 1,
-                          separatorBuilder: (_, __) => const SizedBox(width: 8),
-                          itemBuilder: (context, idx) {
-                            // Add Clip Button
-                            if (idx == _clips.length) {
-                              return GestureDetector(
-                                onTap: _pickAndAddVideo,
-                                child: Container(
-                                  width: 88,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF1F2C34),
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(
-                                        color: AppColors.accent.withValues(alpha: 0.6), width: 1.5),
-                                  ),
-                                  child: const Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(Icons.add_circle_outline_rounded,
-                                          color: AppColors.accent, size: 22),
-                                      SizedBox(height: 4),
-                                      Text(
-                                        '+ Video Ekle',
-                                        style: TextStyle(
-                                            color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            }
+            // Fullscreen Processing Overlay
+            if (_isProcessing) _buildProcessingOverlay(),
+          ],
+        ),
+      ),
+    );
+  }
 
-                            final clip = _clips[idx];
-                            final isCurrentPlaying = (idx == _playingClipIndex);
-                            final isCurrentSelected = (idx == _selectedClipIndex);
-
-                            return GestureDetector(
-                              onTap: () => _selectClipForTrimming(idx),
-                              child: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  Container(
-                                    width: 88,
-                                    padding: const EdgeInsets.all(6),
-                                    decoration: BoxDecoration(
-                                      color: isCurrentSelected
-                                          ? const Color(0xFF263843)
-                                          : const Color(0xFF1F2C34),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: isCurrentPlaying
-                                            ? AppColors.accent
-                                            : (isCurrentSelected ? Colors.white60 : Colors.white12),
-                                        width: isCurrentPlaying ? 2 : 1,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Row(
-                                          mainAxisAlignment: MainAxisAlignment.center,
-                                          children: [
-                                            if (isCurrentPlaying && _isPlaying)
-                                              const Icon(Icons.play_arrow_rounded,
-                                                  color: AppColors.accent, size: 14),
-                                            Text(
-                                              'Klip ${idx + 1}',
-                                              style: TextStyle(
-                                                color: isCurrentPlaying ? AppColors.accent : Colors.white,
-                                                fontWeight: isCurrentPlaying || isCurrentSelected
-                                                    ? FontWeight.bold
-                                                    : FontWeight.normal,
-                                                fontSize: 11.5,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 3),
-                                        Text(
-                                          _formatDuration(clip.trimmedDuration),
-                                          style: TextStyle(
-                                            color: isCurrentPlaying ? AppColors.accent : Colors.white70,
-                                            fontSize: 10.5,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  // Delete clip (X) button if multiple clips
-                                  if (_clips.length > 1)
-                                    Positioned(
-                                      top: -6,
-                                      right: -6,
-                                      child: GestureDetector(
-                                        onTap: () => _removeClip(idx),
-                                        child: Container(
-                                          padding: const EdgeInsets.all(3),
-                                          decoration: const BoxDecoration(
-                                            color: AppColors.callRed,
-                                            shape: BoxShape.circle,
-                                          ),
-                                          child: const Icon(Icons.close, color: Colors.white, size: 12),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
+  // --- UI COMPONENT: HEADER BAR ---
+  Widget _buildHeaderBar(Duration currentMerged, Duration totalMerged) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0E161B),
+        border: Border(bottom: BorderSide(color: Colors.white10)),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.close_rounded, color: Colors.white, size: 24),
+            onPressed: () => Navigator.pop(context),
+            tooltip: 'Kapat',
+          ),
+          const SizedBox(width: 4),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Stüdyo Video Düzenleyici',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.3,
                 ),
-
-                // Bottom Bar (Caption + Send)
-                Container(
-                  padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-                  color: Colors.black.withValues(alpha: 0.85),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF1F2C34),
-                            borderRadius: BorderRadius.circular(24),
-                            border: Border.all(color: Colors.white12),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.edit_note_rounded, color: AppColors.accent, size: 20),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: TextField(
-                                  controller: _captionController,
-                                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                                  decoration: const InputDecoration(
-                                    hintText: 'Bir başlık ekleyin...',
-                                    hintStyle: TextStyle(color: Colors.white54, fontSize: 14),
-                                    border: InputBorder.none,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      // Send FAB
-                      GestureDetector(
-                        onTap: _isProcessing ? null : _processAndExport,
-                        child: Container(
-                          width: 48,
-                          height: 48,
-                          decoration: const BoxDecoration(
-                            gradient: AppColors.primaryGradient,
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppColors.accent,
-                                blurRadius: 8,
-                                offset: Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Center(
-                            child: _isProcessing
-                                ? const SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                  )
-                                : const Icon(Icons.send_rounded, color: Colors.white, size: 22),
-                          ),
-                        ),
-                      ),
-                    ],
+              ),
+              Text(
+                '${_clips.length} Klip • ${_formatDuration(totalMerged)}',
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          const Spacer(),
+          // Mute Toggle Icon Button
+          IconButton(
+            icon: Icon(
+              _isMuted || _videoVolume == 0.0
+                  ? Icons.volume_off_rounded
+                  : Icons.volume_up_rounded,
+              color: (_isMuted || _videoVolume == 0.0) ? AppColors.callRed : Colors.white70,
+              size: 22,
+            ),
+            tooltip: _isMuted ? 'Sesi Aç' : 'Sesi Kapat',
+            onPressed: _toggleMute,
+          ),
+          // Total Duration Pill
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1B2730),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.timer_outlined, color: AppColors.accent, size: 14),
+                const SizedBox(width: 4),
+                Text(
+                  '${_formatDuration(currentMerged)} / ${_formatDuration(totalMerged)}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11.5,
                   ),
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
 
-            // Fullscreen Processing / Merging Overlay
-            if (_isProcessing)
-              Container(
-                color: Colors.black87,
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-                    margin: const EdgeInsets.symmetric(horizontal: 32),
+  // --- UI COMPONENT: VIDEO CANVAS VIEWPORT ---
+  Widget _buildVideoCanvas(Duration currentMerged, Duration totalMerged) {
+    final activeController = _controllers[_playingClipIndex];
+    if (activeController == null || !activeController.value.isInitialized) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white12, width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.8),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: GestureDetector(
+        onTap: _togglePlayPause,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            AspectRatio(
+              aspectRatio: activeController.value.aspectRatio,
+              child: VideoPlayer(activeController),
+            ),
+
+            // Play / Pause Glass Overlay
+            AnimatedOpacity(
+              opacity: _isPlaying ? 0.0 : 0.9,
+              duration: const Duration(milliseconds: 200),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.6),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white30, width: 2),
+                ),
+                child: const Icon(
+                  Icons.play_arrow_rounded,
+                  color: Colors.white,
+                  size: 44,
+                ),
+              ),
+            ),
+
+            // Floating Top Overlay (Clip Tag & Music Pill)
+            Positioned(
+              top: 10,
+              left: 10,
+              right: 10,
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1F2C34),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.6),
-                          blurRadius: 16,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
+                      color: Colors.black.withValues(alpha: 0.75),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
                     ),
-                    child: Column(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const SizedBox(
-                          width: 44,
-                          height: 44,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 3,
-                            color: AppColors.accent,
-                          ),
-                        ),
-                        const SizedBox(height: 18),
+                        const Icon(Icons.auto_awesome_motion_rounded,
+                            color: AppColors.accent, size: 13),
+                        const SizedBox(width: 5),
                         Text(
-                          _processingStatus,
+                          _clips.length > 1
+                              ? 'Klip ${_playingClipIndex + 1}/${_clips.length}'
+                              : 'Önizleme',
                           style: const TextStyle(
-                              color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 12),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: LinearProgressIndicator(
-                            value: _processingProgress.clamp(0.0, 1.0),
-                            backgroundColor: Colors.white12,
-                            valueColor: const AlwaysStoppedAnimation<Color>(AppColors.accent),
-                            minHeight: 6,
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          '%${(_processingProgress * 100).round()}',
-                          style: const TextStyle(
-                              color: AppColors.accent, fontSize: 13, fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
                   ),
+                  const Spacer(),
+                  // Floating Music Badge (Tap opens song trim tab)
+                  GestureDetector(
+                    onTap: () {
+                      if (_bgMusicFile == null) {
+                        _pickMusic();
+                      } else {
+                        setState(() => _activeEditorTab = 1);
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: _bgMusicFile != null
+                            ? AppColors.accent.withValues(alpha: 0.92)
+                            : Colors.black.withValues(alpha: 0.75),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: AppColors.accent,
+                          width: 1.2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.accent.withValues(alpha: 0.35),
+                            blurRadius: 6,
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _bgMusicFile != null
+                                ? Icons.audiotrack_rounded
+                                : Icons.library_music_rounded,
+                            color: _bgMusicFile != null ? Colors.white : AppColors.accent,
+                            size: 13,
+                          ),
+                          const SizedBox(width: 5),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 110),
+                            child: Text(
+                              _bgMusicFile != null
+                                  ? (_bgMusicName ?? 'Müzik')
+                                  : '🎵 + Müzik Ekle',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Floating Bottom Overlay (Quick Replay Button)
+            Positioned(
+              bottom: 10,
+              right: 10,
+              child: GestureDetector(
+                onTap: () {
+                  _seekMergedPosition(Duration.zero);
+                  if (!_isPlaying) _togglePlayPause();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.75),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.replay_rounded, color: AppColors.accent, size: 14),
+                      SizedBox(width: 4),
+                      Text(
+                        'Baştan',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
+            ),
           ],
+        ),
+      ),
+    );
+  }
+
+  // --- UI COMPONENT: MERGED TIMELINE SCRUBBER ---
+  Widget _buildMergedTimelineScrubber(Duration currentMerged, Duration totalMerged) {
+    return Container(
+      color: const Color(0xFF0F171B),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+      child: Row(
+        children: [
+          Text(
+            _formatDuration(currentMerged),
+            style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                activeTrackColor: AppColors.accent,
+                inactiveTrackColor: Colors.white12,
+                thumbColor: AppColors.accent,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                trackHeight: 3,
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+              ),
+              child: Slider(
+                min: 0.0,
+                max: totalMerged.inMilliseconds.toDouble(),
+                value: currentMerged.inMilliseconds
+                    .toDouble()
+                    .clamp(0.0, totalMerged.inMilliseconds.toDouble()),
+                onChanged: (val) {
+                  _seekMergedPosition(Duration(milliseconds: val.toInt()));
+                },
+              ),
+            ),
+          ),
+          Text(
+            _formatDuration(totalMerged),
+            style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- UI COMPONENT: STUDIO SEGMENTED MODE SWITCHER ---
+  Widget _buildStudioTabBar() {
+    return Container(
+      color: const Color(0xFF101920),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildStudioTabItem(
+              tabIndex: 0,
+              icon: Icons.content_cut_rounded,
+              label: 'Klip Kırp',
+              badgeText: null,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _buildStudioTabItem(
+              tabIndex: 1,
+              icon: Icons.music_note_rounded,
+              label: 'Şarkı Kırp',
+              badgeText: _bgMusicFile != null ? 'Aktif' : null,
+              hasHighlight: _bgMusicFile != null,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _buildStudioTabItem(
+              tabIndex: 2,
+              icon: Icons.tune_rounded,
+              label: 'Ses Mikseri',
+              badgeText: null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStudioTabItem({
+    required int tabIndex,
+    required IconData icon,
+    required String label,
+    String? badgeText,
+    bool hasHighlight = false,
+  }) {
+    final isSelected = _activeEditorTab == tabIndex;
+    return GestureDetector(
+      onTap: () {
+        setState(() => _activeEditorTab = tabIndex);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppColors.accent.withValues(alpha: 0.2)
+              : const Color(0xFF18232B),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected
+                ? AppColors.accent
+                : (hasHighlight ? AppColors.accent.withValues(alpha: 0.4) : Colors.white12),
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              size: 15,
+              color: isSelected ? AppColors.accent : (hasHighlight ? AppColors.accent : Colors.white70),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? Colors.white : Colors.white70,
+                fontSize: 12,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+              ),
+            ),
+            if (badgeText != null) ...[
+              const SizedBox(width: 5),
+              Container(
+                width: 6,
+                height: 6,
+                decoration: const BoxDecoration(
+                  color: AppColors.accent,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- ACTIVE TAB CONTENT DISPATCHER ---
+  Widget _buildActiveTabContent(VideoClipItem? selectedClip) {
+    switch (_activeEditorTab) {
+      case 0:
+        return _buildVideoTrimmingPanel(selectedClip);
+      case 1:
+        return _buildMusicTrimmingPanel();
+      case 2:
+        return _buildAudioMixerPanel();
+      default:
+        return _buildVideoTrimmingPanel(selectedClip);
+    }
+  }
+
+  // --- TAB 0: VIDEO TRIMMING PANEL (DUAL RANGE SLIDER) ---
+  Widget _buildVideoTrimmingPanel(VideoClipItem? selectedClip) {
+    if (selectedClip == null || selectedClip.totalDuration <= Duration.zero) {
+      return const SizedBox(
+        height: 110,
+        child: Center(
+          child: Text('Kırpılacak klip bulunamadı.', style: TextStyle(color: Colors.white54)),
+        ),
+      );
+    }
+
+    final maxDur = selectedClip.totalDuration.inMilliseconds.toDouble();
+    final startVal = selectedClip.startTrim.inMilliseconds
+        .toDouble()
+        .clamp(0.0, maxDur > 0 ? maxDur : 1.0);
+    final endVal = selectedClip.endTrim.inMilliseconds
+        .toDouble()
+        .clamp(startVal, maxDur > 0 ? maxDur : 1.0);
+
+    return Container(
+      key: const ValueKey('tab_video_trim'),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.content_cut_rounded, color: AppColors.accent, size: 15),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Klip ${_selectedClipIndex + 1} Kesme Aralığı:',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
+                    ),
+                    child: Text(
+                      '${_formatDuration(selectedClip.startTrim)} - ${_formatDuration(selectedClip.endTrim)} (${_formatDuration(selectedClip.trimmedDuration)})',
+                      style: const TextStyle(
+                        color: AppColors.accent,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        selectedClip.startTrim = Duration.zero;
+                        selectedClip.endTrim = selectedClip.totalDuration;
+                      });
+                      _debouncedVideoSeek(_selectedClipIndex, Duration.zero);
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white12,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Text(
+                        'Sıfırla',
+                        style: TextStyle(color: Colors.white70, fontSize: 10.5, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // RangeSlider with filmstrip track design
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: AppColors.accent,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.white,
+              rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 8),
+              trackHeight: 5,
+              overlayColor: AppColors.accent.withValues(alpha: 0.25),
+            ),
+            child: RangeSlider(
+              min: 0.0,
+              max: maxDur > 0 ? maxDur : 1.0,
+              values: RangeValues(startVal, endVal),
+              onChanged: (RangeValues values) {
+                setState(() {
+                  selectedClip.startTrim = Duration(milliseconds: values.start.toInt());
+                  selectedClip.endTrim = Duration(milliseconds: values.end.toInt());
+                });
+                if (_playingClipIndex == _selectedClipIndex) {
+                  _debouncedVideoSeek(_selectedClipIndex, selectedClip.startTrim);
+                }
+              },
+              onChangeEnd: (RangeValues values) {
+                if (_playingClipIndex == _selectedClipIndex) {
+                  _videoSeekDebounceTimer?.cancel();
+                  _controllers[_selectedClipIndex]?.seekTo(selectedClip.startTrim);
+                  final musicWindow = _bgMusicTrimmedDuration;
+                  if (musicWindow > Duration.zero) {
+                    _bgMusicPlayer?.seek(
+                      _bgMusicStartTrim + Duration(
+                        milliseconds: _currentMergedPosition.inMilliseconds % musicWindow.inMilliseconds,
+                      ),
+                    );
+                  }
+                }
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- TAB 1: MUSIC TRIMMING PANEL (DUAL HANDLE RANGE SLIDER + WAVEFORM) ---
+  Widget _buildMusicTrimmingPanel() {
+    if (_bgMusicFile == null) {
+      return Container(
+        key: const ValueKey('tab_music_empty'),
+        padding: const EdgeInsets.all(14),
+        child: GestureDetector(
+          onTap: _pickMusic,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+            decoration: BoxDecoration(
+              color: AppColors.accent.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: AppColors.accent.withValues(alpha: 0.6),
+                width: 1.2,
+              ),
+            ),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.library_music_rounded, color: AppColors.accent, size: 22),
+                SizedBox(width: 10),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '➕ Arka Plan Şarkısı / Ses Parçası Ekle',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'MP3 veya ses seçip baştan ve sondan dilediğiniz gibi kırpın.',
+                      style: TextStyle(color: Colors.white54, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final maxMusicDur = _bgMusicTotalDuration.inMilliseconds.toDouble();
+    final effectiveMax = maxMusicDur > 0 ? maxMusicDur : 30000.0;
+    final startMs = _bgMusicStartTrim.inMilliseconds.toDouble().clamp(0.0, effectiveMax);
+    final endMs = (_bgMusicEndTrim > Duration.zero ? _bgMusicEndTrim.inMilliseconds.toDouble() : effectiveMax)
+        .clamp(startMs, effectiveMax);
+
+    return Container(
+      key: const ValueKey('tab_music_trim_active'),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Header: Song name, duration, Change & Remove buttons
+          Row(
+            children: [
+              const Icon(Icons.audiotrack_rounded, color: AppColors.accent, size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  _bgMusicName ?? 'Müzik Parçası',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12.5,
+                  ),
+                ),
+              ),
+              // Videoyla Eşitle Button
+              GestureDetector(
+                onTap: _alignMusicWithVideo,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.accent.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.auto_fix_high_rounded, color: AppColors.accent, size: 12),
+                      SizedBox(width: 4),
+                      Text(
+                        'Videoyla Eşitle',
+                        style: TextStyle(
+                          color: AppColors.accent,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              // Change song
+              GestureDetector(
+                onTap: _pickMusic,
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.swap_horiz_rounded, color: Colors.white70, size: 19),
+                ),
+              ),
+              // Delete song
+              GestureDetector(
+                onTap: _removeMusic,
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.delete_outline_rounded, color: AppColors.callRed, size: 19),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+
+          // Simulated Audio Waveform Bar Visualizer
+          _buildSimulatedWaveform(
+            total: _bgMusicTotalDuration > Duration.zero ? _bgMusicTotalDuration : const Duration(seconds: 30),
+            start: _bgMusicStartTrim,
+            end: _bgMusicEndTrim > _bgMusicStartTrim ? _bgMusicEndTrim : _bgMusicTotalDuration,
+          ),
+
+          // DUAL HANDLE RANGE SLIDER (TRIM FROM BOTH START & END)
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: AppColors.accent,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.white,
+              rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 8),
+              trackHeight: 4,
+              overlayColor: AppColors.accent.withValues(alpha: 0.2),
+            ),
+            child: RangeSlider(
+              min: 0.0,
+              max: effectiveMax,
+              values: RangeValues(startMs, endMs),
+              onChanged: (RangeValues values) {
+                _setMusicTrimRange(
+                  Duration(milliseconds: values.start.toInt()),
+                  Duration(milliseconds: values.end.toInt()),
+                  immediate: false,
+                );
+              },
+              onChangeEnd: (RangeValues values) {
+                _setMusicTrimRange(
+                  Duration(milliseconds: values.start.toInt()),
+                  Duration(milliseconds: values.end.toInt()),
+                  immediate: true,
+                );
+              },
+            ),
+          ),
+
+          // Range Duration Info Bar
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Başlangıç: ${_formatDuration(_bgMusicStartTrim)}',
+                style: const TextStyle(color: Colors.white70, fontSize: 10.5, fontWeight: FontWeight.bold),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.accent.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  'Kırpılan: ${_formatDuration(_bgMusicTrimmedDuration)}',
+                  style: const TextStyle(color: AppColors.accent, fontSize: 10.5, fontWeight: FontWeight.bold),
+                ),
+              ),
+              Text(
+                'Bitiş: ${_formatDuration(_bgMusicEndTrim > Duration.zero ? _bgMusicEndTrim : _bgMusicTotalDuration)}',
+                style: const TextStyle(color: Colors.white70, fontSize: 10.5, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Waveform Bar Graphic Visualizer
+  Widget _buildSimulatedWaveform({
+    required Duration total,
+    required Duration start,
+    required Duration end,
+  }) {
+    const int barCount = 38;
+    const List<double> wavePattern = [
+      0.3, 0.5, 0.8, 0.4, 0.9, 0.6, 0.7, 1.0, 0.85, 0.45, 0.75, 0.95,
+      0.65, 0.5, 0.8, 0.9, 0.35, 0.6, 0.75, 1.0, 0.8, 0.55, 0.7, 0.9,
+      0.4, 0.65, 0.85, 0.7, 0.5, 0.95, 0.8, 0.6, 0.45, 0.75, 0.9, 0.6, 0.4, 0.7
+    ];
+
+    final totalMs = total.inMilliseconds > 0 ? total.inMilliseconds : 1;
+    final startRatio = (start.inMilliseconds / totalMs).clamp(0.0, 1.0);
+    final endRatio = (end.inMilliseconds / totalMs).clamp(startRatio, 1.0);
+
+    return Container(
+      height: 24,
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: List.generate(barCount, (idx) {
+          final barRatio = idx / (barCount - 1);
+          final inRange = barRatio >= startRatio && barRatio <= endRatio;
+          final heightFactor = wavePattern[idx % wavePattern.length];
+          return Container(
+            width: 3,
+            height: (heightFactor * 22).clamp(4.0, 22.0),
+            decoration: BoxDecoration(
+              color: inRange ? AppColors.accent : Colors.white24,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  // --- TAB 2: AUDIO MIXER PANEL (PRESETS & DUAL FADERS) ---
+  Widget _buildAudioMixerPanel() {
+    return Container(
+      key: const ValueKey('tab_mixer'),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Quick Presets Row
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _buildPresetChip(
+                  label: 'Orijinal Video',
+                  icon: Icons.videocam_rounded,
+                  isActive: !_isMuted && _videoVolume == 1.0 && (_bgMusicFile == null || _bgMusicVolume == 0.0),
+                  onTap: () {
+                    _setVideoVolume(1.0);
+                    _setBgMusicVolume(0.0);
+                  },
+                ),
+                const SizedBox(width: 8),
+                _buildPresetChip(
+                  label: 'Dengeli (%50 / %50)',
+                  icon: Icons.balance_rounded,
+                  isActive: !_isMuted && _videoVolume == 0.5 && _bgMusicVolume == 0.5,
+                  onTap: () {
+                    _setVideoVolume(0.5);
+                    _setBgMusicVolume(0.5);
+                  },
+                ),
+                const SizedBox(width: 8),
+                _buildPresetChip(
+                  label: 'Müzik %85',
+                  icon: Icons.music_note_rounded,
+                  isActive: _videoVolume <= 0.2 && _bgMusicVolume >= 0.8,
+                  onTap: () {
+                    _setVideoVolume(0.15);
+                    _setBgMusicVolume(0.85);
+                  },
+                ),
+                const SizedBox(width: 8),
+                _buildPresetChip(
+                  label: 'Sessiz Video',
+                  icon: Icons.volume_off_rounded,
+                  isActive: _isMuted || _videoVolume == 0.0,
+                  onTap: () {
+                    _setVideoVolume(0.0);
+                    _setBgMusicVolume(1.0);
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+
+          // Fader 1: Original Video Volume
+          Row(
+            children: [
+              GestureDetector(
+                onTap: _toggleMute,
+                child: Icon(
+                  _isMuted || _videoVolume == 0.0
+                      ? Icons.volume_off_rounded
+                      : Icons.videocam_rounded,
+                  color: _isMuted || _videoVolume == 0.0
+                      ? AppColors.callRed
+                      : AppColors.accent,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'Video Sesi:',
+                style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+              ),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    activeTrackColor: AppColors.accent,
+                    inactiveTrackColor: Colors.white24,
+                    thumbColor: AppColors.accent,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    trackHeight: 3,
+                  ),
+                  child: Slider(
+                    min: 0.0,
+                    max: 1.0,
+                    value: _isMuted ? 0.0 : _videoVolume,
+                    onChanged: (val) {
+                      _setVideoVolume(val);
+                    },
+                  ),
+                ),
+              ),
+              Text(
+                _isMuted || _videoVolume == 0.0 ? 'Sessiz' : '%${(_videoVolume * 100).round()}',
+                style: TextStyle(
+                  color: _isMuted || _videoVolume == 0.0 ? AppColors.callRed : AppColors.accent,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+
+          // Fader 2: Background Music Volume
+          Row(
+            children: [
+              Icon(
+                Icons.music_note_rounded,
+                color: _bgMusicFile != null ? AppColors.accent : Colors.white30,
+                size: 18,
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'Müzik Sesi:',
+                style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+              ),
+              Expanded(
+                child: _bgMusicFile != null
+                    ? SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          activeTrackColor: AppColors.accent,
+                          inactiveTrackColor: Colors.white24,
+                          thumbColor: AppColors.accent,
+                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                          trackHeight: 3,
+                        ),
+                        child: Slider(
+                          min: 0.0,
+                          max: 1.0,
+                          value: _bgMusicVolume,
+                          onChanged: (val) {
+                            _setBgMusicVolume(val);
+                          },
+                        ),
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: GestureDetector(
+                          onTap: _pickMusic,
+                          child: const Text(
+                            '+ Müzik ekleyin',
+                            style: TextStyle(color: AppColors.accent, fontSize: 11, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+              ),
+              if (_bgMusicFile != null)
+                Text(
+                  '%${(_bgMusicVolume * 100).round()}',
+                  style: const TextStyle(
+                    color: AppColors.accent,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- UI COMPONENT: MULTI-VIDEO CLIPS CAROUSEL ---
+  Widget _buildClipsCarousel() {
+    return Container(
+      color: const Color(0xFF162027),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.layers_rounded, color: AppColors.accent, size: 15),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Birleştirilen Klipler (${_clips.length})',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+              Text(
+                _clips.length > 1 ? '▶ Sıralı Kesintisiz Oynatma' : 'Tek Klip',
+                style: const TextStyle(color: AppColors.accent, fontSize: 10.5, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 56,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _clips.length + 1,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, idx) {
+                // Add Clip Card
+                if (idx == _clips.length) {
+                  return GestureDetector(
+                    onTap: _pickAndAddVideo,
+                    child: Container(
+                      width: 84,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1B2730),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: AppColors.accent.withValues(alpha: 0.6),
+                          width: 1.2,
+                        ),
+                      ),
+                      child: const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.add_circle_outline_rounded,
+                              color: AppColors.accent, size: 18),
+                          SizedBox(height: 2),
+                          Text(
+                            '+ Video Ekle',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                final clip = _clips[idx];
+                final isCurrentPlaying = (idx == _playingClipIndex);
+                final isCurrentSelected = (idx == _selectedClipIndex);
+
+                return GestureDetector(
+                  onTap: () => _selectClipForTrimming(idx),
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        width: 84,
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: isCurrentSelected
+                              ? const Color(0xFF243642)
+                              : const Color(0xFF1B2730),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: isCurrentPlaying
+                                ? AppColors.accent
+                                : (isCurrentSelected ? Colors.white60 : Colors.white12),
+                            width: isCurrentPlaying ? 2 : 1,
+                          ),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                if (isCurrentPlaying && _isPlaying)
+                                  const Icon(Icons.play_arrow_rounded,
+                                      color: AppColors.accent, size: 12),
+                                Text(
+                                  'Klip ${idx + 1}',
+                                  style: TextStyle(
+                                    color: isCurrentPlaying ? AppColors.accent : Colors.white,
+                                    fontWeight: isCurrentPlaying || isCurrentSelected
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              _formatDuration(clip.trimmedDuration),
+                              style: TextStyle(
+                                color: isCurrentPlaying ? AppColors.accent : Colors.white70,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      // Delete Clip Badge (if > 1 clip)
+                      if (_clips.length > 1)
+                        Positioned(
+                          top: -5,
+                          right: -5,
+                          child: GestureDetector(
+                            onTap: () => _removeClip(idx),
+                            child: Container(
+                              padding: const EdgeInsets.all(3),
+                              decoration: const BoxDecoration(
+                                color: AppColors.callRed,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.close, color: Colors.white, size: 11),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- UI COMPONENT: BOTTOM ACTION BAR ---
+  Widget _buildBottomBar() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+      color: const Color(0xFF0C1318),
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1B2730),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.edit_note_rounded, color: AppColors.accent, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _captionController,
+                      style: const TextStyle(color: Colors.white, fontSize: 13.5),
+                      decoration: const InputDecoration(
+                        hintText: 'Bir başlık ekleyin...',
+                        hintStyle: TextStyle(color: Colors.white54, fontSize: 13.5),
+                        border: InputBorder.none,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          // Send Glowing FAB
+          GestureDetector(
+            onTap: _isProcessing ? null : _processAndExport,
+            child: Container(
+              width: 46,
+              height: 46,
+              decoration: const BoxDecoration(
+                gradient: AppColors.primaryGradient,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.accent,
+                    blurRadius: 8,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Center(
+                child: _isProcessing
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- UI COMPONENT: PROCESSING OVERLAY ---
+  Widget _buildProcessingOverlay() {
+    return Container(
+      color: Colors.black87,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          margin: const EdgeInsets.symmetric(horizontal: 32),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1B2730),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.6),
+                blurRadius: 16,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 44,
+                height: 44,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  color: AppColors.accent,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                _processingStatus,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: _processingProgress.clamp(0.0, 1.0),
+                  backgroundColor: Colors.white12,
+                  valueColor: const AlwaysStoppedAnimation<Color>(AppColors.accent),
+                  minHeight: 6,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '%${(_processingProgress * 100).round()}',
+                style: const TextStyle(
+                  color: AppColors.accent,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
