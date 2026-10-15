@@ -29,6 +29,8 @@ class OverlayItem {
   Color backgroundColor;
   Offset position;
   double fontSize;
+  double scale;
+  double rotation;
 
   OverlayItem({
     required this.id,
@@ -38,6 +40,8 @@ class OverlayItem {
     this.backgroundColor = Colors.black54,
     required this.position,
     this.fontSize = 22.0,
+    this.scale = 1.0,
+    this.rotation = 0.0,
   });
 }
 
@@ -47,6 +51,8 @@ class FilterOption {
 
   const FilterOption(this.name, this.matrix);
 }
+
+enum _CropHandle { none, center, topLeft, topRight, bottomLeft, bottomRight }
 
 class PhotoEditorScreen extends StatefulWidget {
   final File imageFile;
@@ -64,6 +70,19 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   final GlobalKey _repaintKey = GlobalKey();
   final TextEditingController _captionController = TextEditingController();
 
+  late File _currentImageFile;
+  ui.Image? _loadedUiImage;
+
+  // Crop mode state
+  bool _isCropMode = false;
+  bool _isCropping = false;
+  Rect _cropRectNorm = const Rect.fromLTWH(0, 0, 1, 1);
+  int _cropRotationQuarter = 0;
+  bool _cropIsFlipped = false;
+  double? _selectedAspectPreset; // null = free, 1.0 = 1:1, 4/3, 16/9, 3/4, 9/16
+  _CropHandle _activeCropHandle = _CropHandle.none;
+
+  // Filters
   final List<FilterOption> _filters = const [
     FilterOption('Orijinal', null),
     FilterOption('Canlı', [
@@ -117,16 +136,37 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   ];
 
   int _selectedFilterIndex = 0;
-  int _rotationQuarter = 0; // 0, 1, 2, 3 (each * 90 degrees)
-  bool _isFlipped = false;
-  double? _targetAspectRatio; // null = free/original, 1.0 = 1:1, 4/3, 16/9
+  bool _showFilterTray = false;
 
+  // Overlays
   final List<OverlayItem> _overlays = [];
   String? _selectedOverlayId;
+  double _activeOverlayBaseScale = 1.0;
+  double _activeOverlayBaseRotation = 0.0;
 
   bool _isExporting = false;
-  bool _showFilterTray = false;
-  bool _showCropTray = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentImageFile = widget.imageFile;
+    _loadUiImage();
+  }
+
+  Future<void> _loadUiImage() async {
+    try {
+      final bytes = await _currentImageFile.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      if (mounted) {
+        setState(() {
+          _loadedUiImage = frame.image;
+        });
+      }
+    } catch (e) {
+      debugPrint('[LOAD UI IMAGE ERR] $e');
+    }
+  }
 
   @override
   void dispose() {
@@ -134,19 +174,169 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     super.dispose();
   }
 
-  // --- ACTIONS ---
+  OverlayItem? get _selectedOverlay {
+    if (_selectedOverlayId == null) return null;
+    try {
+      return _overlays.firstWhere((o) => o.id == _selectedOverlayId);
+    } catch (_) {
+      return null;
+    }
+  }
 
-  void _rotateImage() {
+  // --- CROP & ROTATE LOGIC ---
+
+  void _enterCropMode() {
     setState(() {
-      _rotationQuarter = (_rotationQuarter + 1) % 4;
+      _isCropMode = true;
+      _showFilterTray = false;
+      _selectedOverlayId = null;
+      _cropRectNorm = const Rect.fromLTWH(0, 0, 1, 1);
+      _cropRotationQuarter = 0;
+      _cropIsFlipped = false;
+      _selectedAspectPreset = null;
     });
   }
 
-  void _flipImage() {
+  void _rotateCrop() {
     setState(() {
-      _isFlipped = !_isFlipped;
+      _cropRotationQuarter = (_cropRotationQuarter + 1) % 4;
+      _cropRectNorm = const Rect.fromLTWH(0, 0, 1, 1);
+      _selectedAspectPreset = null;
     });
   }
+
+  void _flipCrop() {
+    setState(() {
+      _cropIsFlipped = !_cropIsFlipped;
+    });
+  }
+
+  void _resetCrop() {
+    setState(() {
+      _cropRectNorm = const Rect.fromLTWH(0, 0, 1, 1);
+      _cropRotationQuarter = 0;
+      _cropIsFlipped = false;
+      _selectedAspectPreset = null;
+    });
+  }
+
+  void _setAspectPreset(double? targetAspect) {
+    setState(() {
+      _selectedAspectPreset = targetAspect;
+      if (targetAspect == null) {
+        _cropRectNorm = const Rect.fromLTWH(0, 0, 1, 1);
+        return;
+      }
+
+      final bool isRotated = (_cropRotationQuarter % 2 != 0);
+      final double origW = _loadedUiImage?.width.toDouble() ?? 1000;
+      final double origH = _loadedUiImage?.height.toDouble() ?? 1000;
+      final double curW = isRotated ? origH : origW;
+      final double curH = isRotated ? origW : origH;
+      final double curAspect = curW / curH;
+
+      double normW, normH;
+      if (curAspect > targetAspect) {
+        normH = 1.0;
+        normW = (targetAspect / curAspect).clamp(0.1, 1.0);
+      } else {
+        normW = 1.0;
+        normH = (curAspect / targetAspect).clamp(0.1, 1.0);
+      }
+
+      final double normLeft = ((1.0 - normW) / 2.0).clamp(0.0, 1.0);
+      final double normTop = ((1.0 - normH) / 2.0).clamp(0.0, 1.0);
+      _cropRectNorm = Rect.fromLTWH(normLeft, normTop, normW, normH);
+    });
+  }
+
+  Future<void> _applyCrop() async {
+    if (_isCropping) return;
+    setState(() => _isCropping = true);
+
+    try {
+      final cropped = await _executeCrop(
+        inputFile: _currentImageFile,
+        cropRectNorm: _cropRectNorm,
+        rotationQuarter: _cropRotationQuarter,
+        isFlipped: _cropIsFlipped,
+      );
+
+      _currentImageFile = cropped;
+      await _loadUiImage();
+
+      if (mounted) {
+        setState(() {
+          _isCropMode = false;
+          _cropRotationQuarter = 0;
+          _cropIsFlipped = false;
+          _cropRectNorm = const Rect.fromLTWH(0, 0, 1, 1);
+          _selectedAspectPreset = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('[CROP EXECUTE ERR] $e');
+    } finally {
+      if (mounted) setState(() => _isCropping = false);
+    }
+  }
+
+  Future<File> _executeCrop({
+    required File inputFile,
+    required Rect cropRectNorm,
+    required int rotationQuarter,
+    required bool isFlipped,
+  }) async {
+    final bytes = await inputFile.readAsBytes();
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final ui.Image srcImage = frame.image;
+
+    final double origW = srcImage.width.toDouble();
+    final double origH = srcImage.height.toDouble();
+
+    // Source rect in image pixel space
+    final double sx = (cropRectNorm.left * origW).clamp(0.0, origW - 1);
+    final double sy = (cropRectNorm.top * origH).clamp(0.0, origH - 1);
+    final double sw = (cropRectNorm.width * origW).clamp(1.0, origW - sx);
+    final double sh = (cropRectNorm.height * origH).clamp(1.0, origH - sy);
+
+    final bool isRotated = (rotationQuarter % 2 != 0);
+    final int outW = (isRotated ? sh : sw).round();
+    final int outH = (isRotated ? sw : sh).round();
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    canvas.save();
+    canvas.translate(outW / 2.0, outH / 2.0);
+    if (rotationQuarter != 0) {
+      canvas.rotate(rotationQuarter * (math.pi / 2));
+    }
+    if (isFlipped) {
+      canvas.scale(-1.0, 1.0);
+    }
+    canvas.translate(-sw / 2.0, -sh / 2.0);
+
+    canvas.drawImageRect(
+      srcImage,
+      Rect.fromLTWH(sx, sy, sw, sh),
+      Rect.fromLTWH(0, 0, sw, sh),
+      Paint()..filterQuality = FilterQuality.high,
+    );
+    canvas.restore();
+
+    final croppedUiImage = await recorder.endRecording().toImage(outW, outH);
+    final byteData = await croppedUiImage.toByteData(format: ui.ImageByteFormat.png);
+    final tempDir = await getTemporaryDirectory();
+    final outPath = p.join(tempDir.path, 'crop_${DateTime.now().millisecondsSinceEpoch}.png');
+    final croppedFile = File(outPath);
+    await croppedFile.writeAsBytes(byteData!.buffer.asUint8List());
+
+    return croppedFile;
+  }
+
+  // --- OVERLAYS (TEXT, EMOJI, LOCATION) ---
 
   void _undoLastOverlay() {
     if (_overlays.isNotEmpty) {
@@ -157,7 +347,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
-  // Add / Edit Text Overlay
   void _openTextDialog({OverlayItem? existing}) {
     final textCtrl = TextEditingController(text: existing?.text ?? '');
     Color selectedColor = existing?.color ?? Colors.white;
@@ -214,15 +403,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 existing.color = selectedColor;
                                 existing.backgroundColor = selectedBg;
                               } else {
-                                _overlays.add(OverlayItem(
+                                final newItem = OverlayItem(
                                   id: DateTime.now().millisecondsSinceEpoch.toString(),
                                   type: OverlayType.text,
                                   text: text,
                                   color: selectedColor,
                                   backgroundColor: selectedBg,
-                                  position: const Offset(50, 100),
+                                  position: const Offset(60, 120),
                                   fontSize: 22.0,
-                                ));
+                                );
+                                _overlays.add(newItem);
+                                _selectedOverlayId = newItem.id;
                               }
                             });
                           }
@@ -256,7 +447,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  // Background toggle
                   Row(
                     children: [
                       const Text('Arka Plan:', style: TextStyle(color: Colors.white70, fontSize: 13)),
@@ -284,7 +474,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     ],
                   ),
                   const SizedBox(height: 14),
-                  // Color choices
                   SizedBox(
                     height: 38,
                     child: ListView.separated(
@@ -322,7 +511,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
   }
 
-  // Add Emoji / Sticker
   void _openEmojiSheet() {
     final emojiCategories = {
       'İfadeler': ['😍', '😂', '🔥', '❤️', '😎', '🥳', '🤩', '👏', '🙌', '💯', '✨', '🥰', '😭', '🤯', '🤫', '👀'],
@@ -372,13 +560,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                           onTap: () {
                             Navigator.pop(ctx);
                             setState(() {
-                              _overlays.add(OverlayItem(
+                              final newItem = OverlayItem(
                                 id: DateTime.now().millisecondsSinceEpoch.toString(),
                                 type: OverlayType.emoji,
                                 text: emoji,
-                                position: const Offset(120, 150),
+                                position: const Offset(120, 160),
                                 fontSize: 48.0,
-                              ));
+                              );
+                              _overlays.add(newItem);
+                              _selectedOverlayId = newItem.id;
                             });
                           },
                           child: Center(
@@ -397,7 +587,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
   }
 
-  // Add Location Badge
   Future<void> _openLocationDialog() async {
     final locCtrl = TextEditingController();
     bool isFetching = false;
@@ -486,13 +675,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     final text = locCtrl.text.trim();
                     if (text.isNotEmpty) {
                       setState(() {
-                        _overlays.add(OverlayItem(
+                        final newItem = OverlayItem(
                           id: DateTime.now().millisecondsSinceEpoch.toString(),
                           type: OverlayType.location,
                           text: text.startsWith('📍') ? text : '📍 $text',
                           position: const Offset(60, 200),
                           fontSize: 16.0,
-                        ));
+                        );
+                        _overlays.add(newItem);
+                        _selectedOverlayId = newItem.id;
                       });
                     }
                     Navigator.pop(ctx);
@@ -507,14 +698,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
   }
 
-  // Export final edited photo
+  // --- EXPORT FINAL EDITED PHOTO ---
+
   Future<void> _exportAndSend() async {
     if (_isExporting) return;
-    setState(() => _isExporting = true);
+    setState(() {
+      _isExporting = true;
+      _selectedOverlayId = null; // hide bounding boxes
+    });
 
     try {
-      // Unselect any selected overlay to hide bounding boxes during render
-      setState(() => _selectedOverlayId = null);
       await Future.delayed(const Duration(milliseconds: 60));
 
       final boundary = _repaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
@@ -550,9 +743,246 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
+  // --- BUILD METHODS ---
+
   @override
   Widget build(BuildContext context) {
+    if (_isCropMode) {
+      return _buildCropModeScreen();
+    }
+    return _buildMainEditorScreen();
+  }
+
+  // --- CROP MODE SCREEN ---
+  Widget _buildCropModeScreen() {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Top Bar
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              color: Colors.black87,
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.white, size: 26),
+                    onPressed: () => setState(() => _isCropMode = false),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Kırp ve Döndür',
+                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: _resetCrop,
+                    child: const Text('Sıfırla', style: TextStyle(color: Colors.white70, fontSize: 14)),
+                  ),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.accent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                    ),
+                    icon: _isCropping
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
+                        : const Icon(Icons.check_rounded, color: Colors.black, size: 18),
+                    label: const Text('Bitti', style: TextStyle(fontWeight: FontWeight.bold)),
+                    onPressed: _isCropping ? null : _applyCrop,
+                  ),
+                ],
+              ),
+            ),
+
+            // Crop Canvas
+            Expanded(
+              child: _loadedUiImage == null
+                  ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+                  : LayoutBuilder(
+                      builder: (context, constraints) {
+                        final bool isRotated = (_cropRotationQuarter % 2 != 0);
+                        final double origW = _loadedUiImage!.width.toDouble();
+                        final double origH = _loadedUiImage!.height.toDouble();
+                        final double curW = isRotated ? origH : origW;
+                        final double curH = isRotated ? origW : origH;
+
+                        final double maxW = constraints.maxWidth - 24;
+                        final double maxH = constraints.maxHeight - 24;
+                        final double fitScale = math.min(maxW / curW, maxH / curH);
+                        final double displayW = curW * fitScale;
+                        final double displayH = curH * fitScale;
+
+                        final double offsetX = (constraints.maxWidth - displayW) / 2;
+                        final double offsetY = (constraints.maxHeight - displayH) / 2;
+                        final Rect imageRect = Rect.fromLTWH(offsetX, offsetY, displayW, displayH);
+
+                        final Rect screenCropRect = Rect.fromLTWH(
+                          offsetX + _cropRectNorm.left * displayW,
+                          offsetY + _cropRectNorm.top * displayH,
+                          _cropRectNorm.width * displayW,
+                          _cropRectNorm.height * displayH,
+                        );
+
+                        return GestureDetector(
+                          onPanStart: (details) {
+                            final pos = details.localPosition;
+                            const handleRadius = 26.0;
+
+                            if ((pos - screenCropRect.topLeft).distance <= handleRadius) {
+                              _activeCropHandle = _CropHandle.topLeft;
+                            } else if ((pos - screenCropRect.topRight).distance <= handleRadius) {
+                              _activeCropHandle = _CropHandle.topRight;
+                            } else if ((pos - screenCropRect.bottomLeft).distance <= handleRadius) {
+                              _activeCropHandle = _CropHandle.bottomLeft;
+                            } else if ((pos - screenCropRect.bottomRight).distance <= handleRadius) {
+                              _activeCropHandle = _CropHandle.bottomRight;
+                            } else if (screenCropRect.contains(pos)) {
+                              _activeCropHandle = _CropHandle.center;
+                            } else {
+                              _activeCropHandle = _CropHandle.none;
+                            }
+                          },
+                          onPanUpdate: (details) {
+                            if (_activeCropHandle == _CropHandle.none) return;
+
+                            final dNx = details.delta.dx / displayW;
+                            final dNy = details.delta.dy / displayH;
+
+                            setState(() {
+                              if (_activeCropHandle == _CropHandle.center) {
+                                final newLeft = (_cropRectNorm.left + dNx).clamp(0.0, 1.0 - _cropRectNorm.width);
+                                final newTop = (_cropRectNorm.top + dNy).clamp(0.0, 1.0 - _cropRectNorm.height);
+                                _cropRectNorm = Rect.fromLTWH(newLeft, newTop, _cropRectNorm.width, _cropRectNorm.height);
+                              } else if (_activeCropHandle == _CropHandle.topLeft) {
+                                final newLeft = (_cropRectNorm.left + dNx).clamp(0.0, _cropRectNorm.right - 0.1);
+                                final newTop = (_cropRectNorm.top + dNy).clamp(0.0, _cropRectNorm.bottom - 0.1);
+                                _cropRectNorm = Rect.fromLTWH(newLeft, newTop, _cropRectNorm.right - newLeft, _cropRectNorm.bottom - newTop);
+                              } else if (_activeCropHandle == _CropHandle.topRight) {
+                                final newRight = (_cropRectNorm.right + dNx).clamp(_cropRectNorm.left + 0.1, 1.0);
+                                final newTop = (_cropRectNorm.top + dNy).clamp(0.0, _cropRectNorm.bottom - 0.1);
+                                _cropRectNorm = Rect.fromLTWH(_cropRectNorm.left, newTop, newRight - _cropRectNorm.left, _cropRectNorm.bottom - newTop);
+                              } else if (_activeCropHandle == _CropHandle.bottomLeft) {
+                                final newLeft = (_cropRectNorm.left + dNx).clamp(0.0, _cropRectNorm.right - 0.1);
+                                final newBottom = (_cropRectNorm.bottom + dNy).clamp(_cropRectNorm.top + 0.1, 1.0);
+                                _cropRectNorm = Rect.fromLTWH(newLeft, _cropRectNorm.top, _cropRectNorm.right - newLeft, newBottom - _cropRectNorm.top);
+                              } else if (_activeCropHandle == _CropHandle.bottomRight) {
+                                final newRight = (_cropRectNorm.right + dNx).clamp(_cropRectNorm.left + 0.1, 1.0);
+                                final newBottom = (_cropRectNorm.bottom + dNy).clamp(_cropRectNorm.top + 0.1, 1.0);
+                                _cropRectNorm = Rect.fromLTWH(_cropRectNorm.left, _cropRectNorm.top, newRight - _cropRectNorm.left, newBottom - _cropRectNorm.top);
+                              }
+                            });
+                          },
+                          onPanEnd: (_) => _activeCropHandle = _CropHandle.none,
+                          child: Stack(
+                            children: [
+                              // Transformed Preview Image
+                              Positioned(
+                                left: offsetX,
+                                top: offsetY,
+                                width: displayW,
+                                height: displayH,
+                                child: Transform(
+                                  alignment: Alignment.center,
+                                  transform: Matrix4.identity()
+                                    ..rotateZ(_cropRotationQuarter * (math.pi / 2))
+                                    ..scale(_cropIsFlipped ? -1.0 : 1.0, 1.0),
+                                  child: Image.file(_currentImageFile, fit: BoxFit.fill),
+                                ),
+                              ),
+
+                              // Crop Overlay (Grid, Dimmed area, Brackets)
+                              Positioned.fill(
+                                child: CustomPaint(
+                                  painter: CropOverlayPainter(
+                                    imageRect: imageRect,
+                                    cropRect: screenCropRect,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+
+            // Bottom Crop Controls
+            Container(
+              color: const Color(0xFF141D22),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Rotate & Flip buttons
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      TextButton.icon(
+                        style: TextButton.styleFrom(foregroundColor: Colors.white),
+                        icon: const Icon(Icons.rotate_right_rounded, color: AppColors.accent, size: 20),
+                        label: const Text('90° Döndür'),
+                        onPressed: _rotateCrop,
+                      ),
+                      const SizedBox(width: 24),
+                      TextButton.icon(
+                        style: TextButton.styleFrom(foregroundColor: Colors.white),
+                        icon: const Icon(Icons.flip_rounded, color: AppColors.accent, size: 20),
+                        label: const Text('Aynala'),
+                        onPressed: _flipCrop,
+                      ),
+                    ],
+                  ),
+                  const Divider(color: Colors.white12, height: 10),
+                  // Aspect Ratio Presets
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        _buildAspectChip('Serbest', null),
+                        _buildAspectChip('1:1 Kare', 1.0),
+                        _buildAspectChip('4:3', 4.0 / 3.0),
+                        _buildAspectChip('16:9', 16.0 / 9.0),
+                        _buildAspectChip('3:4', 3.0 / 4.0),
+                        _buildAspectChip('9:16 Dikey', 9.0 / 16.0),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAspectChip(String label, double? ratio) {
+    final bool isSel = (_selectedAspectPreset == ratio);
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: FilterChip(
+        label: Text(label),
+        selected: isSel,
+        selectedColor: AppColors.accent,
+        backgroundColor: const Color(0xFF1F2C34),
+        labelStyle: TextStyle(
+          color: isSel ? Colors.black : Colors.white,
+          fontSize: 12,
+          fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+        ),
+        onSelected: (_) => _setAspectPreset(ratio),
+      ),
+    );
+  }
+
+  // --- MAIN EDITOR SCREEN ---
+  Widget _buildMainEditorScreen() {
     final selectedFilter = _filters[_selectedFilterIndex];
+    final selectedItem = _selectedOverlay;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -572,18 +1002,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   const Spacer(),
                   // Crop & Rotate
                   IconButton(
-                    icon: Icon(
-                      Icons.crop_rotate_rounded,
-                      color: _showCropTray ? AppColors.accent : Colors.white,
-                      size: 24,
-                    ),
-                    tooltip: 'Döndür & Kırp',
-                    onPressed: () {
-                      setState(() {
-                        _showCropTray = !_showCropTray;
-                        if (_showCropTray) _showFilterTray = false;
-                      });
-                    },
+                    icon: const Icon(Icons.crop_rotate_rounded, color: Colors.white, size: 24),
+                    tooltip: 'Kırp & Döndür',
+                    onPressed: _enterCropMode,
                   ),
                   // Emoji
                   IconButton(
@@ -614,7 +1035,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     onPressed: () {
                       setState(() {
                         _showFilterTray = !_showFilterTray;
-                        if (_showFilterTray) _showCropTray = false;
+                        _selectedOverlayId = null;
                       });
                     },
                   ),
@@ -629,86 +1050,113 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
             ),
 
-            // CROP & ROTATE TRAY (if open)
-            if (_showCropTray)
-              Container(
-                color: const Color(0xFF1A2228),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    TextButton.icon(
-                      style: TextButton.styleFrom(foregroundColor: Colors.white),
-                      icon: const Icon(Icons.rotate_right_rounded, color: AppColors.accent),
-                      label: const Text('90° Döndür'),
-                      onPressed: _rotateImage,
-                    ),
-                    TextButton.icon(
-                      style: TextButton.styleFrom(foregroundColor: Colors.white),
-                      icon: const Icon(Icons.flip_rounded, color: AppColors.accent),
-                      label: const Text('Aynala'),
-                      onPressed: _flipImage,
-                    ),
-                    PopupMenuButton<double?>(
-                      tooltip: 'En/Boy Oranı',
-                      icon: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.aspect_ratio_rounded, color: AppColors.accent, size: 18),
-                          SizedBox(width: 4),
-                          Text('Oran', style: TextStyle(color: Colors.white, fontSize: 13)),
-                        ],
-                      ),
-                      color: const Color(0xFF263238),
-                      onSelected: (val) => setState(() => _targetAspectRatio = val),
-                      itemBuilder: (ctx) => [
-                        const PopupMenuItem(value: null, child: Text('Orijinal / Serbest', style: TextStyle(color: Colors.white))),
-                        const PopupMenuItem(value: 1.0, child: Text('1:1 Kare', style: TextStyle(color: Colors.white))),
-                        const PopupMenuItem(value: 4 / 3, child: Text('4:3 Standart', style: TextStyle(color: Colors.white))),
-                        const PopupMenuItem(value: 16 / 9, child: Text('16:9 Geniş', style: TextStyle(color: Colors.white))),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-            // CENTER CANVAS (Image + Filter + Rotation + Overlays)
+            // CENTER CANVAS (Image + Filter + Overlays)
             Expanded(
-              child: Center(
-                child: FittedBox(
-                  fit: BoxFit.contain,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: () {
+                  if (_selectedOverlayId != null) {
+                    setState(() => _selectedOverlayId = null);
+                  }
+                },
+                child: Center(
                   child: RepaintBoundary(
                     key: _repaintKey,
-                    child: Container(
-                      color: Colors.black,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          // Base Image with Rotation, Flip and Filter
-                          ClipRect(
-                            child: Transform(
-                              alignment: Alignment.center,
-                              transform: Matrix4.identity()
-                                ..rotateZ(_rotationQuarter * (math.pi / 2))
-                                ..scale(_isFlipped ? -1.0 : 1.0, 1.0),
-                              child: _targetAspectRatio != null
-                                  ? AspectRatio(
-                                      aspectRatio: _targetAspectRatio!,
-                                      child: _buildFilteredImage(selectedFilter),
-                                    )
-                                  : _buildFilteredImage(selectedFilter),
-                            ),
-                          ),
+                    child: Stack(
+                      alignment: Alignment.center,
+                      clipBehavior: Clip.none,
+                      children: [
+                        // The Cropped Filtered Base Image
+                        _buildFilteredImage(selectedFilter),
 
-                          // Overlays (Draggable text, emojis, location)
-                          ..._overlays.map((item) => _buildOverlayWidget(item)),
-                        ],
-                      ),
+                        // Overlays (Draggable & scalable text, emojis, location)
+                        ..._overlays.map((item) => _buildOverlayWidget(item)),
+                      ],
                     ),
                   ),
                 ),
               ),
             ),
+
+            // FLOATING SIZE SLIDER (When an overlay is selected)
+            if (selectedItem != null)
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1F2C34).withOpacity(0.95),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.accent.withOpacity(0.5), width: 1.2),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 8, offset: const Offset(0, 3)),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.aspect_ratio_rounded, color: AppColors.accent, size: 18),
+                    const SizedBox(width: 6),
+                    const Text('Boyut:', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+                    IconButton(
+                      icon: const Icon(Icons.remove_circle_outline_rounded, color: Colors.white, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () {
+                        setState(() {
+                          selectedItem.scale = (selectedItem.scale - 0.15).clamp(0.4, 4.0);
+                        });
+                      },
+                    ),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          thumbColor: AppColors.accent,
+                          activeTrackColor: AppColors.accent,
+                          inactiveTrackColor: Colors.white24,
+                          trackHeight: 3,
+                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                        ),
+                        child: Slider(
+                          value: selectedItem.scale,
+                          min: 0.4,
+                          max: 3.5,
+                          onChanged: (val) {
+                            setState(() {
+                              selectedItem.scale = val;
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.white, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () {
+                        setState(() {
+                          selectedItem.scale = (selectedItem.scale + 0.15).clamp(0.4, 4.0);
+                        });
+                      },
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${(selectedItem.scale * 100).round()}%',
+                      style: const TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () => setState(() => _selectedOverlayId = null),
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(
+                          color: AppColors.surfaceLight,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.check, color: Colors.white, size: 16),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
             // FILTER CAROUSEL (if open)
             if (_showFilterTray)
@@ -746,9 +1194,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 child: f.matrix != null
                                     ? ColorFiltered(
                                         colorFilter: ColorFilter.matrix(f.matrix!),
-                                        child: Image.file(widget.imageFile, fit: BoxFit.cover),
+                                        child: Image.file(_currentImageFile, fit: BoxFit.cover),
                                       )
-                                    : Image.file(widget.imageFile, fit: BoxFit.cover),
+                                    : Image.file(_currentImageFile, fit: BoxFit.cover),
                               ),
                             ),
                             const SizedBox(height: 4),
@@ -841,7 +1289,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   Widget _buildFilteredImage(FilterOption filter) {
     final imageWidget = Image.file(
-      widget.imageFile,
+      _currentImageFile,
       fit: BoxFit.contain,
     );
 
@@ -911,14 +1359,41 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       );
     }
 
+    // Apply scale and rotation
+    final transformedContent = Transform(
+      alignment: Alignment.center,
+      transform: Matrix4.identity()
+        ..scale(item.scale, item.scale)
+        ..rotateZ(item.rotation),
+      child: content,
+    );
+
     return Positioned(
       left: item.position.dx,
       top: item.position.dy,
       child: GestureDetector(
-        onPanUpdate: (details) {
+        onScaleStart: (details) {
+          _activeOverlayBaseScale = item.scale;
+          _activeOverlayBaseRotation = item.rotation;
           setState(() {
-            item.position += details.delta;
             _selectedOverlayId = item.id;
+          });
+        },
+        onScaleUpdate: (details) {
+          setState(() {
+            _selectedOverlayId = item.id;
+            // 1. Drag position
+            item.position += details.focalPointDelta;
+
+            // 2. Pinch-to-zoom (scaling)
+            if (details.scale != 1.0) {
+              item.scale = (_activeOverlayBaseScale * details.scale).clamp(0.4, 4.0);
+            }
+
+            // 3. Rotation
+            if (details.rotation != 0.0) {
+              item.rotation = _activeOverlayBaseRotation + details.rotation;
+            }
           });
         },
         onTap: () {
@@ -939,12 +1414,13 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       borderRadius: BorderRadius.circular(8),
                     )
                   : null,
-              child: content,
+              child: transformedContent,
             ),
+            // Delete button (Top Right)
             if (isSelected)
               Positioned(
-                top: -10,
-                right: -10,
+                top: -12,
+                right: -12,
                 child: GestureDetector(
                   onTap: () {
                     setState(() {
@@ -953,7 +1429,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     });
                   },
                   child: Container(
-                    padding: const EdgeInsets.all(2),
+                    padding: const EdgeInsets.all(4),
                     decoration: const BoxDecoration(
                       color: AppColors.callRed,
                       shape: BoxShape.circle,
@@ -962,9 +1438,126 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   ),
                 ),
               ),
+            // Resize handle (Bottom Right)
+            if (isSelected)
+              Positioned(
+                bottom: -12,
+                right: -12,
+                child: GestureDetector(
+                  onPanUpdate: (details) {
+                    setState(() {
+                      final delta = (details.delta.dx + details.delta.dy) * 0.015;
+                      item.scale = (item.scale + delta).clamp(0.4, 4.0);
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: AppColors.accent,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.open_in_full_rounded, color: Colors.black, size: 14),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
     );
+  }
+}
+
+/// Custom painter for the interactive Crop Mode overlay
+class CropOverlayPainter extends CustomPainter {
+  final Rect imageRect;
+  final Rect cropRect;
+
+  CropOverlayPainter({
+    required this.imageRect,
+    required this.cropRect,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // 1. Dark mask outside crop rect (only within imageRect)
+    final maskPaint = Paint()
+      ..color = Colors.black.withOpacity(0.65)
+      ..style = PaintingStyle.fill;
+
+    final path = Path()
+      ..addRect(imageRect)
+      ..addRect(cropRect)
+      ..fillType = PathFillType.evenOdd;
+    canvas.drawPath(path, maskPaint);
+
+    // 2. White border for crop rect
+    final borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    canvas.drawRect(cropRect, borderPaint);
+
+    // 3. 3x3 Grid lines (Rule of thirds)
+    final gridPaint = Paint()
+      ..color = Colors.white.withOpacity(0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8;
+
+    final double w = cropRect.width;
+    final double h = cropRect.height;
+
+    // Vertical lines
+    canvas.drawLine(
+      Offset(cropRect.left + w / 3, cropRect.top),
+      Offset(cropRect.left + w / 3, cropRect.bottom),
+      gridPaint,
+    );
+    canvas.drawLine(
+      Offset(cropRect.left + 2 * w / 3, cropRect.top),
+      Offset(cropRect.left + 2 * w / 3, cropRect.bottom),
+      gridPaint,
+    );
+
+    // Horizontal lines
+    canvas.drawLine(
+      Offset(cropRect.left, cropRect.top + h / 3),
+      Offset(cropRect.right, cropRect.top + h / 3),
+      gridPaint,
+    );
+    canvas.drawLine(
+      Offset(cropRect.left, cropRect.top + 2 * h / 3),
+      Offset(cropRect.right, cropRect.top + 2 * h / 3),
+      gridPaint,
+    );
+
+    // 4. Corner brackets (WhatsApp style bold corners)
+    final cornerPaint = Paint()
+      ..color = AppColors.accent
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.5
+      ..strokeCap = StrokeCap.round;
+
+    const double cornerLen = 22.0;
+
+    // Top-Left
+    canvas.drawLine(Offset(cropRect.left, cropRect.top), Offset(cropRect.left + cornerLen, cropRect.top), cornerPaint);
+    canvas.drawLine(Offset(cropRect.left, cropRect.top), Offset(cropRect.left, cropRect.top + cornerLen), cornerPaint);
+
+    // Top-Right
+    canvas.drawLine(Offset(cropRect.right, cropRect.top), Offset(cropRect.right - cornerLen, cropRect.top), cornerPaint);
+    canvas.drawLine(Offset(cropRect.right, cropRect.top), Offset(cropRect.right, cropRect.top + cornerLen), cornerPaint);
+
+    // Bottom-Left
+    canvas.drawLine(Offset(cropRect.left, cropRect.bottom), Offset(cropRect.left + cornerLen, cropRect.bottom), cornerPaint);
+    canvas.drawLine(Offset(cropRect.left, cropRect.bottom), Offset(cropRect.left, cropRect.bottom - cornerLen), cornerPaint);
+
+    // Bottom-Right
+    canvas.drawLine(Offset(cropRect.right, cropRect.bottom), Offset(cropRect.right - cornerLen, cropRect.bottom), cornerPaint);
+    canvas.drawLine(Offset(cropRect.right, cropRect.bottom), Offset(cropRect.right, cropRect.bottom - cornerLen), cornerPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CropOverlayPainter oldDelegate) {
+    return oldDelegate.cropRect != cropRect || oldDelegate.imageRect != imageRect;
   }
 }
