@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -131,22 +132,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     }
   }
 
+  bool _isTransitioning = false;
+  Timer? _videoSeekDebounceTimer;
+  Timer? _musicSeekDebounceTimer;
+
+  void _debouncedVideoSeek(int clipIndex, Duration target) {
+    _videoSeekDebounceTimer?.cancel();
+    _videoSeekDebounceTimer = Timer(const Duration(milliseconds: 60), () {
+      if (mounted && _controllers.containsKey(clipIndex)) {
+        final c = _controllers[clipIndex];
+        if (c != null && c.value.isInitialized) {
+          c.seekTo(target);
+        }
+      }
+    });
+  }
+
+  void _debouncedMusicSeek(Duration target) {
+    _musicSeekDebounceTimer?.cancel();
+    _musicSeekDebounceTimer = Timer(const Duration(milliseconds: 60), () {
+      if (mounted) {
+        _bgMusicPlayer?.seek(target);
+      }
+    });
+  }
+
   void _onControllerTick(int clipIndex) {
-    if (!mounted || clipIndex != _playingClipIndex) return;
+    if (!mounted || _isTransitioning || clipIndex != _playingClipIndex) return;
     final controller = _controllers[clipIndex];
     if (controller == null || !controller.value.isInitialized) return;
 
     final pos = controller.value.position;
+    if (clipIndex >= _clips.length) return;
     final clip = _clips[clipIndex];
 
-    // Transition smoothly to next clip when current clip reaches endTrim or finishes
-    final bool reachedEnd = pos >= clip.endTrim ||
-        controller.value.isCompleted ||
-        (clip.trimmedDuration > const Duration(milliseconds: 300) &&
-            pos > clip.startTrim &&
-            (clip.endTrim - pos).inMilliseconds <= 80);
+    // Smooth transition to next clip when current clip reaches endTrim or finishes
+    final bool reachedEnd = pos >= clip.endTrim || controller.value.isCompleted;
 
-    if (reachedEnd) {
+    if (reachedEnd && !_isTransitioning) {
+      _isTransitioning = true;
       if (_isPlaying) {
         int nextIndex = clipIndex + 1;
         if (nextIndex >= _clips.length) {
@@ -154,37 +178,61 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         }
         _transitionToClip(nextIndex);
       } else {
-        controller.seekTo(clip.startTrim);
         controller.pause();
+        controller.seekTo(clip.startTrim).then((_) {
+          if (mounted) {
+            _isTransitioning = false;
+          }
+        });
       }
+      return;
     }
-    setState(() {});
+
+    if (mounted) {
+      setState(() {});
+    }
   }
 
-  void _transitionToClip(int nextIndex) {
-    final currentController = _controllers[_playingClipIndex];
-    currentController?.pause();
-    currentController?.seekTo(_clips[_playingClipIndex].startTrim);
+  Future<void> _transitionToClip(int nextIndex) async {
+    _isTransitioning = true;
+    try {
+      final currentController = _controllers[_playingClipIndex];
+      await currentController?.pause();
+      if (_playingClipIndex < _clips.length) {
+        await currentController?.seekTo(_clips[_playingClipIndex].startTrim);
+      }
 
-    _playingClipIndex = nextIndex;
-    _selectedClipIndex = nextIndex; // Follow along on trimming & carousel
+      if (!mounted) return;
 
-    final nextController = _controllers[nextIndex];
-    if (nextController != null && nextController.value.isInitialized) {
-      nextController.seekTo(_clips[nextIndex].startTrim);
-      if (_isPlaying) {
-        nextController.play();
+      setState(() {
+        _playingClipIndex = nextIndex;
+      });
+
+      final nextController = _controllers[nextIndex];
+      if (nextController != null && nextController.value.isInitialized && nextIndex < _clips.length) {
+        await nextController.seekTo(_clips[nextIndex].startTrim);
+        if (_isPlaying && mounted) {
+          await nextController.play();
+        }
+      }
+
+      if (nextIndex == 0 && mounted) {
+        await _bgMusicPlayer?.seek(_bgMusicStartTrim);
+      }
+    } catch (e) {
+      debugPrint('[TRANSITION ERR] $e');
+    } finally {
+      await Future.delayed(const Duration(milliseconds: 150));
+      if (mounted) {
+        _isTransitioning = false;
       }
     }
-
-    if (nextIndex == 0) {
-      _bgMusicPlayer?.seek(_bgMusicStartTrim);
-    }
-    setState(() {});
   }
 
   @override
   void dispose() {
+    _videoSeekDebounceTimer?.cancel();
+    _musicSeekDebounceTimer?.cancel();
     for (final c in _controllers.values) {
       c.dispose();
     }
@@ -279,11 +327,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         }
         final activeController = _controllers[_playingClipIndex];
         if (activeController != null && activeController.value.isInitialized) {
-          final currentClip = _clips[_playingClipIndex];
-          if (activeController.value.position >= currentClip.endTrim) {
-            activeController.seekTo(currentClip.startTrim);
+          if (_playingClipIndex < _clips.length) {
+            final currentClip = _clips[_playingClipIndex];
+            if (activeController.value.position >= currentClip.endTrim) {
+              activeController.seekTo(currentClip.startTrim).then((_) {
+                if (_isPlaying && mounted) activeController.play();
+              });
+            } else {
+              activeController.play();
+            }
+          } else {
+            activeController.play();
           }
-          activeController.play();
         }
         _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
         _bgMusicPlayer?.resume();
@@ -339,14 +394,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     return 60000.0;
   }
 
-  void _setMusicStartTrim(Duration startOffset) {
+  void _setMusicStartTrim(Duration startOffset, {bool immediate = false}) {
     setState(() {
       _bgMusicStartTrim = startOffset;
     });
-    if (_isPlaying) {
-      _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
+    final target = _isPlaying
+        ? (_bgMusicStartTrim + _currentMergedPosition)
+        : _bgMusicStartTrim;
+    if (immediate) {
+      _musicSeekDebounceTimer?.cancel();
+      _bgMusicPlayer?.seek(target);
     } else {
-      _bgMusicPlayer?.seek(_bgMusicStartTrim);
+      _debouncedMusicSeek(target);
     }
   }
 
@@ -943,7 +1002,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                                           onChanged: maxTrim > 0
                                               ? (val) {
                                                   setSheetState(() {
-                                                    _setMusicStartTrim(Duration(milliseconds: val.toInt()));
+                                                    _setMusicStartTrim(Duration(milliseconds: val.toInt()), immediate: false);
+                                                  });
+                                                  setState(() {});
+                                                }
+                                              : null,
+                                          onChangeEnd: maxTrim > 0
+                                              ? (val) {
+                                                  setSheetState(() {
+                                                    _setMusicStartTrim(Duration(milliseconds: val.toInt()), immediate: true);
                                                   });
                                                   setState(() {});
                                                 }
@@ -1362,20 +1429,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                             child: Stack(
                               alignment: Alignment.center,
                               children: [
-                                IndexedStack(
-                                  index: _playingClipIndex.clamp(0, _clips.length - 1),
-                                  children: [
-                                    for (int i = 0; i < _clips.length; i++)
-                                      Center(
-                                        child: _controllers.containsKey(i) &&
-                                                _controllers[i]!.value.isInitialized
-                                            ? AspectRatio(
-                                                aspectRatio: _controllers[i]!.value.aspectRatio,
-                                                child: VideoPlayer(_controllers[i]!),
-                                              )
-                                            : const SizedBox.shrink(),
-                                      ),
-                                  ],
+                                Builder(
+                                  builder: (context) {
+                                    final activeController = _controllers[_playingClipIndex];
+                                    if (activeController != null && activeController.value.isInitialized) {
+                                      return AspectRatio(
+                                        aspectRatio: activeController.value.aspectRatio,
+                                        child: VideoPlayer(activeController),
+                                      );
+                                    }
+                                    return const SizedBox.shrink();
+                                  },
                                 ),
                                 // Play / Pause Indicator
                                 AnimatedOpacity(
@@ -1806,7 +1870,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                                               value: currentMs,
                                               onChanged: maxTrim > 0
                                                   ? (val) {
-                                                      _setMusicStartTrim(Duration(milliseconds: val.toInt()));
+                                                      _setMusicStartTrim(Duration(milliseconds: val.toInt()), immediate: false);
+                                                    }
+                                                  : null,
+                                              onChangeEnd: maxTrim > 0
+                                                  ? (val) {
+                                                      _setMusicStartTrim(Duration(milliseconds: val.toInt()), immediate: true);
                                                     }
                                                   : null,
                                             ),
@@ -1878,26 +1947,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                             trackHeight: 4,
                             overlayColor: AppColors.accent.withValues(alpha: 0.2),
                           ),
-                          child: RangeSlider(
-                            min: 0.0,
-                            max: selectedClip.totalDuration.inMilliseconds.toDouble(),
-                            values: RangeValues(
-                              selectedClip.startTrim.inMilliseconds
+                          child: Builder(
+                            builder: (context) {
+                              final maxDur = selectedClip.totalDuration.inMilliseconds.toDouble();
+                              final startVal = selectedClip.startTrim.inMilliseconds
                                   .toDouble()
-                                  .clamp(0.0, selectedClip.totalDuration.inMilliseconds.toDouble()),
-                              selectedClip.endTrim.inMilliseconds
+                                  .clamp(0.0, maxDur > 0 ? maxDur : 1.0);
+                              final endVal = selectedClip.endTrim.inMilliseconds
                                   .toDouble()
-                                  .clamp(0.0, selectedClip.totalDuration.inMilliseconds.toDouble()),
-                            ),
-                            onChanged: (RangeValues values) {
-                              setState(() {
-                                selectedClip.startTrim = Duration(milliseconds: values.start.toInt());
-                                selectedClip.endTrim = Duration(milliseconds: values.end.toInt());
-                              });
-                              if (_playingClipIndex == _selectedClipIndex) {
-                                _controllers[_selectedClipIndex]?.seekTo(selectedClip.startTrim);
-                                _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
-                              }
+                                  .clamp(startVal, maxDur > 0 ? maxDur : 1.0);
+
+                              return RangeSlider(
+                                min: 0.0,
+                                max: maxDur > 0 ? maxDur : 1.0,
+                                values: RangeValues(startVal, endVal),
+                                onChanged: (RangeValues values) {
+                                  setState(() {
+                                    selectedClip.startTrim = Duration(milliseconds: values.start.toInt());
+                                    selectedClip.endTrim = Duration(milliseconds: values.end.toInt());
+                                  });
+                                  if (_playingClipIndex == _selectedClipIndex) {
+                                    _debouncedVideoSeek(_selectedClipIndex, selectedClip.startTrim);
+                                  }
+                                },
+                                onChangeEnd: (RangeValues values) {
+                                  if (_playingClipIndex == _selectedClipIndex) {
+                                    _videoSeekDebounceTimer?.cancel();
+                                    _controllers[_selectedClipIndex]?.seekTo(selectedClip.startTrim);
+                                    _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
+                                  }
+                                },
+                              );
                             },
                           ),
                         ),

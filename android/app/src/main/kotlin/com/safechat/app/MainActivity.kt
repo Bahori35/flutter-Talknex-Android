@@ -353,9 +353,12 @@ class MainActivity : FlutterActivity() {
     private fun createVolumeProcessor(volume: Float): AudioProcessor? {
         return try {
             val processor = ChannelMixingAudioProcessor()
-            for (ch in 1..2) {
-                val matrix = ChannelMixingMatrix.createForConstantGain(ch, ch).scaleBy(volume)
-                processor.putChannelMixingMatrix(matrix)
+            val safeVol = volume.coerceIn(0f, 1f)
+            for (ch in 1..8) {
+                try {
+                    val matrix = ChannelMixingMatrix.createForConstantGain(ch, ch).scaleBy(safeVol)
+                    processor.putChannelMixingMatrix(matrix)
+                } catch (_: Throwable) {}
             }
             processor
         } catch (t: Throwable) {
