@@ -23,6 +23,7 @@ import '../call/call_screen.dart';
 import 'location_picker_screen.dart';
 import 'live_location_screen.dart';
 import 'video_player_screen.dart';
+import 'photo_editor_screen.dart';
 import 'widgets/video_message_bubble.dart';
 import 'widgets/decrypted_image_widget.dart';
 import '../../services/encryption_service.dart';
@@ -366,11 +367,29 @@ class _ChatScreenState extends State<ChatScreen> {
 
       if (file == null) return;
 
+      File unencryptedLocalFile = File(file.path);
+      String caption = isVideo ? '🎥 Video' : '📷 Fotoğraf';
+
+      // WhatsApp-style Photo Editor if media is an image
+      if (!isVideo) {
+        final editorResult = await Navigator.push<PhotoEditorResult>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => PhotoEditorScreen(imageFile: File(file!.path)),
+          ),
+        );
+        if (editorResult == null) return; // User cancelled editing
+        unencryptedLocalFile = editorResult.file;
+        if (editorResult.caption.isNotEmpty) {
+          caption = editorResult.caption;
+        }
+      }
+
       setState(() {
         _isUploadingMedia = true;
       });
 
-      File uploadTargetFile = File(file.path);
+      File uploadTargetFile = unencryptedLocalFile;
       File? tempEncryptedFile;
       try {
         tempEncryptedFile = await EndToEndEncryptionService.encryptFile(
@@ -402,7 +421,7 @@ class _ChatScreenState extends State<ChatScreen> {
             if (!videoCacheDir.existsSync()) videoCacheDir.createSync(recursive: true);
             final persistentCopy = File(p.join(videoCacheDir.path, '${mediaUrl.hashCode}.mp4'));
             if (!persistentCopy.existsSync()) {
-              await File(file.path).copy(persistentCopy.path);
+              await unencryptedLocalFile.copy(persistentCopy.path);
             }
             final prefs = await SharedPreferences.getInstance();
             await prefs.setString('vfile_${mediaUrl.hashCode}', persistentCopy.path);
@@ -412,13 +431,13 @@ class _ChatScreenState extends State<ChatScreen> {
             if (!imageCacheDir.existsSync()) imageCacheDir.createSync(recursive: true);
             final persistentCopy = File(p.join(imageCacheDir.path, '${mediaUrl.hashCode}.jpg'));
             if (!persistentCopy.existsSync()) {
-              await File(file.path).copy(persistentCopy.path);
+              await unencryptedLocalFile.copy(persistentCopy.path);
             }
             final fileBasename = p.basenameWithoutExtension(mediaUrl);
             if (fileBasename.isNotEmpty) {
               final namedCopy = File(p.join(imageCacheDir.path, '$fileBasename.jpg'));
               if (!namedCopy.existsSync()) {
-                await File(file.path).copy(namedCopy.path);
+                await unencryptedLocalFile.copy(namedCopy.path);
               }
             }
             final prefs = await SharedPreferences.getInstance();
@@ -428,7 +447,7 @@ class _ChatScreenState extends State<ChatScreen> {
           debugPrint('[SENDER LOCAL CACHE ERR] $e');
         }
         _sendMessage(
-          customContent: isVideo ? '🎥 Video' : '📷 Fotoğraf',
+          customContent: caption,
           type: isVideo ? MessageType.video : MessageType.image,
           mediaUrl: mediaUrl,
         );

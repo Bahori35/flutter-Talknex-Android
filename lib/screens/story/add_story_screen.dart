@@ -6,6 +6,7 @@ import '../../constants/app_colors.dart';
 import '../../models/user_model.dart';
 import '../../services/custom_auth_service.dart';
 import '../../services/custom_chat_service.dart';
+import '../chat/photo_editor_screen.dart';
 
 class AddStoryScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -42,9 +43,23 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
       );
 
       if (pickedFile != null) {
-        setState(() {
-          _selectedImage = File(pickedFile.path);
-        });
+        final editorResult = await Navigator.push<PhotoEditorResult>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => PhotoEditorScreen(imageFile: File(pickedFile.path)),
+          ),
+        );
+
+        if (editorResult != null) {
+          setState(() {
+            _selectedImage = editorResult.file;
+            if (editorResult.caption.isNotEmpty) {
+              _captionController.text = editorResult.caption;
+            }
+          });
+        } else if (_selectedImage == null) {
+          Navigator.pop(context);
+        }
       } else if (_selectedImage == null) {
         Navigator.pop(context);
       }
