@@ -56,9 +56,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   final TextEditingController _captionController = TextEditingController();
 
   final List<VideoClipItem> _clips = [];
-  int _selectedClipIndex = 0;
+  final Map<int, VideoPlayerController> _controllers = {};
 
-  VideoPlayerController? _activeController;
+  int _playingClipIndex = 0; // The clip currently active on the player
+  int _selectedClipIndex = 0; // The clip currently selected for trimming
   bool _isPlaying = false;
   bool _isMuted = false;
 
@@ -83,64 +84,100 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
 
     setState(() {
       _clips.add(firstClip);
+      _playingClipIndex = 0;
       _selectedClipIndex = 0;
     });
 
-    await _initControllerForCurrentClip();
+    await _initAllControllers();
   }
 
-  Future<void> _initControllerForCurrentClip() async {
-    final oldController = _activeController;
-    _activeController = null;
-    await oldController?.pause();
-    await oldController?.dispose();
+  Future<void> _initAllControllers() async {
+    for (int i = 0; i < _clips.length; i++) {
+      if (_controllers.containsKey(i)) continue;
+      final clip = _clips[i];
+      final controller = VideoPlayerController.file(clip.file);
 
-    if (_clips.isEmpty || _selectedClipIndex >= _clips.length) return;
+      try {
+        await controller.initialize();
+        controller.setVolume(_isMuted ? 0.0 : 1.0);
+        controller.setLooping(false);
 
-    final currentClip = _clips[_selectedClipIndex];
-    final controller = VideoPlayerController.file(currentClip.file);
-
-    try {
-      await controller.initialize();
-      controller.setVolume(_isMuted ? 0.0 : 1.0);
-      controller.setLooping(false);
-
-      if (currentClip.totalDuration == Duration.zero) {
-        currentClip.totalDuration = controller.value.duration;
-        currentClip.endTrim = controller.value.duration;
-      }
-
-      controller.addListener(() {
-        if (!mounted || _activeController != controller) return;
-        final pos = controller.value.position;
-        if (pos >= currentClip.endTrim) {
-          controller.seekTo(currentClip.startTrim);
-          if (!_isPlaying) {
-            controller.pause();
-          }
+        if (clip.totalDuration == Duration.zero) {
+          clip.totalDuration = controller.value.duration;
+          clip.endTrim = controller.value.duration;
         }
-        setState(() {});
-      });
 
-      await controller.seekTo(currentClip.startTrim);
-
-      if (mounted) {
-        setState(() {
-          _activeController = controller;
-          _isPlaying = false;
-        });
+        final clipIndex = i;
+        controller.addListener(() => _onControllerTick(clipIndex));
+        _controllers[i] = controller;
+      } catch (e) {
+        debugPrint('[INIT CONTROLLER ERR FOR CLIP $i] $e');
       }
-    } catch (e) {
-      debugPrint('[VIDEO CONTROLLER INIT ERR] $e');
     }
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _onControllerTick(int clipIndex) {
+    if (!mounted || clipIndex != _playingClipIndex) return;
+    final controller = _controllers[clipIndex];
+    if (controller == null || !controller.value.isInitialized) return;
+
+    final pos = controller.value.position;
+    final clip = _clips[clipIndex];
+
+    // Transition smoothly to next clip when current clip reaches endTrim or finishes
+    final bool reachedEnd = pos >= clip.endTrim ||
+        controller.value.isCompleted ||
+        (clip.trimmedDuration > const Duration(milliseconds: 300) &&
+            pos > clip.startTrim &&
+            (clip.endTrim - pos).inMilliseconds <= 80);
+
+    if (reachedEnd) {
+      if (_isPlaying) {
+        int nextIndex = clipIndex + 1;
+        if (nextIndex >= _clips.length) {
+          nextIndex = 0; // Loop back to start
+        }
+        _transitionToClip(nextIndex);
+      } else {
+        controller.seekTo(clip.startTrim);
+        controller.pause();
+      }
+    }
+    setState(() {});
+  }
+
+  void _transitionToClip(int nextIndex) {
+    final currentController = _controllers[_playingClipIndex];
+    currentController?.pause();
+    currentController?.seekTo(_clips[_playingClipIndex].startTrim);
+
+    _playingClipIndex = nextIndex;
+    _selectedClipIndex = nextIndex; // Follow along on trimming & carousel
+
+    final nextController = _controllers[nextIndex];
+    if (nextController != null && nextController.value.isInitialized) {
+      nextController.seekTo(_clips[nextIndex].startTrim);
+      if (_isPlaying) {
+        nextController.play();
+      }
+    }
+    setState(() {});
   }
 
   @override
   void dispose() {
-    _activeController?.dispose();
+    for (final c in _controllers.values) {
+      c.dispose();
+    }
     _captionController.dispose();
     super.dispose();
   }
+
+  // --- MERGED TIMELINE CALCULATIONS ---
 
   Duration get _totalMergedDuration {
     Duration total = Duration.zero;
@@ -148,6 +185,58 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       total += c.trimmedDuration;
     }
     return total;
+  }
+
+  Duration get _currentMergedPosition {
+    Duration pos = Duration.zero;
+    for (int i = 0; i < _clips.length; i++) {
+      if (i < _playingClipIndex) {
+        pos += _clips[i].trimmedDuration;
+      } else if (i == _playingClipIndex) {
+        final controller = _controllers[i];
+        if (controller != null && controller.value.isInitialized) {
+          final clipPos = controller.value.position;
+          final offsetInClip = clipPos - _clips[i].startTrim;
+          if (offsetInClip > Duration.zero) {
+            final dur = _clips[i].trimmedDuration;
+            pos += (offsetInClip > dur) ? dur : offsetInClip;
+          }
+        }
+        break;
+      }
+    }
+    return pos;
+  }
+
+  void _seekMergedPosition(Duration targetPos) {
+    Duration accumulated = Duration.zero;
+    for (int i = 0; i < _clips.length; i++) {
+      final clipDur = _clips[i].trimmedDuration;
+      if (targetPos <= accumulated + clipDur || i == _clips.length - 1) {
+        final offsetInsideClip = targetPos - accumulated;
+        final targetClipPos = _clips[i].startTrim +
+            (offsetInsideClip < Duration.zero
+                ? Duration.zero
+                : (offsetInsideClip > clipDur ? clipDur : offsetInsideClip));
+
+        if (_playingClipIndex != i) {
+          _controllers[_playingClipIndex]?.pause();
+          _playingClipIndex = i;
+          _selectedClipIndex = i;
+        }
+
+        final targetController = _controllers[i];
+        if (targetController != null && targetController.value.isInitialized) {
+          targetController.seekTo(targetClipPos);
+          if (_isPlaying) {
+            targetController.play();
+          }
+        }
+        setState(() {});
+        break;
+      }
+      accumulated += clipDur;
+    }
   }
 
   String _formatDuration(Duration d) {
@@ -161,35 +250,56 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   }
 
   void _togglePlayPause() {
-    if (_activeController == null) return;
+    if (_controllers.isEmpty) return;
     setState(() {
-      if (_activeController!.value.isPlaying) {
-        _activeController!.pause();
-        _isPlaying = false;
-      } else {
-        final currentClip = _clips[_selectedClipIndex];
-        if (_activeController!.value.position >= currentClip.endTrim) {
-          _activeController!.seekTo(currentClip.startTrim);
+      _isPlaying = !_isPlaying;
+      if (_isPlaying) {
+        // If near end of entire merged video, restart from the very beginning
+        if (_totalMergedDuration > Duration.zero &&
+            _currentMergedPosition >= _totalMergedDuration - const Duration(milliseconds: 200)) {
+          _seekMergedPosition(Duration.zero);
         }
-        _activeController!.play();
-        _isPlaying = true;
+        final activeController = _controllers[_playingClipIndex];
+        if (activeController != null && activeController.value.isInitialized) {
+          final currentClip = _clips[_playingClipIndex];
+          if (activeController.value.position >= currentClip.endTrim) {
+            activeController.seekTo(currentClip.startTrim);
+          }
+          activeController.play();
+        }
+      } else {
+        _pauseAllControllers();
       }
     });
+  }
+
+  void _pauseAllControllers() {
+    for (final c in _controllers.values) {
+      if (c.value.isPlaying) c.pause();
+    }
   }
 
   void _toggleMute() {
     setState(() {
       _isMuted = !_isMuted;
-      _activeController?.setVolume(_isMuted ? 0.0 : 1.0);
+      for (final c in _controllers.values) {
+        c.setVolume(_isMuted ? 0.0 : 1.0);
+      }
     });
   }
 
-  Future<void> _switchActiveClip(int index) async {
-    if (index == _selectedClipIndex && _activeController != null) return;
+  void _selectClipForTrimming(int index) {
     setState(() {
       _selectedClipIndex = index;
+      _playingClipIndex = index;
     });
-    await _initControllerForCurrentClip();
+    final controller = _controllers[index];
+    if (controller != null && controller.value.isInitialized) {
+      controller.seekTo(_clips[index].startTrim);
+      if (_isPlaying) {
+        controller.play();
+      }
+    }
   }
 
   Future<void> _pickAndAddVideo() async {
@@ -213,12 +323,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         endTrim: duration,
       );
 
+      final newIndex = _clips.length;
       setState(() {
         _clips.add(newClip);
-        _selectedClipIndex = _clips.length - 1;
+        _selectedClipIndex = newIndex;
+        // Keep merged playback active from start
+        _playingClipIndex = 0;
       });
 
-      await _initControllerForCurrentClip();
+      await _initAllControllers();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${_clips.length} video birleştirildi. Kesintisiz izlemek için oynatın.'),
+            backgroundColor: AppColors.surfaceLight,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(
+              label: 'Baştan Oynat',
+              textColor: AppColors.accent,
+              onPressed: () {
+                _seekMergedPosition(Duration.zero);
+                if (!_isPlaying) _togglePlayPause();
+              },
+            ),
+          ),
+        );
+      }
     } catch (e) {
       debugPrint('[ADD VIDEO CLIP ERR] $e');
       if (mounted) {
@@ -235,16 +367,39 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
 
   void _removeClip(int index) {
     if (_clips.length <= 1) return;
+
+    final controller = _controllers.remove(index);
+    controller?.pause();
+    controller?.dispose();
+
     setState(() {
       _clips.removeAt(index);
+      // Re-map controllers map keys
+      final Map<int, VideoPlayerController> remapped = {};
+      int newKey = 0;
+      for (final c in _controllers.values) {
+        remapped[newKey] = c;
+        newKey++;
+      }
+      _controllers.clear();
+      _controllers.addAll(remapped);
+
       if (_selectedClipIndex >= _clips.length) {
         _selectedClipIndex = _clips.length - 1;
       }
+      if (_playingClipIndex >= _clips.length) {
+        _playingClipIndex = 0;
+      }
     });
-    _initControllerForCurrentClip();
+
+    final currentController = _controllers[_playingClipIndex];
+    if (currentController != null && currentController.value.isInitialized) {
+      currentController.seekTo(_clips[_playingClipIndex].startTrim);
+      if (_isPlaying) currentController.play();
+    }
   }
 
-  // --- EXPORT & MERGE ---
+  // --- EXPORT & MERGE (CRASH-PROOF & 720P STANDARDIZED) ---
 
   Future<void> _processAndExport() async {
     if (_isProcessing || _clips.isEmpty) return;
@@ -256,44 +411,72 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     });
 
     try {
-      _activeController?.pause();
-      final tempDir = await getTemporaryDirectory();
+      // 1. Pause and release active VideoPlayerControllers to free Android MediaCodec hardware slots
+      _pauseAllControllers();
+      for (final c in _controllers.values) {
+        await c.pause();
+        await c.dispose();
+      }
+      _controllers.clear();
 
+      await Future.delayed(const Duration(milliseconds: 250));
+
+      final tempDir = await getTemporaryDirectory();
       List<String> processedClipPaths = [];
 
-      // Step 1: Trim each clip if necessary
+      // 2. Trim and standardize each clip to 720p (guarantees identical resolution/codecs for MediaMuxer)
       for (int i = 0; i < _clips.length; i++) {
         final clip = _clips[i];
         final startMs = clip.startTrim.inMilliseconds;
         final endMs = clip.endTrim.inMilliseconds;
         final totalMs = clip.totalDuration.inMilliseconds;
 
-        final isTrimmed = (startMs > 100 || (totalMs - endMs) > 100);
-
         setState(() {
-          _processingStatus = 'Klip ${i + 1}/${_clips.length} işleniyor...';
+          _processingStatus = 'Klip ${i + 1}/${_clips.length} hazırlanıyor...';
           _processingProgress = (i / (_clips.length + 1)) * 0.7;
         });
 
-        if (isTrimmed) {
-          final outTrimPath = p.join(
-            tempDir.path,
-            'trim_${i}_${DateTime.now().millisecondsSinceEpoch}.mp4',
-          );
+        final outTrimPath = p.join(
+          tempDir.path,
+          'std_clip_${i}_${DateTime.now().millisecondsSinceEpoch}.mp4',
+        );
 
-          final builder = VideoEditorBuilder(videoPath: clip.file.path)
-              .trim(startTimeMs: startMs, endTimeMs: endMs);
+        final safeStart = (startMs >= 0 && (totalMs == 0 || startMs < totalMs)) ? startMs : 0;
+        final safeEnd = (endMs > safeStart)
+            ? (totalMs > 0 && endMs > totalMs ? totalMs : endMs)
+            : (totalMs > 0 ? totalMs : safeStart + 1000);
 
-          final resultPath = await builder.export(outputPath: outTrimPath);
-          processedClipPaths.add(resultPath ?? clip.file.path);
-        } else {
-          processedClipPaths.add(clip.file.path);
+        final bool needsTrim = safeStart > 100 || (totalMs > 0 && safeEnd < totalMs - 100);
+
+        var builder = VideoEditorBuilder(videoPath: clip.file.path);
+        if (needsTrim) {
+          builder = builder.trim(startTimeMs: safeStart, endTimeMs: safeEnd);
         }
+        builder = builder.compress(resolution: VideoResolution.p720);
+
+        if (_isMuted) {
+          builder = builder.removeAudio();
+        }
+
+        final resultPath = await builder.export(
+          outputPath: outTrimPath,
+          onProgress: (p) {
+            if (mounted) {
+              final base = (i / (_clips.length + 1)) * 0.7;
+              final seg = (1.0 / (_clips.length + 1)) * 0.7;
+              setState(() {
+                _processingProgress = base + (seg * p);
+              });
+            }
+          },
+        );
+
+        processedClipPaths.add(resultPath ?? clip.file.path);
       }
 
       String finalVideoPath;
 
-      // Step 2: Merge if multiple clips, or apply mute
+      // 3. Merge clips if multiple, or finalize single clip
       if (processedClipPaths.length > 1) {
         setState(() {
           _processingStatus = '${processedClipPaths.length} video birleştiriliyor...';
@@ -302,15 +485,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
 
         final outMergePath = p.join(
           tempDir.path,
-          'merged_${DateTime.now().millisecondsSinceEpoch}.mp4',
+          'final_merged_${DateTime.now().millisecondsSinceEpoch}.mp4',
         );
 
         var mergeBuilder = VideoEditorBuilder(videoPath: processedClipPaths[0])
             .merge(otherVideoPaths: processedClipPaths.sublist(1));
-
-        if (_isMuted) {
-          mergeBuilder = mergeBuilder.removeAudio();
-        }
 
         final mergeResult = await mergeBuilder.export(
           outputPath: outMergePath,
@@ -325,19 +504,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
 
         finalVideoPath = mergeResult ?? processedClipPaths[0];
       } else {
-        // Only 1 clip
-        if (_isMuted) {
-          final outMutePath = p.join(
-            tempDir.path,
-            'muted_${DateTime.now().millisecondsSinceEpoch}.mp4',
-          );
-          final muteResult = await VideoEditorBuilder(videoPath: processedClipPaths[0])
-              .removeAudio()
-              .export(outputPath: outMutePath);
-          finalVideoPath = muteResult ?? processedClipPaths[0];
-        } else {
-          finalVideoPath = processedClipPaths[0];
-        }
+        // Single clip
+        finalVideoPath = processedClipPaths[0];
       }
 
       if (!mounted) return;
@@ -350,29 +518,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         ),
       );
     } catch (e) {
-      debugPrint('[VIDEO EXPORT ERR] $e');
+      debugPrint('[VIDEO EXPORT CRASH PREVENTED] $e');
       if (mounted) {
-        // Fallback: If merge fails for some unexpected device reason, send first clip
-        if (_clips.isNotEmpty) {
-          Navigator.pop(
-            context,
-            VideoEditorResult(
-              file: _clips.first.file,
-              caption: _captionController.text.trim(),
-            ),
-          );
-        } else {
-          setState(() => _isProcessing = false);
-        }
+        await _initAllControllers();
+        if (!mounted) return;
+        setState(() => _isProcessing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Video işlenirken bir hata oluştu: $e'),
+            backgroundColor: AppColors.callRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final currentClip = (_clips.isNotEmpty && _selectedClipIndex < _clips.length)
+    final selectedClip = (_clips.isNotEmpty && _selectedClipIndex < _clips.length)
         ? _clips[_selectedClipIndex]
         : null;
+
+    final totalMerged = _totalMergedDuration;
+    final currentMerged = _currentMergedPosition;
+    final isInitialized = _clips.isNotEmpty &&
+        _controllers.containsKey(_playingClipIndex) &&
+        _controllers[_playingClipIndex]!.value.isInitialized;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -407,7 +579,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                         tooltip: _isMuted ? 'Sesi Aç' : 'Sesi Kapat',
                         onPressed: _toggleMute,
                       ),
-                      // Duration badge
+                      // Merged Total Duration Badge
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
@@ -418,14 +590,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.timer_outlined, color: AppColors.accent, size: 15),
+                            const Icon(Icons.movie_filter_rounded, color: AppColors.accent, size: 15),
                             const SizedBox(width: 4),
                             Text(
-                              _formatDuration(_totalMergedDuration),
+                              '${_formatDuration(currentMerged)} / ${_formatDuration(totalMerged)}',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.bold,
-                                fontSize: 13,
+                                fontSize: 12.5,
                               ),
                             ),
                           ],
@@ -436,20 +608,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                   ),
                 ),
 
-                // Video Player Center Preview
+                // Unified Continuous Merged Video Player Center Preview (IndexedStack for instant switching)
                 Expanded(
                   child: Center(
-                    child: _activeController != null && _activeController!.value.isInitialized
+                    child: isInitialized
                         ? GestureDetector(
                             onTap: _togglePlayPause,
                             child: Stack(
                               alignment: Alignment.center,
                               children: [
-                                AspectRatio(
-                                  aspectRatio: _activeController!.value.aspectRatio,
-                                  child: VideoPlayer(_activeController!),
+                                IndexedStack(
+                                  index: _playingClipIndex.clamp(0, _clips.length - 1),
+                                  children: [
+                                    for (int i = 0; i < _clips.length; i++)
+                                      Center(
+                                        child: _controllers.containsKey(i) &&
+                                                _controllers[i]!.value.isInitialized
+                                            ? AspectRatio(
+                                                aspectRatio: _controllers[i]!.value.aspectRatio,
+                                                child: VideoPlayer(_controllers[i]!),
+                                              )
+                                            : const SizedBox.shrink(),
+                                      ),
+                                  ],
                                 ),
-                                // Center Play / Pause Icon Button
+                                // Play / Pause Indicator
                                 AnimatedOpacity(
                                   opacity: _isPlaying ? 0.0 : 0.85,
                                   duration: const Duration(milliseconds: 200),
@@ -467,6 +650,73 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                                     ),
                                   ),
                                 ),
+                                // Overlay info: Currently playing clip tag & Quick Replay
+                                Positioned(
+                                  top: 12,
+                                  left: 12,
+                                  right: 12,
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withValues(alpha: 0.7),
+                                          borderRadius: BorderRadius.circular(16),
+                                          border: Border.all(color: AppColors.accent.withValues(alpha: 0.6)),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.auto_awesome_motion_rounded,
+                                                color: AppColors.accent, size: 14),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              _clips.length > 1
+                                                  ? 'Birleşik Önizleme: Klip ${_playingClipIndex + 1}/${_clips.length}'
+                                                  : 'Önizleme',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 11.5,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const Spacer(),
+                                      if (_clips.length > 1)
+                                        GestureDetector(
+                                          onTap: () {
+                                            _seekMergedPosition(Duration.zero);
+                                            if (!_isPlaying) _togglePlayPause();
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF1F2C34).withValues(alpha: 0.9),
+                                              borderRadius: BorderRadius.circular(16),
+                                              border: Border.all(color: Colors.white24),
+                                            ),
+                                            child: const Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(Icons.replay_rounded, color: AppColors.accent, size: 14),
+                                                SizedBox(width: 4),
+                                                Text(
+                                                  'Baştan Oynat',
+                                                  style: TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 11.5,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
                               ],
                             ),
                           )
@@ -474,61 +724,111 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                   ),
                 ),
 
-                // Trimming Timeline Slider for selected clip
-                if (currentClip != null && currentClip.totalDuration.inMilliseconds > 0)
+                // UNIFIED MERGED TIMELINE SCRUBBER (Scrub entire merged sequence)
+                if (totalMerged.inMilliseconds > 0)
                   Container(
-                    color: const Color(0xFF121B20),
-                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
+                    color: const Color(0xFF0F171B),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                    child: Row(
+                      children: [
+                        Text(
+                          _formatDuration(currentMerged),
+                          style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+                        ),
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              activeTrackColor: AppColors.accent,
+                              inactiveTrackColor: Colors.white24,
+                              thumbColor: AppColors.accent,
+                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                              trackHeight: 3,
+                            ),
+                            child: Slider(
+                              min: 0.0,
+                              max: totalMerged.inMilliseconds.toDouble(),
+                              value: currentMerged.inMilliseconds
+                                  .toDouble()
+                                  .clamp(0.0, totalMerged.inMilliseconds.toDouble()),
+                              onChanged: (val) {
+                                _seekMergedPosition(Duration(milliseconds: val.toInt()));
+                              },
+                            ),
+                          ),
+                        ),
+                        Text(
+                          _formatDuration(totalMerged),
+                          style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                // Trimming Timeline Slider for selected clip
+                if (selectedClip != null && selectedClip.totalDuration.inMilliseconds > 0)
+                  Container(
+                    color: const Color(0xFF141D22),
+                    padding: const EdgeInsets.fromLTRB(14, 8, 14, 6),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Trim info row
+                        // Selected clip trim info
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Row(
                               children: [
-                                const Icon(Icons.content_cut_rounded, color: AppColors.accent, size: 16),
+                                const Icon(Icons.content_cut_rounded, color: AppColors.accent, size: 15),
                                 const SizedBox(width: 6),
                                 Text(
                                   'Klip ${_selectedClipIndex + 1} Kesme Aralığı:',
-                                  style: const TextStyle(color: Colors.white70, fontSize: 12.5),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ],
                             ),
                             Text(
-                              '${_formatDuration(currentClip.startTrim)} - ${_formatDuration(currentClip.endTrim)} (${_formatDuration(currentClip.trimmedDuration)})',
+                              '${_formatDuration(selectedClip.startTrim)} - ${_formatDuration(selectedClip.endTrim)} (${_formatDuration(selectedClip.trimmedDuration)})',
                               style: const TextStyle(
                                 color: AppColors.accent,
                                 fontWeight: FontWeight.bold,
-                                fontSize: 13,
+                                fontSize: 12.5,
                               ),
                             ),
                           ],
                         ),
-                        // Range Slider
+                        // Range Slider for In-Out Points
                         SliderTheme(
                           data: SliderTheme.of(context).copyWith(
                             activeTrackColor: AppColors.accent,
                             inactiveTrackColor: Colors.white24,
                             thumbColor: Colors.white,
-                            rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 9),
+                            rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 8),
                             trackHeight: 4,
-                            overlayColor: AppColors.accent.withOpacity(0.2),
+                            overlayColor: AppColors.accent.withValues(alpha: 0.2),
                           ),
                           child: RangeSlider(
                             min: 0.0,
-                            max: currentClip.totalDuration.inMilliseconds.toDouble(),
+                            max: selectedClip.totalDuration.inMilliseconds.toDouble(),
                             values: RangeValues(
-                              currentClip.startTrim.inMilliseconds.toDouble().clamp(0.0, currentClip.totalDuration.inMilliseconds.toDouble()),
-                              currentClip.endTrim.inMilliseconds.toDouble().clamp(0.0, currentClip.totalDuration.inMilliseconds.toDouble()),
+                              selectedClip.startTrim.inMilliseconds
+                                  .toDouble()
+                                  .clamp(0.0, selectedClip.totalDuration.inMilliseconds.toDouble()),
+                              selectedClip.endTrim.inMilliseconds
+                                  .toDouble()
+                                  .clamp(0.0, selectedClip.totalDuration.inMilliseconds.toDouble()),
                             ),
                             onChanged: (RangeValues values) {
                               setState(() {
-                                currentClip.startTrim = Duration(milliseconds: values.start.toInt());
-                                currentClip.endTrim = Duration(milliseconds: values.end.toInt());
+                                selectedClip.startTrim = Duration(milliseconds: values.start.toInt());
+                                selectedClip.endTrim = Duration(milliseconds: values.end.toInt());
                               });
-                              _activeController?.seekTo(currentClip.startTrim);
+                              if (_playingClipIndex == _selectedClipIndex) {
+                                _controllers[_selectedClipIndex]?.seekTo(selectedClip.startTrim);
+                              }
                             },
                           ),
                         ),
@@ -536,7 +836,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                     ),
                   ),
 
-                // Multi-Video Clips Carousel (Birleştirilecek Videolar)
+                // Multi-Video Clips Carousel
                 Container(
                   color: const Color(0xFF182229),
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
@@ -552,7 +852,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                               const Icon(Icons.layers_rounded, color: AppColors.accent, size: 16),
                               const SizedBox(width: 6),
                               Text(
-                                'Birleştirilecek Videolar (${_clips.length})',
+                                'Birleştirilen Klipler (${_clips.length})',
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontWeight: FontWeight.bold,
@@ -562,8 +862,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                             ],
                           ),
                           Text(
-                            _clips.length > 1 ? 'Sırayla Birleştirilecek' : 'Tek Video',
-                            style: const TextStyle(color: Colors.white54, fontSize: 11.5),
+                            _clips.length > 1
+                                ? '▶ Arka arkaya kesintisiz oynatılır'
+                                : 'Tek Video',
+                            style: const TextStyle(
+                                color: AppColors.accent, fontSize: 11.5, fontWeight: FontWeight.bold),
                           ),
                         ],
                       ),
@@ -575,25 +878,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                           itemCount: _clips.length + 1,
                           separatorBuilder: (_, __) => const SizedBox(width: 8),
                           itemBuilder: (context, idx) {
-                            // Add Clip Card
+                            // Add Clip Button
                             if (idx == _clips.length) {
                               return GestureDetector(
                                 onTap: _pickAndAddVideo,
                                 child: Container(
-                                  width: 85,
+                                  width: 88,
                                   decoration: BoxDecoration(
                                     color: const Color(0xFF1F2C34),
                                     borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(color: AppColors.accent.withOpacity(0.6), width: 1.5),
+                                    border: Border.all(
+                                        color: AppColors.accent.withValues(alpha: 0.6), width: 1.5),
                                   ),
                                   child: const Column(
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
-                                      Icon(Icons.add_circle_outline_rounded, color: AppColors.accent, size: 22),
+                                      Icon(Icons.add_circle_outline_rounded,
+                                          color: AppColors.accent, size: 22),
                                       SizedBox(height: 4),
                                       Text(
                                         '+ Video Ekle',
-                                        style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                        style: TextStyle(
+                                            color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
                                       ),
                                     ],
                                   ),
@@ -602,53 +908,63 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                             }
 
                             final clip = _clips[idx];
-                            final isSel = idx == _selectedClipIndex;
+                            final isCurrentPlaying = (idx == _playingClipIndex);
+                            final isCurrentSelected = (idx == _selectedClipIndex);
 
                             return GestureDetector(
-                              onTap: () => _switchActiveClip(idx),
+                              onTap: () => _selectClipForTrimming(idx),
                               child: Stack(
                                 clipBehavior: Clip.none,
                                 children: [
                                   Container(
-                                    width: 85,
+                                    width: 88,
                                     padding: const EdgeInsets.all(6),
                                     decoration: BoxDecoration(
-                                      color: isSel ? const Color(0xFF263843) : const Color(0xFF1F2C34),
+                                      color: isCurrentSelected
+                                          ? const Color(0xFF263843)
+                                          : const Color(0xFF1F2C34),
                                       borderRadius: BorderRadius.circular(10),
                                       border: Border.all(
-                                        color: isSel ? AppColors.accent : Colors.white12,
-                                        width: isSel ? 2 : 1,
+                                        color: isCurrentPlaying
+                                            ? AppColors.accent
+                                            : (isCurrentSelected ? Colors.white60 : Colors.white12),
+                                        width: isCurrentPlaying ? 2 : 1,
                                       ),
                                     ),
                                     child: Column(
                                       mainAxisAlignment: MainAxisAlignment.center,
                                       children: [
-                                        Icon(
-                                          Icons.movie_creation_outlined,
-                                          color: isSel ? AppColors.accent : Colors.white70,
-                                          size: 20,
+                                        Row(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            if (isCurrentPlaying && _isPlaying)
+                                              const Icon(Icons.play_arrow_rounded,
+                                                  color: AppColors.accent, size: 14),
+                                            Text(
+                                              'Klip ${idx + 1}',
+                                              style: TextStyle(
+                                                color: isCurrentPlaying ? AppColors.accent : Colors.white,
+                                                fontWeight: isCurrentPlaying || isCurrentSelected
+                                                    ? FontWeight.bold
+                                                    : FontWeight.normal,
+                                                fontSize: 11.5,
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          'Klip ${idx + 1}',
-                                          style: TextStyle(
-                                            color: isSel ? Colors.white : Colors.white70,
-                                            fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
-                                            fontSize: 11.5,
-                                          ),
-                                        ),
+                                        const SizedBox(height: 3),
                                         Text(
                                           _formatDuration(clip.trimmedDuration),
-                                          style: const TextStyle(
-                                            color: AppColors.accent,
-                                            fontSize: 10,
+                                          style: TextStyle(
+                                            color: isCurrentPlaying ? AppColors.accent : Colors.white70,
+                                            fontSize: 10.5,
                                             fontWeight: FontWeight.bold,
                                           ),
                                         ),
                                       ],
                                     ),
                                   ),
-                                  // Remove clip (X) button if multiple clips
+                                  // Delete clip (X) button if multiple clips
                                   if (_clips.length > 1)
                                     Positioned(
                                       top: -6,
@@ -678,7 +994,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                 // Bottom Bar (Caption + Send)
                 Container(
                   padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-                  color: Colors.black.withOpacity(0.85),
+                  color: Colors.black.withValues(alpha: 0.85),
                   child: Row(
                     children: [
                       Expanded(
@@ -754,10 +1070,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF1F2C34),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppColors.accent.withOpacity(0.4)),
+                      border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.6),
+                          color: Colors.black.withValues(alpha: 0.6),
                           blurRadius: 16,
                           offset: const Offset(0, 4),
                         ),
@@ -777,7 +1093,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                         const SizedBox(height: 18),
                         Text(
                           _processingStatus,
-                          style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 12),
@@ -793,7 +1110,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                         const SizedBox(height: 8),
                         Text(
                           '%${(_processingProgress * 100).round()}',
-                          style: const TextStyle(color: AppColors.accent, fontSize: 13, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: AppColors.accent, fontSize: 13, fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
