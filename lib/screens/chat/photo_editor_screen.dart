@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import '../../constants/app_colors.dart';
+import 'location_picker_screen.dart';
 
 /// The result returned when photo editing is completed
 class PhotoEditorResult {
@@ -589,108 +590,236 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   Future<void> _openLocationDialog() async {
     final locCtrl = TextEditingController();
-    bool isFetching = false;
 
-    await showDialog(
+    await showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (ctx) {
         return StatefulBuilder(
-          builder: (ctx, setDlgState) {
-            return AlertDialog(
-              backgroundColor: const Color(0xFF1F2C34),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              title: const Row(
-                children: [
-                  Icon(Icons.location_on_rounded, color: AppColors.callRed),
-                  SizedBox(width: 8),
-                  Text('Konum Çıkartması', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-                ],
+          builder: (ctx, setSheetState) {
+            return Container(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+                top: 16,
+                left: 16,
+                right: 16,
               ),
-              content: Column(
+              decoration: const BoxDecoration(
+                color: Color(0xFF1F2C34),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  TextField(
-                    controller: locCtrl,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: InputDecoration(
-                      hintText: 'Örn: Kadıköy, İstanbul',
-                      hintStyle: const TextStyle(color: Colors.white38),
-                      filled: true,
-                      fillColor: Colors.black26,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                      prefixIcon: const Icon(Icons.place, color: AppColors.accent),
+                  // Drag indicator
+                  Center(
+                    child: Container(
+                      width: 38,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.surfaceLight,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  // Title row
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.callRed.withOpacity(0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.location_on_rounded, color: AppColors.callRed, size: 22),
+                      ),
+                      const SizedBox(width: 10),
+                      const Text(
+                        'Konum Çıkartması Ekle',
+                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 22),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+
+                  // Button: MAP PICKER ("Haritada İşaretle / Seç")
+                  InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () async {
+                      final LocationPickerResult? picked = await Navigator.push<LocationPickerResult>(
+                        ctx,
+                        MaterialPageRoute(builder: (_) => const LocationPickerScreen()),
+                      );
+                      if (picked != null) {
+                        String name = picked.address;
+                        if (name.isEmpty || name.startsWith('Enlem:')) {
+                          name = picked.title;
+                        }
+                        if (name.isEmpty || name == 'İşaretlenen Nokta' || name.startsWith('Enlem:')) {
+                          name = 'Seçilen Konum';
+                        }
+                        setSheetState(() {
+                          locCtrl.text = name;
+                        });
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF00A884), Color(0xFF008069)],
+                        ),
+                        borderRadius: BorderRadius.circular(14),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF00A884).withOpacity(0.35),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.map_rounded, color: Colors.white, size: 24),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Haritadan Konum İşaretle',
+                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14.5),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Harita üzerinde istediğiniz yeri seçin',
+                                  style: TextStyle(color: Colors.white70, fontSize: 11.5),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Icon(Icons.chevron_right_rounded, color: Colors.white70, size: 22),
+                        ],
+                      ),
                     ),
-                    icon: isFetching
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.my_location, color: AppColors.primaryLight, size: 18),
-                    label: const Text('Mevcut Konumumu Kullan'),
-                    onPressed: isFetching
-                        ? null
-                        : () async {
-                            setDlgState(() => isFetching = true);
-                            try {
-                              bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-                              if (!serviceEnabled) {
-                                setDlgState(() => isFetching = false);
-                                return;
-                              }
-                              LocationPermission permission = await Geolocator.checkPermission();
-                              if (permission == LocationPermission.denied) {
-                                permission = await Geolocator.requestPermission();
-                              }
-                              if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
-                                final pos = await Geolocator.getCurrentPosition(
-                                  desiredAccuracy: LocationAccuracy.medium,
-                                  timeLimit: const Duration(seconds: 5),
-                                );
-                                locCtrl.text = '📍 Konum: (${pos.latitude.toStringAsFixed(3)}, ${pos.longitude.toStringAsFixed(3)})';
-                              }
-                            } catch (_) {
-                              locCtrl.text = '📍 Mevcut Konumum';
-                            }
-                            setDlgState(() => isFetching = false);
-                          },
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  // Divider
+                  Row(
+                    children: [
+                      const Expanded(child: Divider(color: Colors.white12)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Text(
+                          'veya konumu yazın',
+                          style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12),
+                        ),
+                      ),
+                      const Expanded(child: Divider(color: Colors.white12)),
+                    ],
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // Text input for place name
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: TextField(
+                      controller: locCtrl,
+                      style: const TextStyle(color: Colors.white, fontSize: 15),
+                      decoration: InputDecoration(
+                        hintText: 'Örn: Kadıköy, İstanbul veya Kordon...',
+                        hintStyle: const TextStyle(color: Colors.white38, fontSize: 13.5),
+                        border: InputBorder.none,
+                        prefixIcon: const Icon(Icons.edit_location_alt_rounded, color: AppColors.accent, size: 20),
+                        suffixIcon: locCtrl.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear_rounded, color: Colors.white54, size: 18),
+                                onPressed: () => setSheetState(() => locCtrl.clear()),
+                              )
+                            : null,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                      onChanged: (_) => setSheetState(() {}),
+                    ),
+                  ),
+
+                  const SizedBox(height: 10),
+
+                  // Quick suggestions
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      'Kadıköy',
+                      'Beşiktaş',
+                      'Taksim',
+                      'İzmir Kordon',
+                      'Ankara Kızılay',
+                      'Antalya Kaleiçi',
+                      'Bodrum',
+                    ].map((place) {
+                      return ActionChip(
+                        label: Text(place),
+                        backgroundColor: const Color(0xFF263238),
+                        labelStyle: const TextStyle(color: Colors.white70, fontSize: 11.5),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        side: BorderSide.none,
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        onPressed: () {
+                          setSheetState(() {
+                            locCtrl.text = place;
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // Add Badge Button
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.accent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: () {
+                      final text = locCtrl.text.trim();
+                      if (text.isNotEmpty) {
+                        setState(() {
+                          final newItem = OverlayItem(
+                            id: DateTime.now().millisecondsSinceEpoch.toString(),
+                            type: OverlayType.location,
+                            text: text.startsWith('📍') ? text : '📍 $text',
+                            position: const Offset(60, 200),
+                            fontSize: 16.0,
+                          );
+                          _overlays.add(newItem);
+                          _selectedOverlayId = newItem.id;
+                        });
+                        Navigator.pop(ctx);
+                      }
+                    },
+                    child: const Text('Konum Rozetini Ekle', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                   ),
                 ],
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('İptal', style: TextStyle(color: Colors.white60)),
-                ),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.accent,
-                    foregroundColor: Colors.black,
-                  ),
-                  onPressed: () {
-                    final text = locCtrl.text.trim();
-                    if (text.isNotEmpty) {
-                      setState(() {
-                        final newItem = OverlayItem(
-                          id: DateTime.now().millisecondsSinceEpoch.toString(),
-                          type: OverlayType.location,
-                          text: text.startsWith('📍') ? text : '📍 $text',
-                          position: const Offset(60, 200),
-                          fontSize: 16.0,
-                        );
-                        _overlays.add(newItem);
-                        _selectedOverlayId = newItem.id;
-                      });
-                    }
-                    Navigator.pop(ctx);
-                  },
-                  child: const Text('Ekle', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-              ],
             );
           },
         );
