@@ -7,9 +7,9 @@ import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Presentation
-import androidx.media3.exoplayer.audio.SonicAudioProcessor
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
@@ -113,7 +113,12 @@ class MainActivity : FlutterActivity() {
                 resampleAudio = false
             )
 
-            val comp = Composition.Builder(EditedMediaItemSequence(item)).build()
+            val sequence = if (isMuted) {
+                EditedMediaItemSequence.withVideoFrom(listOf(item))
+            } else {
+                EditedMediaItemSequence.withAudioAndVideoFrom(listOf(item))
+            }
+            val comp = Composition.Builder(listOf(sequence)).build()
             runTransformerExport(context, comp, outputFile)
             return@withContext outputFile.absolutePath
         }
@@ -142,7 +147,11 @@ class MainActivity : FlutterActivity() {
                 )
             }
 
-            val sequence = EditedMediaItemSequence(editedItems)
+            val sequence = if (isMuted) {
+                EditedMediaItemSequence.withVideoFrom(editedItems)
+            } else {
+                EditedMediaItemSequence.withAudioAndVideoFrom(editedItems)
+            }
 
             val comp = Composition.Builder(listOf(sequence))
                 .setTransmuxVideo(false)
@@ -182,7 +191,12 @@ class MainActivity : FlutterActivity() {
                     resampleAudio = true
                 )
 
-                val comp = Composition.Builder(EditedMediaItemSequence(item)).build()
+                val sequence = if (isMuted) {
+                    EditedMediaItemSequence.withVideoFrom(listOf(item))
+                } else {
+                    EditedMediaItemSequence.withAudioAndVideoFrom(listOf(item))
+                }
+                val comp = Composition.Builder(listOf(sequence)).build()
                 runTransformerExport(context, comp, partFile)
             }
 
@@ -192,7 +206,11 @@ class MainActivity : FlutterActivity() {
                 EditedMediaItem.Builder(mediaItem).build()
             }
 
-            val seq = EditedMediaItemSequence(partItems)
+            val seq = if (isMuted) {
+                EditedMediaItemSequence.withVideoFrom(partItems)
+            } else {
+                EditedMediaItemSequence.withAudioAndVideoFrom(partItems)
+            }
 
             val finalComp = Composition.Builder(listOf(seq))
                 .setTransmuxVideo(false)
