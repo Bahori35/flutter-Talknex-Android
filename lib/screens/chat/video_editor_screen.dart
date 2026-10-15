@@ -431,10 +431,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       final videoPaths = _clips.map((c) => c.file.path).toList();
       final Map<String, int> trimStarts = {};
       final Map<String, int> trimEnds = {};
+      final Map<String, int> totalDurations = {};
 
       for (final clip in _clips) {
         trimStarts[clip.file.path] = clip.startTrim.inMilliseconds;
         trimEnds[clip.file.path] = clip.endTrim.inMilliseconds;
+        totalDurations[clip.file.path] = clip.totalDuration.inMilliseconds;
       }
 
       // Call native crash-proof Media3 video processor
@@ -447,10 +449,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
             'isMuted': _isMuted,
             'trimStarts': trimStarts,
             'trimEnds': trimEnds,
+            'totalDurations': totalDurations,
           },
         );
       } catch (nativeErr) {
         debugPrint('[NATIVE VIDEO PROCESSING ERR] $nativeErr');
+        if (_clips.length > 1) {
+          rethrow;
+        }
+      }
+
+      if (_clips.length > 1 && (resultPath == null || !File(resultPath).existsSync())) {
+        throw Exception('Videolar birleştirilemedi.');
       }
 
       final finalVideoPath = (resultPath != null && File(resultPath).existsSync())

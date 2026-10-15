@@ -41,6 +41,7 @@ class MainActivity : FlutterActivity() {
                     val isMuted = call.argument<Boolean>("isMuted") ?: false
                     val trimStarts = call.argument<Map<String, Number>>("trimStarts") ?: emptyMap()
                     val trimEnds = call.argument<Map<String, Number>>("trimEnds") ?: emptyMap()
+                    val totalDurations = call.argument<Map<String, Number>>("totalDurations") ?: emptyMap()
 
                     if (videoPaths.isEmpty()) {
                         result.error("INVALID_ARGS", "Video paths cannot be empty", null)
@@ -54,12 +55,13 @@ class MainActivity : FlutterActivity() {
                                 videoPaths = videoPaths,
                                 isMuted = isMuted,
                                 trimStarts = trimStarts,
-                                trimEnds = trimEnds
+                                trimEnds = trimEnds,
+                                totalDurations = totalDurations
                             )
                             result.success(outputPath)
                         } catch (t: Throwable) {
                             android.util.Log.e("MainActivity", "Video processing failed", t)
-                            result.success(videoPaths.firstOrNull())
+                            result.error("VIDEO_PROCESS_ERROR", t.message ?: "Video birleştirilemedi", null)
                         }
                     }
                 } else {
@@ -73,11 +75,12 @@ class MainActivity : FlutterActivity() {
         videoPaths: List<String>,
         isMuted: Boolean,
         trimStarts: Map<String, Number>,
-        trimEnds: Map<String, Number>
+        trimEnds: Map<String, Number>,
+        totalDurations: Map<String, Number>
     ): String = withContext(Dispatchers.Main) {
         val validPaths = videoPaths.filter { File(it).exists() }
         if (validPaths.isEmpty()) {
-            throw IllegalArgumentException("None of the provided video files exist.")
+            throw IllegalArgumentException("Belirtilen video dosyaları bulunamadı.")
         }
 
         // Calculate safe dimensions (Max 1280 to prevent any OOM or encoder failure on Android)
@@ -101,42 +104,60 @@ class MainActivity : FlutterActivity() {
         if (maxW % 2 != 0) maxW += 1
         if (maxH % 2 != 0) maxH += 1
 
-        val presentation = Presentation.createForWidthAndHeight(
-            maxW,
-            maxH,
-            Presentation.LAYOUT_SCALE_TO_FIT
-        )
+        val allHaveAudio = validPaths.all { checkHasAudio(it) }
+        val shouldRemoveAudio = isMuted || !allHaveAudio
 
         val outputFile = File(
             context.cacheDir,
-            "processed_video_${System.currentTimeMillis()}.mp4"
-        ).apply { if (exists()) delete() }
+            "merged_${System.currentTimeMillis()}.mp4"
+        ).apply {
+            parentFile?.mkdirs()
+            if (exists()) delete()
+        }
 
         val editedItems = validPaths.map { path ->
             val startMs = trimStarts[path]?.toLong() ?: 0L
             val endMs = trimEnds[path]?.toLong() ?: 0L
+            val totalMs = totalDurations[path]?.toLong() ?: 0L
 
             val mediaItemBuilder = MediaItem.Builder().setUri(Uri.fromFile(File(path)))
-            if (startMs > 100L || endMs > 100L) {
+
+            val isStartTrimmed = startMs > 250L
+            val isEndTrimmed = endMs > 0L && totalMs > 0L && (totalMs - endMs) > 300L
+
+            if (isStartTrimmed || isEndTrimmed) {
                 val clipBuilder = MediaItem.ClippingConfiguration.Builder()
-                if (startMs > 100L) clipBuilder.setStartPositionMs(startMs)
-                if (endMs > startMs) clipBuilder.setEndPositionMs(endMs)
+                if (isStartTrimmed) {
+                    clipBuilder.setStartPositionMs(startMs)
+                }
+                if (isEndTrimmed) {
+                    clipBuilder.setEndPositionMs(endMs)
+                }
                 mediaItemBuilder.setClippingConfiguration(clipBuilder.build())
             }
+
+            val presentation = Presentation.createForWidthAndHeight(
+                maxW,
+                maxH,
+                Presentation.LAYOUT_SCALE_TO_FIT
+            )
 
             val editedBuilder = EditedMediaItem.Builder(mediaItemBuilder.build())
                 .setEffects(Effects(emptyList(), listOf(presentation)))
 
-            if (isMuted) {
+            if (shouldRemoveAudio) {
                 editedBuilder.setRemoveAudio(true)
             }
             editedBuilder.build()
         }
 
         val sequence = EditedMediaItemSequence(editedItems)
-        val composition = Composition.Builder(listOf(sequence)).build()
+        val composition = Composition.Builder(listOf(sequence))
+            .setTransmuxVideo(false)
+            .setTransmuxAudio(false)
+            .build()
 
-        kotlin.coroutines.suspendCoroutine { continuation ->
+        kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
             try {
                 val encoderFactory = DefaultEncoderFactory.Builder(context)
                     .setEnableFallback(true)
@@ -148,7 +169,9 @@ class MainActivity : FlutterActivity() {
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
                     .addListener(object : Transformer.Listener {
                         override fun onCompleted(comp: Composition, exportResult: ExportResult) {
-                            continuation.resumeWith(Result.success(outputFile.absolutePath))
+                            if (continuation.isActive) {
+                                continuation.resumeWith(Result.success(outputFile.absolutePath))
+                            }
                         }
 
                         override fun onError(
@@ -156,18 +179,40 @@ class MainActivity : FlutterActivity() {
                             exportResult: ExportResult,
                             exportException: ExportException
                         ) {
-                            android.util.Log.w("MainActivity", "Transformer error: ${exportException.message}")
+                            android.util.Log.e("MainActivity", "Transformer error: ${exportException.message}", exportException)
                             outputFile.delete()
-                            continuation.resumeWith(Result.success(validPaths[0]))
+                            if (continuation.isActive) {
+                                continuation.resumeWith(Result.failure(exportException))
+                            }
                         }
                     })
                     .build()
 
+                continuation.invokeOnCancellation {
+                    try { transformer.cancel() } catch (_: Throwable) {}
+                    try { outputFile.delete() } catch (_: Throwable) {}
+                }
+
                 transformer.start(composition, outputFile.absolutePath)
             } catch (e: Throwable) {
                 android.util.Log.e("MainActivity", "Transformer startup exception", e)
-                continuation.resumeWith(Result.success(validPaths[0]))
+                if (continuation.isActive) {
+                    continuation.resumeWith(Result.failure(e))
+                }
             }
+        }
+    }
+
+    private fun checkHasAudio(videoPath: String): Boolean {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(videoPath)
+            val hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
+            hasAudio == "yes"
+        } catch (_: Throwable) {
+            true
+        } finally {
+            try { retriever.release() } catch (_: Throwable) {}
         }
     }
 
