@@ -47,6 +47,7 @@ class MainActivity : FlutterActivity() {
                     val videoVolume = call.argument<Number>("videoVolume")?.toDouble() ?: (if (isMuted) 0.0 else 1.0)
                     val audioTrackPath = call.argument<String>("audioTrackPath")
                     val audioTrackVolume = call.argument<Number>("audioTrackVolume")?.toDouble() ?: 1.0
+                    val audioTrackStartMs = call.argument<Number>("audioTrackStartMs")?.toLong() ?: 0L
                     val trimStarts = call.argument<Map<String, Number>>("trimStarts") ?: emptyMap()
                     val trimEnds = call.argument<Map<String, Number>>("trimEnds") ?: emptyMap()
                     val totalDurations = call.argument<Map<String, Number>>("totalDurations") ?: emptyMap()
@@ -64,6 +65,7 @@ class MainActivity : FlutterActivity() {
                                 videoVolume = videoVolume,
                                 audioTrackPath = audioTrackPath,
                                 audioTrackVolume = audioTrackVolume,
+                                audioTrackStartMs = audioTrackStartMs,
                                 trimStarts = trimStarts,
                                 trimEnds = trimEnds,
                                 totalDurations = totalDurations
@@ -86,6 +88,7 @@ class MainActivity : FlutterActivity() {
         videoVolume: Double,
         audioTrackPath: String?,
         audioTrackVolume: Double,
+        audioTrackStartMs: Long,
         trimStarts: Map<String, Number>,
         trimEnds: Map<String, Number>,
         totalDurations: Map<String, Number>
@@ -130,7 +133,7 @@ class MainActivity : FlutterActivity() {
                 EditedMediaItemSequence.withAudioAndVideoFrom(listOf(item))
             }
 
-            val comp = buildComposition(sequence, audioTrackPath, audioTrackVolume)
+            val comp = buildComposition(sequence, audioTrackPath, audioTrackVolume, audioTrackStartMs)
             runTransformerExport(context, comp, outputFile)
             return@withContext outputFile.absolutePath
         }
@@ -165,7 +168,7 @@ class MainActivity : FlutterActivity() {
                 EditedMediaItemSequence.withAudioAndVideoFrom(editedItems)
             }
 
-            val comp = buildComposition(sequence, audioTrackPath, audioTrackVolume)
+            val comp = buildComposition(sequence, audioTrackPath, audioTrackVolume, audioTrackStartMs)
             runTransformerExport(context, comp, finalOutputFile)
             return@withContext finalOutputFile.absolutePath
         } catch (attempt1Err: Throwable) {
@@ -220,7 +223,7 @@ class MainActivity : FlutterActivity() {
                 EditedMediaItemSequence.withAudioAndVideoFrom(partItems)
             }
 
-            val finalComp = buildComposition(seq, audioTrackPath, audioTrackVolume)
+            val finalComp = buildComposition(seq, audioTrackPath, audioTrackVolume, audioTrackStartMs)
             runTransformerExport(context, finalComp, finalOutputFile)
             return@withContext finalOutputFile.absolutePath
         } finally {
@@ -233,13 +236,14 @@ class MainActivity : FlutterActivity() {
     private fun buildComposition(
         videoSequence: EditedMediaItemSequence,
         audioTrackPath: String?,
-        audioTrackVolume: Double
+        audioTrackVolume: Double,
+        audioTrackStartMs: Long
     ): Composition {
         val sequences = mutableListOf<EditedMediaItemSequence>()
         sequences.add(videoSequence)
 
         if (!audioTrackPath.isNullOrBlank()) {
-            val bgSeq = buildBackgroundAudioSequence(audioTrackPath, audioTrackVolume)
+            val bgSeq = buildBackgroundAudioSequence(audioTrackPath, audioTrackVolume, audioTrackStartMs)
             if (bgSeq != null) {
                 sequences.add(bgSeq)
             }
@@ -253,12 +257,21 @@ class MainActivity : FlutterActivity() {
 
     private fun buildBackgroundAudioSequence(
         audioPath: String,
-        audioVolume: Double
+        audioVolume: Double,
+        audioStartMs: Long
     ): EditedMediaItemSequence? {
         val file = File(audioPath)
         if (!file.exists()) return null
         return try {
-            val mediaItem = MediaItem.Builder().setUri(Uri.fromFile(file)).build()
+            val mediaItemBuilder = MediaItem.Builder().setUri(Uri.fromFile(file))
+            if (audioStartMs > 100L) {
+                mediaItemBuilder.setClippingConfiguration(
+                    MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(audioStartMs)
+                        .build()
+                )
+            }
+            val mediaItem = mediaItemBuilder.build()
             val processors = mutableListOf<AudioProcessor>()
             processors.add(SonicAudioProcessor().apply { setOutputSampleRateHz(48000) })
             if (audioVolume in 0.02..0.98) {

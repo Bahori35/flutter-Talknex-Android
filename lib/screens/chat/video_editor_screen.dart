@@ -71,6 +71,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   String? _bgMusicName;
   double _bgMusicVolume = 0.7; // 0.0 to 1.0
   AudioPlayer? _bgMusicPlayer;
+  Duration _bgMusicTotalDuration = Duration.zero;
+  Duration _bgMusicStartTrim = Duration.zero;
 
   bool _isProcessing = false;
   double _processingProgress = 0.0;
@@ -176,7 +178,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     }
 
     if (nextIndex == 0) {
-      _bgMusicPlayer?.seek(Duration.zero);
+      _bgMusicPlayer?.seek(_bgMusicStartTrim);
     }
     setState(() {});
   }
@@ -224,7 +226,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   }
 
   void _seekMergedPosition(Duration targetPos) {
-    _bgMusicPlayer?.seek(targetPos);
+    _bgMusicPlayer?.seek(_bgMusicStartTrim + targetPos);
     Duration accumulated = Duration.zero;
     for (int i = 0; i < _clips.length; i++) {
       final clipDur = _clips[i].trimmedDuration;
@@ -283,7 +285,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
           }
           activeController.play();
         }
-        _bgMusicPlayer?.seek(_currentMergedPosition);
+        _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
         _bgMusicPlayer?.resume();
       } else {
         _pauseAllControllers();
@@ -328,6 +330,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     });
   }
 
+  double _calcMaxMusicStartTrim() {
+    if (_bgMusicTotalDuration > _totalMergedDuration && _totalMergedDuration > Duration.zero) {
+      return (_bgMusicTotalDuration - _totalMergedDuration).inMilliseconds.toDouble();
+    } else if (_bgMusicTotalDuration.inMilliseconds > 0) {
+      return _bgMusicTotalDuration.inMilliseconds.toDouble();
+    }
+    return 60000.0;
+  }
+
+  void _setMusicStartTrim(Duration startOffset) {
+    setState(() {
+      _bgMusicStartTrim = startOffset;
+    });
+    if (_isPlaying) {
+      _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
+    } else {
+      _bgMusicPlayer?.seek(_bgMusicStartTrim);
+    }
+  }
+
   Future<void> _pickMusic() async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -343,18 +365,48 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       await _bgMusicPlayer?.dispose();
 
       final player = AudioPlayer();
+      // Disable Android AudioFocus arbitration so AudioPlayer and VideoPlayer can play simultaneously!
+      await player.setAudioContext(
+        AudioContext(
+          android: const AudioContextAndroid(
+            isSpeakerphoneOn: false,
+            stayAwake: false,
+            contentType: AndroidContentType.music,
+            usageType: AndroidUsageType.media,
+            audioFocus: AndroidAudioFocus.none,
+          ),
+        ),
+      );
       await player.setReleaseMode(ReleaseMode.loop);
       await player.setSource(DeviceFileSource(pickedFile.path));
       await player.setVolume(_bgMusicVolume);
+
+      Duration musicDur = Duration.zero;
+      try {
+        final d = await player.getDuration();
+        if (d != null && d > Duration.zero) {
+          musicDur = d;
+        }
+      } catch (_) {}
 
       setState(() {
         _bgMusicFile = pickedFile;
         _bgMusicName = name;
         _bgMusicPlayer = player;
+        _bgMusicTotalDuration = musicDur;
+        _bgMusicStartTrim = Duration.zero;
+      });
+
+      player.onDurationChanged.listen((d) {
+        if (mounted && d > Duration.zero && _bgMusicTotalDuration != d) {
+          setState(() {
+            _bgMusicTotalDuration = d;
+          });
+        }
       });
 
       if (_isPlaying) {
-        await _bgMusicPlayer?.seek(_currentMergedPosition);
+        await _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
         await _bgMusicPlayer?.resume();
       }
 
@@ -404,6 +456,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       _bgMusicFile = null;
       _bgMusicName = null;
       _bgMusicPlayer = null;
+      _bgMusicTotalDuration = Duration.zero;
+      _bgMusicStartTrim = Duration.zero;
     });
 
     if (mounted) {
@@ -819,6 +873,88 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                                     color: Colors.white70, size: 20),
                               ],
                             ),
+                            const SizedBox(height: 12),
+                            // Music Trimming / Start Offset Section
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF141D22),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: Colors.white12),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      const Row(
+                                        children: [
+                                          Icon(Icons.content_cut_rounded,
+                                              color: AppColors.accent, size: 16),
+                                          SizedBox(width: 6),
+                                          Text(
+                                            'Şarkı Kesme / Başlangıç Aralığı',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      if (_bgMusicTotalDuration > Duration.zero)
+                                        Text(
+                                          'Toplam: ${_formatDuration(_bgMusicTotalDuration)}',
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'Çalınacak Aralık: ${_formatDuration(_bgMusicStartTrim)} - ${_formatDuration(_bgMusicStartTrim + _totalMergedDuration)} (Video: ${_formatDuration(_totalMergedDuration)})',
+                                    style: const TextStyle(
+                                      color: AppColors.accent,
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  Builder(
+                                    builder: (context) {
+                                      final maxTrim = _calcMaxMusicStartTrim();
+                                      final currentMs = _bgMusicStartTrim.inMilliseconds
+                                          .toDouble()
+                                          .clamp(0.0, maxTrim > 0 ? maxTrim : 1.0);
+                                      return SliderTheme(
+                                        data: SliderTheme.of(context).copyWith(
+                                          activeTrackColor: AppColors.accent,
+                                          inactiveTrackColor: Colors.white24,
+                                          thumbColor: AppColors.accent,
+                                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                                          trackHeight: 3.5,
+                                        ),
+                                        child: Slider(
+                                          min: 0.0,
+                                          max: maxTrim > 0 ? maxTrim : 1.0,
+                                          value: currentMs,
+                                          onChanged: maxTrim > 0
+                                              ? (val) {
+                                                  setSheetState(() {
+                                                    _setMusicStartTrim(Duration(milliseconds: val.toInt()));
+                                                  });
+                                                  setState(() {});
+                                                }
+                                              : null,
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
                           ],
                         ],
                       ),
@@ -1055,6 +1191,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
             'videoVolume': _isMuted ? 0.0 : _videoVolume,
             'audioTrackPath': _bgMusicFile?.path,
             'audioTrackVolume': _bgMusicVolume,
+            'audioTrackStartMs': _bgMusicStartTrim.inMilliseconds,
             'trimStarts': trimStarts,
             'trimEnds': trimEnds,
             'totalDurations': totalDurations,
@@ -1566,66 +1703,126 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                       else
                         Padding(
                           padding: const EdgeInsets.only(top: 2),
-                          child: Row(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.music_note_rounded,
-                                  color: AppColors.accent, size: 18),
-                              const SizedBox(width: 6),
-                              ConstrainedBox(
-                                constraints: const BoxConstraints(maxWidth: 80),
-                                child: Text(
-                                  _bgMusicName ?? 'Müzik',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: SliderTheme(
-                                  data: SliderTheme.of(context).copyWith(
-                                    activeTrackColor: AppColors.accent,
-                                    inactiveTrackColor: Colors.white24,
-                                    thumbColor: AppColors.accent,
-                                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                                    trackHeight: 3,
-                                  ),
-                                  child: Slider(
-                                    min: 0.0,
-                                    max: 1.0,
-                                    value: _bgMusicVolume,
-                                    onChanged: (val) {
-                                      _setBgMusicVolume(val);
-                                    },
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                '%${(_bgMusicVolume * 100).round()}',
-                                style: const TextStyle(
-                                  color: AppColors.accent,
-                                  fontSize: 10.5,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(width: 4),
-                              GestureDetector(
-                                onTap: _pickMusic,
-                                child: const Padding(
-                                  padding: EdgeInsets.symmetric(horizontal: 4),
-                                  child: Icon(Icons.swap_horiz_rounded,
+                              Row(
+                                children: [
+                                  const Icon(Icons.music_note_rounded,
                                       color: AppColors.accent, size: 18),
-                                ),
+                                  const SizedBox(width: 6),
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 80),
+                                    child: Text(
+                                      _bgMusicName ?? 'Müzik',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: SliderTheme(
+                                      data: SliderTheme.of(context).copyWith(
+                                        activeTrackColor: AppColors.accent,
+                                        inactiveTrackColor: Colors.white24,
+                                        thumbColor: AppColors.accent,
+                                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                                        trackHeight: 3,
+                                      ),
+                                      child: Slider(
+                                        min: 0.0,
+                                        max: 1.0,
+                                        value: _bgMusicVolume,
+                                        onChanged: (val) {
+                                          _setBgMusicVolume(val);
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    '%${(_bgMusicVolume * 100).round()}',
+                                    style: const TextStyle(
+                                      color: AppColors.accent,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  GestureDetector(
+                                    onTap: _pickMusic,
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(horizontal: 4),
+                                      child: Icon(Icons.swap_horiz_rounded,
+                                          color: AppColors.accent, size: 18),
+                                    ),
+                                  ),
+                                  GestureDetector(
+                                    onTap: _removeMusic,
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(horizontal: 4),
+                                      child: Icon(Icons.close_rounded,
+                                          color: AppColors.callRed, size: 18),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              GestureDetector(
-                                onTap: _removeMusic,
-                                child: const Padding(
-                                  padding: EdgeInsets.symmetric(horizontal: 4),
-                                  child: Icon(Icons.close_rounded,
-                                      color: AppColors.callRed, size: 18),
+                              Padding(
+                                padding: const EdgeInsets.only(top: 3),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.content_cut_rounded,
+                                        color: AppColors.accent, size: 14),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      'Kes: ${_formatDuration(_bgMusicStartTrim)} - ${_formatDuration(_bgMusicStartTrim + _totalMergedDuration)}',
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Builder(
+                                        builder: (context) {
+                                          final maxTrim = _calcMaxMusicStartTrim();
+                                          final currentMs = _bgMusicStartTrim.inMilliseconds
+                                              .toDouble()
+                                              .clamp(0.0, maxTrim > 0 ? maxTrim : 1.0);
+                                          return SliderTheme(
+                                            data: SliderTheme.of(context).copyWith(
+                                              activeTrackColor: AppColors.accent,
+                                              inactiveTrackColor: Colors.white24,
+                                              thumbColor: AppColors.accent,
+                                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                                              trackHeight: 2.5,
+                                            ),
+                                            child: Slider(
+                                              min: 0.0,
+                                              max: maxTrim > 0 ? maxTrim : 1.0,
+                                              value: currentMs,
+                                              onChanged: maxTrim > 0
+                                                  ? (val) {
+                                                      _setMusicStartTrim(Duration(milliseconds: val.toInt()));
+                                                    }
+                                                  : null,
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                    if (_bgMusicTotalDuration > Duration.zero)
+                                      Text(
+                                        _formatDuration(_bgMusicTotalDuration),
+                                        style: const TextStyle(
+                                          color: Colors.white38,
+                                          fontSize: 10,
+                                        ),
+                                      ),
+                                  ],
                                 ),
                               ),
                             ],
@@ -1699,6 +1896,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                               });
                               if (_playingClipIndex == _selectedClipIndex) {
                                 _controllers[_selectedClipIndex]?.seekTo(selectedClip.startTrim);
+                                _bgMusicPlayer?.seek(_bgMusicStartTrim + _currentMergedPosition);
                               }
                             },
                           ),
