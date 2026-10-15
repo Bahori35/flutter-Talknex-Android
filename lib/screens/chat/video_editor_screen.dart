@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:easy_video_editor/easy_video_editor.dart';
 import '../../constants/app_colors.dart';
+
+const MethodChannel _nativeVideoChannel = MethodChannel('com.safechat.app/video');
 
 /// The result returned when video editing is completed
 class VideoEditorResult {
@@ -419,99 +421,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
 
       await Future.delayed(const Duration(milliseconds: 300));
 
-      final editor = EasyVideoEditorPlatform.instance;
-      List<String> processedClipPaths = [];
+      setState(() {
+        _processingStatus = _clips.length > 1
+            ? '${_clips.length} video birleştiriliyor...'
+            : 'Video işleniyor...';
+        _processingProgress = 0.5;
+      });
 
-      // 2. Trim clips only if actually trimmed by user (avoiding unnecessary re-encoding)
-      for (int i = 0; i < _clips.length; i++) {
-        final clip = _clips[i];
-        final startMs = clip.startTrim.inMilliseconds;
-        final endMs = clip.endTrim.inMilliseconds;
-        final totalMs = clip.totalDuration.inMilliseconds;
+      final videoPaths = _clips.map((c) => c.file.path).toList();
+      final Map<String, int> trimStarts = {};
+      final Map<String, int> trimEnds = {};
 
-        setState(() {
-          _processingStatus = 'Klip ${i + 1}/${_clips.length} hazırlanıyor...';
-          _processingProgress = (i / (_clips.length + 1)) * 0.7;
-        });
-
-        final safeStart = (startMs >= 0 && (totalMs == 0 || startMs < totalMs)) ? startMs : 0;
-        final safeEnd = (endMs > safeStart)
-            ? (totalMs > 0 && endMs > totalMs ? totalMs : endMs)
-            : (totalMs > 0 ? totalMs : safeStart + 1000);
-
-        // Only trim if user adjusted range by more than 250ms from ends
-        final bool needsTrim = safeStart > 250 || (totalMs > 0 && (totalMs - safeEnd) > 250);
-
-        if (needsTrim) {
-          try {
-            final trimmedPath = await editor.trimVideo(
-              clip.file.path,
-              safeStart,
-              safeEnd,
-            );
-            if (trimmedPath != null && File(trimmedPath).existsSync()) {
-              processedClipPaths.add(trimmedPath);
-            } else {
-              processedClipPaths.add(clip.file.path);
-            }
-          } catch (trimErr) {
-            debugPrint('[TRIM ERR FOR CLIP $i] $trimErr');
-            processedClipPaths.add(clip.file.path);
-          }
-        } else {
-          processedClipPaths.add(clip.file.path);
-        }
+      for (final clip in _clips) {
+        trimStarts[clip.file.path] = clip.startTrim.inMilliseconds;
+        trimEnds[clip.file.path] = clip.endTrim.inMilliseconds;
       }
 
-      String finalVideoPath;
-
-      // 3. Merge clips if multiple, or finalize single clip
-      if (processedClipPaths.length > 1) {
-        setState(() {
-          _processingStatus = '${processedClipPaths.length} video birleştiriliyor...';
-          _processingProgress = 0.75;
-        });
-
-        try {
-          final mergeResult = await editor.mergeVideos(processedClipPaths);
-          if (mergeResult != null && File(mergeResult).existsSync()) {
-            finalVideoPath = mergeResult;
-          } else {
-            throw Exception('Birleştirme sonucu dosya oluşturulamadı.');
-          }
-        } catch (mergeErr) {
-          debugPrint('[MERGE EXCEPTION, FALLBACK TO FIRST CLIP] $mergeErr');
-          finalVideoPath = processedClipPaths[0];
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Videolar birleştirilirken uyumsuzluk oldu, birinci video gönderiliyor.'),
-                backgroundColor: AppColors.callRed,
-                behavior: SnackBarBehavior.floating,
-                duration: Duration(seconds: 4),
-              ),
-            );
-          }
-        }
-      } else {
-        finalVideoPath = processedClipPaths[0];
+      // Call native crash-proof Media3 video processor
+      String? resultPath;
+      try {
+        resultPath = await _nativeVideoChannel.invokeMethod<String>(
+          'mergeAndProcessVideos',
+          {
+            'videoPaths': videoPaths,
+            'isMuted': _isMuted,
+            'trimStarts': trimStarts,
+            'trimEnds': trimEnds,
+          },
+        );
+      } catch (nativeErr) {
+        debugPrint('[NATIVE VIDEO PROCESSING ERR] $nativeErr');
       }
 
-      // 4. Mute if requested
-      if (_isMuted) {
-        setState(() {
-          _processingStatus = 'Ses kaldırılıyor...';
-          _processingProgress = 0.95;
-        });
-        try {
-          final muteResult = await editor.removeAudio(finalVideoPath);
-          if (muteResult != null && File(muteResult).existsSync()) {
-            finalVideoPath = muteResult;
-          }
-        } catch (muteErr) {
-          debugPrint('[REMOVE AUDIO ERR] $muteErr');
-        }
-      }
+      final finalVideoPath = (resultPath != null && File(resultPath).existsSync())
+          ? resultPath
+          : _clips[0].file.path;
 
       if (!mounted) return;
 
