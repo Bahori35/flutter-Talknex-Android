@@ -894,7 +894,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   // --- UI COMPONENT: HEADER BAR ---
   Widget _buildHeaderBar(Duration currentMerged, Duration totalMerged) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: const BoxDecoration(
         color: Color(0xFF0E161B),
         border: Border(bottom: BorderSide(color: Colors.white10)),
@@ -902,66 +902,77 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       child: Row(
         children: [
           IconButton(
+            padding: const EdgeInsets.all(6),
+            constraints: const BoxConstraints(),
             icon: const Icon(Icons.close_rounded, color: Colors.white, size: 24),
             onPressed: () => Navigator.pop(context),
             tooltip: 'Kapat',
           ),
-          const SizedBox(width: 4),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Stüdyo Video Düzenleyici',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.3,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Video Düzenleyici',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.2,
+                  ),
                 ),
-              ),
-              Text(
-                '${_clips.length} Klip • ${_formatDuration(totalMerged)}',
-                style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
+                Text(
+                  '${_clips.length} Klip • Toplam ${_formatDuration(totalMerged)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-          const Spacer(),
+          const SizedBox(width: 6),
           // Mute Toggle Icon Button
           IconButton(
+            padding: const EdgeInsets.all(6),
+            constraints: const BoxConstraints(),
             icon: Icon(
               _isMuted || _videoVolume == 0.0
                   ? Icons.volume_off_rounded
                   : Icons.volume_up_rounded,
               color: (_isMuted || _videoVolume == 0.0) ? AppColors.callRed : Colors.white70,
-              size: 22,
+              size: 21,
             ),
             tooltip: _isMuted ? 'Sesi Aç' : 'Sesi Kapat',
             onPressed: _toggleMute,
           ),
+          const SizedBox(width: 6),
           // Total Duration Pill
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
               color: const Color(0xFF1B2730),
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.timer_outlined, color: AppColors.accent, size: 14),
+                const Icon(Icons.timer_outlined, color: AppColors.accent, size: 13),
                 const SizedBox(width: 4),
                 Text(
                   '${_formatDuration(currentMerged)} / ${_formatDuration(totalMerged)}',
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
-                    fontSize: 11.5,
+                    fontSize: 11,
                   ),
                 ),
               ],
@@ -1272,13 +1283,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
               size: 15,
               color: isSelected ? AppColors.accent : (hasHighlight ? AppColors.accent : Colors.white70),
             ),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: TextStyle(
-                color: isSelected ? Colors.white : Colors.white70,
-                fontSize: 12,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+            const SizedBox(width: 5),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: isSelected ? Colors.white : Colors.white70,
+                  fontSize: 12,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                ),
               ),
             ),
             if (badgeText != null) ...[
@@ -1340,24 +1355,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  const Icon(Icons.content_cut_rounded, color: AppColors.accent, size: 15),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Klip ${_selectedClipIndex + 1} Kesme Aralığı:',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.bold,
+              Expanded(
+                child: Row(
+                  children: [
+                    const Icon(Icons.content_cut_rounded, color: AppColors.accent, size: 15),
+                    const SizedBox(width: 5),
+                    Flexible(
+                      child: Text(
+                        'Klip ${_selectedClipIndex + 1}:',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
+              const SizedBox(width: 6),
               Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                     decoration: BoxDecoration(
                       color: AppColors.accent.withValues(alpha: 0.18),
                       borderRadius: BorderRadius.circular(8),
@@ -1368,7 +1391,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                       style: const TextStyle(
                         color: AppColors.accent,
                         fontWeight: FontWeight.bold,
-                        fontSize: 11.5,
+                        fontSize: 11,
                       ),
                     ),
                   ),
