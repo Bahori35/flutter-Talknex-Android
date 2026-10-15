@@ -19,6 +19,7 @@ import '../../services/socket_service.dart';
 import '../../services/encryption_service.dart';
 import 'group_info_screen.dart';
 import '../chat/photo_editor_screen.dart';
+import '../chat/video_editor_screen.dart';
 import '../chat/location_picker_screen.dart';
 import '../chat/widgets/video_message_bubble.dart';
 import '../chat/widgets/decrypted_image_widget.dart';
@@ -360,6 +361,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         unencryptedLocalFile = editorResult.file;
         if (editorResult.caption.isNotEmpty) {
           caption = editorResult.caption;
+        }
+      } else {
+        // WhatsApp-style Video Editor (Trimming, Merging, Mute, Caption)
+        final videoResult = await Navigator.push<VideoEditorResult>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => VideoEditorScreen(initialVideoFile: File(file!.path)),
+          ),
+        );
+        if (videoResult == null) return; // User cancelled editing
+        unencryptedLocalFile = videoResult.file;
+        if (videoResult.caption.isNotEmpty) {
+          caption = videoResult.caption;
         }
       }
 

@@ -23,6 +23,7 @@ import '../call/call_screen.dart';
 import 'location_picker_screen.dart';
 import 'live_location_screen.dart';
 import 'video_player_screen.dart';
+import 'video_editor_screen.dart';
 import 'photo_editor_screen.dart';
 import 'widgets/video_message_bubble.dart';
 import 'widgets/decrypted_image_widget.dart';
@@ -382,6 +383,19 @@ class _ChatScreenState extends State<ChatScreen> {
         unencryptedLocalFile = editorResult.file;
         if (editorResult.caption.isNotEmpty) {
           caption = editorResult.caption;
+        }
+      } else {
+        // WhatsApp-style Video Editor (Trimming, Merging, Mute, Caption)
+        final videoResult = await Navigator.push<VideoEditorResult>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => VideoEditorScreen(initialVideoFile: File(file!.path)),
+          ),
+        );
+        if (videoResult == null) return; // User cancelled editing
+        unencryptedLocalFile = videoResult.file;
+        if (videoResult.caption.isNotEmpty) {
+          caption = videoResult.caption;
         }
       }
 
