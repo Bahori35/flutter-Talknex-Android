@@ -6,8 +6,10 @@ import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Presentation
+import androidx.media3.exoplayer.audio.SonicAudioProcessor
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
@@ -83,136 +85,230 @@ class MainActivity : FlutterActivity() {
             throw IllegalArgumentException("Belirtilen video dosyaları bulunamadı.")
         }
 
-        // Calculate safe dimensions (Max 1280 to prevent any OOM or encoder failure on Android)
-        var maxW = 0
-        var maxH = 0
-        for (path in validPaths) {
-            val (w, h) = getVideoDimensions(path)
-            if (w > maxW) maxW = w
-            if (h > maxH) maxH = h
-        }
+        // Determine orientation from first clip (Standard 720p aligned to 16-pixel macroblocks)
+        val (firstW, firstH) = getVideoDimensions(validPaths[0])
+        val isPortrait = firstH >= firstW
+        val targetWidth = if (isPortrait) 720 else 1280
+        val targetHeight = if (isPortrait) 1280 else 720
 
-        if (maxW <= 0) maxW = 720
-        if (maxH <= 0) maxH = 1280
-
-        val maxAllowed = 1280
-        if (maxW > maxAllowed || maxH > maxAllowed) {
-            val scale = maxAllowed.toFloat() / maxOf(maxW, maxH).toFloat()
-            maxW = (maxW * scale).roundToInt()
-            maxH = (maxH * scale).roundToInt()
-        }
-        if (maxW % 2 != 0) maxW += 1
-        if (maxH % 2 != 0) maxH += 1
-
-        val allHaveAudio = validPaths.all { checkHasAudio(it) }
-        val shouldRemoveAudio = isMuted || !allHaveAudio
-
-        val outputFile = File(
-            context.cacheDir,
-            "merged_${System.currentTimeMillis()}.mp4"
-        ).apply {
-            parentFile?.mkdirs()
-            if (exists()) delete()
-        }
-
-        val editedItems = validPaths.map { path ->
+        // If only 1 video was selected, simply transcode/trim that single video
+        if (validPaths.size == 1) {
+            val outputFile = File(context.cacheDir, "processed_${System.currentTimeMillis()}.mp4").apply {
+                parentFile?.mkdirs()
+                if (exists()) delete()
+            }
+            val path = validPaths[0]
             val startMs = trimStarts[path]?.toLong() ?: 0L
             val endMs = trimEnds[path]?.toLong() ?: 0L
             val totalMs = totalDurations[path]?.toLong() ?: 0L
 
-            val mediaItemBuilder = MediaItem.Builder().setUri(Uri.fromFile(File(path)))
-
-            val isStartTrimmed = startMs > 250L
-            val isEndTrimmed = endMs > 0L && totalMs > 0L && (totalMs - endMs) > 300L
-
-            if (isStartTrimmed || isEndTrimmed) {
-                val clipBuilder = MediaItem.ClippingConfiguration.Builder()
-                if (isStartTrimmed) {
-                    clipBuilder.setStartPositionMs(startMs)
-                }
-                if (isEndTrimmed) {
-                    clipBuilder.setEndPositionMs(endMs)
-                }
-                mediaItemBuilder.setClippingConfiguration(clipBuilder.build())
-            }
-
-            val presentation = Presentation.createForWidthAndHeight(
-                maxW,
-                maxH,
-                Presentation.LAYOUT_SCALE_TO_FIT
+            val item = buildSingleEditedItem(
+                path = path,
+                startMs = startMs,
+                endMs = endMs,
+                totalMs = totalMs,
+                targetWidth = targetWidth,
+                targetHeight = targetHeight,
+                isMuted = isMuted,
+                resampleAudio = false
             )
 
-            val editedBuilder = EditedMediaItem.Builder(mediaItemBuilder.build())
-                .setEffects(Effects(emptyList(), listOf(presentation)))
-
-            if (shouldRemoveAudio) {
-                editedBuilder.setRemoveAudio(true)
-            }
-            editedBuilder.build()
+            val comp = Composition.Builder(EditedMediaItemSequence(item)).build()
+            runTransformerExport(context, comp, outputFile)
+            return@withContext outputFile.absolutePath
         }
 
-        val sequence = EditedMediaItemSequence(editedItems)
-        val composition = Composition.Builder(listOf(sequence))
-            .setTransmuxVideo(false)
-            .setTransmuxAudio(false)
-            .build()
+        // --- MULTIPLE VIDEOS MERGE ---
+        val finalOutputFile = File(context.cacheDir, "merged_${System.currentTimeMillis()}.mp4").apply {
+            parentFile?.mkdirs()
+            if (exists()) delete()
+        }
 
-        kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
-            try {
-                val encoderFactory = DefaultEncoderFactory.Builder(context)
-                    .setEnableFallback(true)
-                    .build()
+        // Attempt 1: Direct sequence with Sonic audio resampling & safe 720p presentation
+        try {
+            val editedItems = validPaths.map { path ->
+                val startMs = trimStarts[path]?.toLong() ?: 0L
+                val endMs = trimEnds[path]?.toLong() ?: 0L
+                val totalMs = totalDurations[path]?.toLong() ?: 0L
+                buildSingleEditedItem(
+                    path = path,
+                    startMs = startMs,
+                    endMs = endMs,
+                    totalMs = totalMs,
+                    targetWidth = targetWidth,
+                    targetHeight = targetHeight,
+                    isMuted = isMuted,
+                    resampleAudio = true
+                )
+            }
 
-                val transformer = Transformer.Builder(context)
-                    .setEncoderFactory(encoderFactory)
-                    .setVideoMimeType(MimeTypes.VIDEO_H264)
-                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                    .addListener(object : Transformer.Listener {
-                        override fun onCompleted(comp: Composition, exportResult: ExportResult) {
-                            if (continuation.isActive) {
-                                continuation.resumeWith(Result.success(outputFile.absolutePath))
-                            }
-                        }
+            val sequence = EditedMediaItemSequence(editedItems)
 
-                        override fun onError(
-                            comp: Composition,
-                            exportResult: ExportResult,
-                            exportException: ExportException
-                        ) {
-                            android.util.Log.e("MainActivity", "Transformer error: ${exportException.message}", exportException)
-                            outputFile.delete()
-                            if (continuation.isActive) {
-                                continuation.resumeWith(Result.failure(exportException))
-                            }
-                        }
-                    })
-                    .build()
+            val comp = Composition.Builder(listOf(sequence))
+                .setTransmuxVideo(false)
+                .setTransmuxAudio(false)
+                .build()
 
-                continuation.invokeOnCancellation {
-                    try { transformer.cancel() } catch (_: Throwable) {}
-                    try { outputFile.delete() } catch (_: Throwable) {}
+            runTransformerExport(context, comp, finalOutputFile)
+            return@withContext finalOutputFile.absolutePath
+        } catch (attempt1Err: Throwable) {
+            android.util.Log.w("MainActivity", "Direct sequence merge failed, running multi-pass fallback: ${attempt1Err.message}", attempt1Err)
+            if (finalOutputFile.exists()) finalOutputFile.delete()
+        }
+
+        // Attempt 2: Multi-pass (transcode each clip individually to normalized MP4, then concatenate)
+        val tempFiles = mutableListOf<File>()
+        try {
+            for (i in validPaths.indices) {
+                val path = validPaths[i]
+                val startMs = trimStarts[path]?.toLong() ?: 0L
+                val endMs = trimEnds[path]?.toLong() ?: 0L
+                val totalMs = totalDurations[path]?.toLong() ?: 0L
+
+                val partFile = File(context.cacheDir, "part_${i}_${System.currentTimeMillis()}.mp4").apply {
+                    parentFile?.mkdirs()
+                    if (exists()) delete()
                 }
+                tempFiles.add(partFile)
 
-                transformer.start(composition, outputFile.absolutePath)
-            } catch (e: Throwable) {
-                android.util.Log.e("MainActivity", "Transformer startup exception", e)
-                if (continuation.isActive) {
-                    continuation.resumeWith(Result.failure(e))
-                }
+                val item = buildSingleEditedItem(
+                    path = path,
+                    startMs = startMs,
+                    endMs = endMs,
+                    totalMs = totalMs,
+                    targetWidth = targetWidth,
+                    targetHeight = targetHeight,
+                    isMuted = isMuted,
+                    resampleAudio = true
+                )
+
+                val comp = Composition.Builder(EditedMediaItemSequence(item)).build()
+                runTransformerExport(context, comp, partFile)
+            }
+
+            // Now concatenate normalized parts (they share identical dimensions, codec, sample rate)
+            val partItems = tempFiles.map { file ->
+                val mediaItem = MediaItem.Builder().setUri(Uri.fromFile(file)).build()
+                EditedMediaItem.Builder(mediaItem).build()
+            }
+
+            val seq = EditedMediaItemSequence(partItems)
+
+            val finalComp = Composition.Builder(listOf(seq))
+                .setTransmuxVideo(false)
+                .setTransmuxAudio(false)
+                .build()
+
+            runTransformerExport(context, finalComp, finalOutputFile)
+            return@withContext finalOutputFile.absolutePath
+        } finally {
+            for (f in tempFiles) {
+                try { if (f.exists()) f.delete() } catch (_: Throwable) {}
             }
         }
     }
 
-    private fun checkHasAudio(videoPath: String): Boolean {
-        val retriever = MediaMetadataRetriever()
-        return try {
-            retriever.setDataSource(videoPath)
-            val hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
-            hasAudio == "yes"
-        } catch (_: Throwable) {
-            true
-        } finally {
-            try { retriever.release() } catch (_: Throwable) {}
+    private fun buildSingleEditedItem(
+        path: String,
+        startMs: Long,
+        endMs: Long,
+        totalMs: Long,
+        targetWidth: Int,
+        targetHeight: Int,
+        isMuted: Boolean,
+        resampleAudio: Boolean
+    ): EditedMediaItem {
+        val mediaItemBuilder = MediaItem.Builder().setUri(Uri.fromFile(File(path)))
+
+        val isStartTrimmed = startMs > 250L
+        val isEndTrimmed = endMs > 0L && totalMs > 0L && (totalMs - endMs) > 300L
+
+        if (isStartTrimmed || isEndTrimmed) {
+            val clipBuilder = MediaItem.ClippingConfiguration.Builder()
+            if (isStartTrimmed) {
+                clipBuilder.setStartPositionMs(startMs)
+            }
+            if (isEndTrimmed) {
+                clipBuilder.setEndPositionMs(endMs)
+            }
+            mediaItemBuilder.setClippingConfiguration(clipBuilder.build())
+        }
+
+        val presentation = Presentation.createForWidthAndHeight(
+            targetWidth,
+            targetHeight,
+            Presentation.LAYOUT_SCALE_TO_FIT
+        )
+
+        val audioProcessors = mutableListOf<AudioProcessor>()
+        if (resampleAudio && !isMuted) {
+            try {
+                val sonic = SonicAudioProcessor().apply {
+                    setOutputSampleRateHz(48000)
+                }
+                audioProcessors.add(sonic)
+            } catch (t: Throwable) {
+                android.util.Log.w("MainActivity", "SonicAudioProcessor setup warning", t)
+            }
+        }
+
+        val editedBuilder = EditedMediaItem.Builder(mediaItemBuilder.build())
+            .setEffects(Effects(audioProcessors, listOf(presentation)))
+
+        if (isMuted) {
+            editedBuilder.setRemoveAudio(true)
+        }
+
+        return editedBuilder.build()
+    }
+
+    private suspend fun runTransformerExport(
+        context: Context,
+        composition: Composition,
+        outputFile: File
+    ) = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        try {
+            val encoderFactory = DefaultEncoderFactory.Builder(context)
+                .setEnableFallback(true)
+                .build()
+
+            val transformer = Transformer.Builder(context)
+                .setEncoderFactory(encoderFactory)
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(comp: Composition, exportResult: ExportResult) {
+                        if (continuation.isActive) {
+                            continuation.resumeWith(Result.success(Unit))
+                        }
+                    }
+
+                    override fun onError(
+                        comp: Composition,
+                        exportResult: ExportResult,
+                        exportException: ExportException
+                    ) {
+                        android.util.Log.e("MainActivity", "Transformer export error: ${exportException.message}", exportException)
+                        if (outputFile.exists()) outputFile.delete()
+                        if (continuation.isActive) {
+                            continuation.resumeWith(Result.failure(exportException))
+                        }
+                    }
+                })
+                .build()
+
+            continuation.invokeOnCancellation {
+                try { transformer.cancel() } catch (_: Throwable) {}
+                try { if (outputFile.exists()) outputFile.delete() } catch (_: Throwable) {}
+            }
+
+            transformer.start(composition, outputFile.absolutePath)
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Transformer startup exception", e)
+            if (outputFile.exists()) outputFile.delete()
+            if (continuation.isActive) {
+                continuation.resumeWith(Result.failure(e))
+            }
         }
     }
 
