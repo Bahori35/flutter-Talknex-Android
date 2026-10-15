@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../../constants/app_colors.dart';
 
 const MethodChannel _nativeVideoChannel = MethodChannel('com.safechat.app/video');
@@ -62,6 +64,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   int _selectedClipIndex = 0; // The clip currently selected for trimming
   bool _isPlaying = false;
   bool _isMuted = false;
+  double _videoVolume = 1.0; // 0.0 to 1.0
+
+  // Background Audio / Music Track
+  File? _bgMusicFile;
+  String? _bgMusicName;
+  double _bgMusicVolume = 0.7; // 0.0 to 1.0
+  AudioPlayer? _bgMusicPlayer;
 
   bool _isProcessing = false;
   double _processingProgress = 0.0;
@@ -99,7 +108,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
 
       try {
         await controller.initialize();
-        controller.setVolume(_isMuted ? 0.0 : 1.0);
+        controller.setVolume(_isMuted ? 0.0 : _videoVolume);
         controller.setLooping(false);
 
         if (clip.totalDuration == Duration.zero) {
@@ -165,6 +174,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         nextController.play();
       }
     }
+
+    if (nextIndex == 0) {
+      _bgMusicPlayer?.seek(Duration.zero);
+    }
     setState(() {});
   }
 
@@ -174,6 +187,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       c.dispose();
     }
     _captionController.dispose();
+    _bgMusicPlayer?.stop();
+    _bgMusicPlayer?.dispose();
     super.dispose();
   }
 
@@ -209,6 +224,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   }
 
   void _seekMergedPosition(Duration targetPos) {
+    _bgMusicPlayer?.seek(targetPos);
     Duration accumulated = Duration.zero;
     for (int i = 0; i < _clips.length; i++) {
       final clipDur = _clips[i].trimmedDuration;
@@ -267,6 +283,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
           }
           activeController.play();
         }
+        _bgMusicPlayer?.seek(_currentMergedPosition);
+        _bgMusicPlayer?.resume();
       } else {
         _pauseAllControllers();
       }
@@ -277,15 +295,583 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     for (final c in _controllers.values) {
       if (c.value.isPlaying) c.pause();
     }
+    _bgMusicPlayer?.pause();
   }
 
   void _toggleMute() {
     setState(() {
       _isMuted = !_isMuted;
+      final targetVolume = _isMuted ? 0.0 : (_videoVolume > 0 ? _videoVolume : 1.0);
+      if (!_isMuted && _videoVolume == 0.0) {
+        _videoVolume = 1.0;
+      }
       for (final c in _controllers.values) {
-        c.setVolume(_isMuted ? 0.0 : 1.0);
+        c.setVolume(targetVolume);
       }
     });
+  }
+
+  void _setVideoVolume(double volume) {
+    setState(() {
+      _videoVolume = volume.clamp(0.0, 1.0);
+      _isMuted = (_videoVolume == 0.0);
+      for (final c in _controllers.values) {
+        c.setVolume(_isMuted ? 0.0 : _videoVolume);
+      }
+    });
+  }
+
+  void _setBgMusicVolume(double volume) {
+    setState(() {
+      _bgMusicVolume = volume.clamp(0.0, 1.0);
+      _bgMusicPlayer?.setVolume(_bgMusicVolume);
+    });
+  }
+
+  Future<void> _pickMusic() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'wma'],
+      );
+      if (result == null || result.files.single.path == null) return;
+
+      final pickedFile = File(result.files.single.path!);
+      final name = result.files.single.name;
+
+      await _bgMusicPlayer?.stop();
+      await _bgMusicPlayer?.dispose();
+
+      final player = AudioPlayer();
+      await player.setReleaseMode(ReleaseMode.loop);
+      await player.setSource(DeviceFileSource(pickedFile.path));
+      await player.setVolume(_bgMusicVolume);
+
+      setState(() {
+        _bgMusicFile = pickedFile;
+        _bgMusicName = name;
+        _bgMusicPlayer = player;
+      });
+
+      if (_isPlaying) {
+        await _bgMusicPlayer?.seek(_currentMergedPosition);
+        await _bgMusicPlayer?.resume();
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.music_note_rounded, color: AppColors.accent, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Müzik eklendi: $name',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: const Color(0xFF1F2C34),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('[PICK MUSIC ERR] $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ses dosyası seçilirken hata oluştu: $e'),
+            backgroundColor: AppColors.callRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _removeMusic() async {
+    try {
+      await _bgMusicPlayer?.stop();
+      await _bgMusicPlayer?.dispose();
+    } catch (_) {}
+
+    setState(() {
+      _bgMusicFile = null;
+      _bgMusicName = null;
+      _bgMusicPlayer = null;
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Arka plan müziği kaldırıldı.'),
+          backgroundColor: AppColors.surfaceLight,
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _openAudioMixerSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            final effectiveVideoVol = _isMuted ? 0.0 : _videoVolume;
+            return Container(
+              decoration: const BoxDecoration(
+                color: Color(0xFF141D22),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                border: Border(
+                  top: BorderSide(color: Colors.white12, width: 1),
+                ),
+              ),
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+              child: SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Handle Bar
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Header
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.tune_rounded, color: AppColors.accent, size: 22),
+                            SizedBox(width: 8),
+                            Text(
+                              'Ses ve Müzik Mikseri',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 17,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Quick Preset Chips
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _buildPresetChip(
+                            label: 'Orijinal Video',
+                            icon: Icons.videocam_rounded,
+                            isActive: !_isMuted && _videoVolume == 1.0 && _bgMusicFile == null,
+                            onTap: () {
+                              setSheetState(() {
+                                _setVideoVolume(1.0);
+                              });
+                              setState(() {});
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                          _buildPresetChip(
+                            label: 'Dengeli (%50 / %50)',
+                            icon: Icons.balance_rounded,
+                            isActive: !_isMuted && _videoVolume == 0.5 && _bgMusicVolume == 0.5,
+                            onTap: () {
+                              setSheetState(() {
+                                _setVideoVolume(0.5);
+                                _setBgMusicVolume(0.5);
+                              });
+                              setState(() {});
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                          _buildPresetChip(
+                            label: 'Müzik Öncelikli',
+                            icon: Icons.music_note_rounded,
+                            isActive: _videoVolume <= 0.2 && _bgMusicVolume >= 0.8,
+                            onTap: () {
+                              setSheetState(() {
+                                _setVideoVolume(0.15);
+                                _setBgMusicVolume(0.85);
+                              });
+                              setState(() {});
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                          _buildPresetChip(
+                            label: 'Sadece Müzik',
+                            icon: Icons.volume_off_rounded,
+                            isActive: _isMuted || _videoVolume == 0.0,
+                            onTap: () {
+                              setSheetState(() {
+                                _setVideoVolume(0.0);
+                                _setBgMusicVolume(1.0);
+                              });
+                              setState(() {});
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    // --- VIDEO AUDIO CARD ---
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1F2C34),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    _isMuted || _videoVolume == 0.0
+                                        ? Icons.volume_off_rounded
+                                        : Icons.videocam_rounded,
+                                    color: _isMuted || _videoVolume == 0.0
+                                        ? AppColors.callRed
+                                        : AppColors.accent,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Text(
+                                    'Orijinal Video Sesi',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: (_isMuted || _videoVolume == 0.0)
+                                      ? AppColors.callRed.withValues(alpha: 0.2)
+                                      : AppColors.accent.withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  _isMuted || _videoVolume == 0.0
+                                      ? 'Sessiz'
+                                      : '%${(effectiveVideoVol * 100).round()}',
+                                  style: TextStyle(
+                                    color: (_isMuted || _videoVolume == 0.0)
+                                        ? AppColors.callRed
+                                        : AppColors.accent,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              IconButton(
+                                icon: Icon(
+                                  _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                                  color: _isMuted ? AppColors.callRed : Colors.white70,
+                                  size: 22,
+                                ),
+                                onPressed: () {
+                                  setSheetState(() {
+                                    _toggleMute();
+                                  });
+                                  setState(() {});
+                                },
+                              ),
+                              Expanded(
+                                child: SliderTheme(
+                                  data: SliderTheme.of(context).copyWith(
+                                    activeTrackColor: AppColors.accent,
+                                    inactiveTrackColor: Colors.white24,
+                                    thumbColor: AppColors.accent,
+                                    overlayColor: AppColors.accent.withValues(alpha: 0.2),
+                                    trackHeight: 4,
+                                  ),
+                                  child: Slider(
+                                    min: 0.0,
+                                    max: 1.0,
+                                    value: _isMuted ? 0.0 : _videoVolume,
+                                    onChanged: (val) {
+                                      setSheetState(() {
+                                        _setVideoVolume(val);
+                                      });
+                                      setState(() {});
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // --- BACKGROUND MUSIC CARD ---
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1F2C34),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: _bgMusicFile != null
+                              ? AppColors.accent.withValues(alpha: 0.4)
+                              : Colors.white12,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Row(
+                                children: [
+                                  Icon(Icons.music_note_rounded,
+                                      color: AppColors.accent, size: 20),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Arka Plan Müziği',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (_bgMusicFile != null)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.accent.withValues(alpha: 0.2),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    '%${(_bgMusicVolume * 100).round()}',
+                                    style: const TextStyle(
+                                      color: AppColors.accent,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+
+                          if (_bgMusicFile == null)
+                            InkWell(
+                              onTap: () async {
+                                await _pickMusic();
+                                setSheetState(() {});
+                                setState(() {});
+                              },
+                              borderRadius: BorderRadius.circular(12),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.05),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: AppColors.accent.withValues(alpha: 0.5),
+                                  ),
+                                ),
+                                child: const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.add_circle_outline_rounded,
+                                        color: AppColors.accent, size: 20),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      'Cihazdan Müzik veya Ses Seç',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          else ...[
+                            // Selected music file row
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.black38,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.audiotrack_rounded,
+                                      color: AppColors.accent, size: 18),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      _bgMusicName ?? 'Müzik Parçası',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                  // Change music button
+                                  TextButton(
+                                    onPressed: () async {
+                                      await _pickMusic();
+                                      setSheetState(() {});
+                                      setState(() {});
+                                    },
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    ),
+                                    child: const Text(
+                                      'Değiştir',
+                                      style: TextStyle(color: AppColors.accent, fontSize: 12),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  // Remove music button
+                                  GestureDetector(
+                                    onTap: () async {
+                                      await _removeMusic();
+                                      setSheetState(() {});
+                                      setState(() {});
+                                    },
+                                    child: const Icon(Icons.delete_outline_rounded,
+                                        color: AppColors.callRed, size: 20),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            // Music volume slider
+                            Row(
+                              children: [
+                                const Icon(Icons.volume_down_rounded,
+                                    color: Colors.white70, size: 20),
+                                Expanded(
+                                  child: SliderTheme(
+                                    data: SliderTheme.of(context).copyWith(
+                                      activeTrackColor: AppColors.accent,
+                                      inactiveTrackColor: Colors.white24,
+                                      thumbColor: AppColors.accent,
+                                      overlayColor: AppColors.accent.withValues(alpha: 0.2),
+                                      trackHeight: 4,
+                                    ),
+                                    child: Slider(
+                                      min: 0.0,
+                                      max: 1.0,
+                                      value: _bgMusicVolume,
+                                      onChanged: (val) {
+                                        setSheetState(() {
+                                          _setBgMusicVolume(val);
+                                        });
+                                        setState(() {});
+                                      },
+                                    ),
+                                  ),
+                                ),
+                                const Icon(Icons.volume_up_rounded,
+                                    color: Colors.white70, size: 20),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildPresetChip({
+    required String label,
+    required IconData icon,
+    required bool isActive,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isActive ? AppColors.accent : const Color(0xFF1F2C34),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isActive ? AppColors.accent : Colors.white24,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 14,
+              color: isActive ? Colors.white : Colors.white70,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                color: isActive ? Colors.white : Colors.white70,
+                fontSize: 11.5,
+                fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _selectClipForTrimming(int index) {
@@ -411,8 +997,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     });
 
     try {
-      // 1. Pause and release active VideoPlayerControllers to free Android MediaCodec hardware slots
+      // 1. Pause and release active VideoPlayerControllers & audio player to free Android MediaCodec hardware slots
       _pauseAllControllers();
+      await _bgMusicPlayer?.stop();
       for (final c in _controllers.values) {
         await c.pause();
         await c.dispose();
@@ -446,7 +1033,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
           'mergeAndProcessVideos',
           {
             'videoPaths': videoPaths,
-            'isMuted': _isMuted,
+            'isMuted': _isMuted || _videoVolume == 0.0,
+            'videoVolume': _isMuted ? 0.0 : _videoVolume,
+            'audioTrackPath': _bgMusicFile?.path,
+            'audioTrackVolume': _bgMusicVolume,
             'trimStarts': trimStarts,
             'trimEnds': trimEnds,
             'totalDurations': totalDurations,
@@ -528,11 +1118,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                         style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
                       ),
                       const Spacer(),
+                      // Ses & Müzik Ayarları Button
+                      IconButton(
+                        icon: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            const Icon(Icons.music_note_rounded, color: Colors.white, size: 24),
+                            if (_bgMusicFile != null)
+                              Positioned(
+                                right: -2,
+                                top: -2,
+                                child: Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: const BoxDecoration(
+                                    color: AppColors.accent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        tooltip: 'Ses & Müzik Ayarları',
+                        onPressed: _openAudioMixerSheet,
+                      ),
                       // Mute toggle
                       IconButton(
                         icon: Icon(
-                          _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                          color: _isMuted ? AppColors.callRed : Colors.white,
+                          _isMuted || _videoVolume == 0.0
+                              ? Icons.volume_off_rounded
+                              : Icons.volume_up_rounded,
+                          color: (_isMuted || _videoVolume == 0.0) ? AppColors.callRed : Colors.white,
                           size: 24,
                         ),
                         tooltip: _isMuted ? 'Sesi Aç' : 'Sesi Kapat',
@@ -566,6 +1182,55 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                     ],
                   ),
                 ),
+
+                // Background Music Active Banner
+                if (_bgMusicFile != null)
+                  Container(
+                    color: const Color(0xFF10191E),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.audiotrack_rounded, color: AppColors.accent, size: 15),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Arka Plan Müziği: ${_bgMusicName ?? "Ekli"} (%${(_bgMusicVolume * 100).round()})',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.accent,
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: _openAudioMixerSheet,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1F2C34),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.white24),
+                            ),
+                            child: const Text(
+                              'Ayarla',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        GestureDetector(
+                          onTap: _removeMusic,
+                          child: const Icon(Icons.close_rounded, color: Colors.white54, size: 18),
+                        ),
+                      ],
+                    ),
+                  ),
 
                 // Unified Continuous Merged Video Player Center Preview (IndexedStack for instant switching)
                 Expanded(

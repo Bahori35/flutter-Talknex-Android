@@ -4,9 +4,12 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.annotation.OptIn
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.ChannelMixingAudioProcessor
+import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Presentation
@@ -41,6 +44,9 @@ class MainActivity : FlutterActivity() {
                 if (call.method == "mergeAndProcessVideos") {
                     val videoPaths = call.argument<List<String>>("videoPaths") ?: emptyList()
                     val isMuted = call.argument<Boolean>("isMuted") ?: false
+                    val videoVolume = call.argument<Number>("videoVolume")?.toDouble() ?: (if (isMuted) 0.0 else 1.0)
+                    val audioTrackPath = call.argument<String>("audioTrackPath")
+                    val audioTrackVolume = call.argument<Number>("audioTrackVolume")?.toDouble() ?: 1.0
                     val trimStarts = call.argument<Map<String, Number>>("trimStarts") ?: emptyMap()
                     val trimEnds = call.argument<Map<String, Number>>("trimEnds") ?: emptyMap()
                     val totalDurations = call.argument<Map<String, Number>>("totalDurations") ?: emptyMap()
@@ -55,7 +61,9 @@ class MainActivity : FlutterActivity() {
                             val outputPath = processVideosNative(
                                 context = applicationContext,
                                 videoPaths = videoPaths,
-                                isMuted = isMuted,
+                                videoVolume = videoVolume,
+                                audioTrackPath = audioTrackPath,
+                                audioTrackVolume = audioTrackVolume,
                                 trimStarts = trimStarts,
                                 trimEnds = trimEnds,
                                 totalDurations = totalDurations
@@ -75,7 +83,9 @@ class MainActivity : FlutterActivity() {
     private suspend fun processVideosNative(
         context: Context,
         videoPaths: List<String>,
-        isMuted: Boolean,
+        videoVolume: Double,
+        audioTrackPath: String?,
+        audioTrackVolume: Double,
         trimStarts: Map<String, Number>,
         trimEnds: Map<String, Number>,
         totalDurations: Map<String, Number>
@@ -90,6 +100,7 @@ class MainActivity : FlutterActivity() {
         val isPortrait = firstH >= firstW
         val targetWidth = if (isPortrait) 720 else 1280
         val targetHeight = if (isPortrait) 1280 else 720
+        val isMuted = videoVolume <= 0.01
 
         // If only 1 video was selected, simply transcode/trim that single video
         if (validPaths.size == 1) {
@@ -109,8 +120,8 @@ class MainActivity : FlutterActivity() {
                 totalMs = totalMs,
                 targetWidth = targetWidth,
                 targetHeight = targetHeight,
-                isMuted = isMuted,
-                resampleAudio = false
+                videoVolume = videoVolume,
+                resampleAudio = true
             )
 
             val sequence = if (isMuted) {
@@ -118,7 +129,8 @@ class MainActivity : FlutterActivity() {
             } else {
                 EditedMediaItemSequence.withAudioAndVideoFrom(listOf(item))
             }
-            val comp = Composition.Builder(listOf(sequence)).build()
+
+            val comp = buildComposition(sequence, audioTrackPath, audioTrackVolume)
             runTransformerExport(context, comp, outputFile)
             return@withContext outputFile.absolutePath
         }
@@ -129,7 +141,7 @@ class MainActivity : FlutterActivity() {
             if (exists()) delete()
         }
 
-        // Attempt 1: Direct sequence with Sonic audio resampling & safe 720p presentation
+        // Attempt 1: Direct sequence with Sonic audio resampling, volume scaling, background music & safe 720p
         try {
             val editedItems = validPaths.map { path ->
                 val startMs = trimStarts[path]?.toLong() ?: 0L
@@ -142,7 +154,7 @@ class MainActivity : FlutterActivity() {
                     totalMs = totalMs,
                     targetWidth = targetWidth,
                     targetHeight = targetHeight,
-                    isMuted = isMuted,
+                    videoVolume = videoVolume,
                     resampleAudio = true
                 )
             }
@@ -153,11 +165,7 @@ class MainActivity : FlutterActivity() {
                 EditedMediaItemSequence.withAudioAndVideoFrom(editedItems)
             }
 
-            val comp = Composition.Builder(listOf(sequence))
-                .setTransmuxVideo(false)
-                .setTransmuxAudio(false)
-                .build()
-
+            val comp = buildComposition(sequence, audioTrackPath, audioTrackVolume)
             runTransformerExport(context, comp, finalOutputFile)
             return@withContext finalOutputFile.absolutePath
         } catch (attempt1Err: Throwable) {
@@ -165,7 +173,7 @@ class MainActivity : FlutterActivity() {
             if (finalOutputFile.exists()) finalOutputFile.delete()
         }
 
-        // Attempt 2: Multi-pass (transcode each clip individually to normalized MP4, then concatenate)
+        // Attempt 2: Multi-pass (transcode each clip individually to normalized MP4, then concatenate & mix audio)
         val tempFiles = mutableListOf<File>()
         try {
             for (i in validPaths.indices) {
@@ -187,7 +195,7 @@ class MainActivity : FlutterActivity() {
                     totalMs = totalMs,
                     targetWidth = targetWidth,
                     targetHeight = targetHeight,
-                    isMuted = isMuted,
+                    videoVolume = videoVolume,
                     resampleAudio = true
                 )
 
@@ -212,17 +220,61 @@ class MainActivity : FlutterActivity() {
                 EditedMediaItemSequence.withAudioAndVideoFrom(partItems)
             }
 
-            val finalComp = Composition.Builder(listOf(seq))
-                .setTransmuxVideo(false)
-                .setTransmuxAudio(false)
-                .build()
-
+            val finalComp = buildComposition(seq, audioTrackPath, audioTrackVolume)
             runTransformerExport(context, finalComp, finalOutputFile)
             return@withContext finalOutputFile.absolutePath
         } finally {
             for (f in tempFiles) {
                 try { if (f.exists()) f.delete() } catch (_: Throwable) {}
             }
+        }
+    }
+
+    private fun buildComposition(
+        videoSequence: EditedMediaItemSequence,
+        audioTrackPath: String?,
+        audioTrackVolume: Double
+    ): Composition {
+        val sequences = mutableListOf<EditedMediaItemSequence>()
+        sequences.add(videoSequence)
+
+        if (!audioTrackPath.isNullOrBlank()) {
+            val bgSeq = buildBackgroundAudioSequence(audioTrackPath, audioTrackVolume)
+            if (bgSeq != null) {
+                sequences.add(bgSeq)
+            }
+        }
+
+        return Composition.Builder(sequences)
+            .setTransmuxVideo(false)
+            .setTransmuxAudio(false)
+            .build()
+    }
+
+    private fun buildBackgroundAudioSequence(
+        audioPath: String,
+        audioVolume: Double
+    ): EditedMediaItemSequence? {
+        val file = File(audioPath)
+        if (!file.exists()) return null
+        return try {
+            val mediaItem = MediaItem.Builder().setUri(Uri.fromFile(file)).build()
+            val processors = mutableListOf<AudioProcessor>()
+            processors.add(SonicAudioProcessor().apply { setOutputSampleRateHz(48000) })
+            if (audioVolume in 0.02..0.98) {
+                createVolumeProcessor(audioVolume.toFloat())?.let { processors.add(it) }
+            }
+            val editedItem = EditedMediaItem.Builder(mediaItem)
+                .setEffects(Effects(processors, emptyList()))
+                .build()
+
+            EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_AUDIO))
+                .addItem(editedItem)
+                .setIsLooping(true)
+                .build()
+        } catch (t: Throwable) {
+            android.util.Log.w("MainActivity", "Failed to build background audio sequence", t)
+            null
         }
     }
 
@@ -233,7 +285,7 @@ class MainActivity : FlutterActivity() {
         totalMs: Long,
         targetWidth: Int,
         targetHeight: Int,
-        isMuted: Boolean,
+        videoVolume: Double,
         resampleAudio: Boolean
     ): EditedMediaItem {
         val mediaItemBuilder = MediaItem.Builder().setUri(Uri.fromFile(File(path)))
@@ -259,14 +311,19 @@ class MainActivity : FlutterActivity() {
         )
 
         val audioProcessors = mutableListOf<AudioProcessor>()
+        val isMuted = videoVolume <= 0.01
+
         if (resampleAudio && !isMuted) {
             try {
-                val sonic = SonicAudioProcessor().apply {
+                audioProcessors.add(SonicAudioProcessor().apply {
                     setOutputSampleRateHz(48000)
-                }
-                audioProcessors.add(sonic)
+                })
             } catch (t: Throwable) {
                 android.util.Log.w("MainActivity", "SonicAudioProcessor setup warning", t)
+            }
+
+            if (videoVolume in 0.02..0.98) {
+                createVolumeProcessor(videoVolume.toFloat())?.let { audioProcessors.add(it) }
             }
         }
 
@@ -278,6 +335,20 @@ class MainActivity : FlutterActivity() {
         }
 
         return editedBuilder.build()
+    }
+
+    private fun createVolumeProcessor(volume: Float): AudioProcessor? {
+        return try {
+            val processor = ChannelMixingAudioProcessor()
+            for (ch in 1..2) {
+                val matrix = ChannelMixingMatrix.createForConstantGain(ch, ch).scaleBy(volume)
+                processor.putChannelMixingMatrix(matrix)
+            }
+            processor
+        } catch (t: Throwable) {
+            android.util.Log.w("MainActivity", "createVolumeProcessor failed", t)
+            null
+        }
     }
 
     private suspend fun runTransformerExport(
