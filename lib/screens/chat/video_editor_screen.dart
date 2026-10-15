@@ -2,8 +2,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
 import 'package:easy_video_editor/easy_video_editor.dart';
 import '../../constants/app_colors.dart';
 
@@ -419,12 +417,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       }
       _controllers.clear();
 
-      await Future.delayed(const Duration(milliseconds: 250));
+      await Future.delayed(const Duration(milliseconds: 300));
 
-      final tempDir = await getTemporaryDirectory();
+      final editor = EasyVideoEditorPlatform.instance;
       List<String> processedClipPaths = [];
 
-      // 2. Trim and standardize each clip to 720p (guarantees identical resolution/codecs for MediaMuxer)
+      // 2. Trim clips only if actually trimmed by user (avoiding unnecessary re-encoding)
       for (int i = 0; i < _clips.length; i++) {
         final clip = _clips[i];
         final startMs = clip.startTrim.inMilliseconds;
@@ -436,42 +434,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
           _processingProgress = (i / (_clips.length + 1)) * 0.7;
         });
 
-        final outTrimPath = p.join(
-          tempDir.path,
-          'std_clip_${i}_${DateTime.now().millisecondsSinceEpoch}.mp4',
-        );
-
         final safeStart = (startMs >= 0 && (totalMs == 0 || startMs < totalMs)) ? startMs : 0;
         final safeEnd = (endMs > safeStart)
             ? (totalMs > 0 && endMs > totalMs ? totalMs : endMs)
             : (totalMs > 0 ? totalMs : safeStart + 1000);
 
-        final bool needsTrim = safeStart > 100 || (totalMs > 0 && safeEnd < totalMs - 100);
+        // Only trim if user adjusted range by more than 250ms from ends
+        final bool needsTrim = safeStart > 250 || (totalMs > 0 && (totalMs - safeEnd) > 250);
 
-        var builder = VideoEditorBuilder(videoPath: clip.file.path);
         if (needsTrim) {
-          builder = builder.trim(startTimeMs: safeStart, endTimeMs: safeEnd);
-        }
-        builder = builder.compress(resolution: VideoResolution.p720);
-
-        if (_isMuted) {
-          builder = builder.removeAudio();
-        }
-
-        final resultPath = await builder.export(
-          outputPath: outTrimPath,
-          onProgress: (p) {
-            if (mounted) {
-              final base = (i / (_clips.length + 1)) * 0.7;
-              final seg = (1.0 / (_clips.length + 1)) * 0.7;
-              setState(() {
-                _processingProgress = base + (seg * p);
-              });
+          try {
+            final trimmedPath = await editor.trimVideo(
+              clip.file.path,
+              safeStart,
+              safeEnd,
+            );
+            if (trimmedPath != null && File(trimmedPath).existsSync()) {
+              processedClipPaths.add(trimmedPath);
+            } else {
+              processedClipPaths.add(clip.file.path);
             }
-          },
-        );
-
-        processedClipPaths.add(resultPath ?? clip.file.path);
+          } catch (trimErr) {
+            debugPrint('[TRIM ERR FOR CLIP $i] $trimErr');
+            processedClipPaths.add(clip.file.path);
+          }
+        } else {
+          processedClipPaths.add(clip.file.path);
+        }
       }
 
       String finalVideoPath;
@@ -483,29 +472,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
           _processingProgress = 0.75;
         });
 
-        final outMergePath = p.join(
-          tempDir.path,
-          'final_merged_${DateTime.now().millisecondsSinceEpoch}.mp4',
-        );
-
-        var mergeBuilder = VideoEditorBuilder(videoPath: processedClipPaths[0])
-            .merge(otherVideoPaths: processedClipPaths.sublist(1));
-
-        final mergeResult = await mergeBuilder.export(
-          outputPath: outMergePath,
-          onProgress: (p) {
-            if (mounted) {
-              setState(() {
-                _processingProgress = 0.75 + (p * 0.24);
-              });
-            }
-          },
-        );
-
-        finalVideoPath = mergeResult ?? processedClipPaths[0];
+        try {
+          final mergeResult = await editor.mergeVideos(processedClipPaths);
+          if (mergeResult != null && File(mergeResult).existsSync()) {
+            finalVideoPath = mergeResult;
+          } else {
+            throw Exception('Birleştirme sonucu dosya oluşturulamadı.');
+          }
+        } catch (mergeErr) {
+          debugPrint('[MERGE EXCEPTION, FALLBACK TO FIRST CLIP] $mergeErr');
+          finalVideoPath = processedClipPaths[0];
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Videolar birleştirilirken uyumsuzluk oldu, birinci video gönderiliyor.'),
+                backgroundColor: AppColors.callRed,
+                behavior: SnackBarBehavior.floating,
+                duration: Duration(seconds: 4),
+              ),
+            );
+          }
+        }
       } else {
-        // Single clip
         finalVideoPath = processedClipPaths[0];
+      }
+
+      // 4. Mute if requested
+      if (_isMuted) {
+        setState(() {
+          _processingStatus = 'Ses kaldırılıyor...';
+          _processingProgress = 0.95;
+        });
+        try {
+          final muteResult = await editor.removeAudio(finalVideoPath);
+          if (muteResult != null && File(muteResult).existsSync()) {
+            finalVideoPath = muteResult;
+          }
+        } catch (muteErr) {
+          debugPrint('[REMOVE AUDIO ERR] $muteErr');
+        }
       }
 
       if (!mounted) return;
