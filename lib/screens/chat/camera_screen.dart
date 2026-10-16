@@ -6,6 +6,7 @@ import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:video_player/video_player.dart';
 import '../../constants/app_colors.dart';
+import 'photo_editor_screen.dart';
 
 enum CameraMode { photo, video }
 
@@ -183,11 +184,38 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       final XFile photo = await _controller!.takePicture();
       if (!mounted) return;
 
-      setState(() {
-        _capturedFile = File(photo.path);
-        _capturedIsVideo = false;
-        _captionController.clear();
-      });
+      try {
+        await _controller?.pausePreview();
+      } catch (_) {}
+
+      if (!mounted) return;
+
+      // Open PhotoEditorScreen as the full photo preview with emoji, text, location, filters, crop
+      final editorResult = await Navigator.push<PhotoEditorResult>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PhotoEditorScreen(imageFile: File(photo.path)),
+        ),
+      );
+
+      if (!mounted) return;
+
+      if (editorResult != null) {
+        // User confirmed and tapped Send in the photo editor / preview screen
+        Navigator.pop(
+          context,
+          CameraCaptureResult(
+            file: editorResult.file,
+            isVideo: false,
+            caption: editorResult.caption,
+          ),
+        );
+      } else {
+        // User closed/retook photo, resume camera viewfinder
+        try {
+          await _controller?.resumePreview();
+        } catch (_) {}
+      }
     } catch (e) {
       debugPrint('[TAKE PHOTO ERR] $e');
     }
