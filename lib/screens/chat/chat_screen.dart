@@ -783,6 +783,134 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // Unified Camera Chooser: Photo or Video
+  void _openCameraChooser() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF1F2C34),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            border: Border(top: BorderSide(color: Colors.white12, width: 1)),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Row(
+                  children: [
+                    Icon(Icons.camera_alt_rounded, color: AppColors.accent, size: 22),
+                    SizedBox(width: 8),
+                    Text(
+                      'Kamera',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _pickAndSendMedia(source: ImageSource.camera, isVideo: false);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF263843),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.pinkAccent.withValues(alpha: 0.5)),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CircleAvatar(
+                                radius: 26,
+                                backgroundColor: Colors.pinkAccent.withValues(alpha: 0.2),
+                                child: const Icon(Icons.camera_alt_rounded, color: Colors.pinkAccent, size: 28),
+                              ),
+                              const SizedBox(height: 10),
+                              const Text(
+                                'Fotoğraf Çek',
+                                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text(
+                                'Anlık Fotoğraf',
+                                style: TextStyle(color: Colors.white54, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _pickAndSendMedia(source: ImageSource.camera, isVideo: true);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF263843),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.5)),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CircleAvatar(
+                                radius: 26,
+                                backgroundColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                                child: const Icon(Icons.videocam_rounded, color: Colors.deepPurpleAccent, size: 28),
+                              ),
+                              const SizedBox(height: 10),
+                              const Text(
+                                'Video Kaydet',
+                                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text(
+                                'Anlık Video',
+                                style: TextStyle(color: Colors.white54, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _showMediaPickerSheet() {
     showModalBottomSheet(
       context: context,
@@ -810,21 +938,21 @@ class _ChatScreenState extends State<ChatScreen> {
                       },
                     ),
                     _buildMediaOption(
+                      icon: Icons.camera_alt_rounded,
+                      label: 'Kamera',
+                      color: Colors.pinkAccent,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _openCameraChooser();
+                      },
+                    ),
+                    _buildMediaOption(
                       icon: Icons.movie_filter_rounded,
                       label: 'Video Düzenle',
                       color: const Color(0xFF9C27B0),
                       onTap: () {
                         Navigator.pop(ctx);
                         _pickAndEditVideo();
-                      },
-                    ),
-                    _buildMediaOption(
-                      icon: Icons.insert_drive_file_rounded,
-                      label: 'Belge / Dosya',
-                      color: const Color(0xFF5F66CD),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        _pickAndSendDocument();
                       },
                     ),
                   ],
@@ -834,21 +962,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     _buildMediaOption(
-                      icon: Icons.camera_alt_rounded,
-                      label: 'Fotoğraf Çek',
-                      color: Colors.pinkAccent,
+                      icon: Icons.insert_drive_file_rounded,
+                      label: 'Belge / Dosya',
+                      color: const Color(0xFF5F66CD),
                       onTap: () {
                         Navigator.pop(ctx);
-                        _pickAndSendMedia(source: ImageSource.camera, isVideo: false);
-                      },
-                    ),
-                    _buildMediaOption(
-                      icon: Icons.videocam_rounded,
-                      label: 'Video Çek',
-                      color: Colors.deepPurpleAccent,
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        _pickAndSendMedia(source: ImageSource.camera, isVideo: true);
+                        _pickAndSendDocument();
                       },
                     ),
                     _buildMediaOption(
@@ -860,6 +979,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         _openLocationPicker();
                       },
                     ),
+                    const SizedBox(width: 60),
                   ],
                 ),
               ],
@@ -1943,7 +2063,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             IconButton(
               icon: const Icon(Icons.camera_alt_rounded, color: AppColors.primaryLight),
-              onPressed: () => _pickAndSendMedia(source: ImageSource.camera, isVideo: false),
+              onPressed: _openCameraChooser,
             ),
             Expanded(
               child: Container(
