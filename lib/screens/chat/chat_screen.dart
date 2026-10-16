@@ -23,7 +23,7 @@ import '../call/call_screen.dart';
 import 'location_picker_screen.dart';
 import 'live_location_screen.dart';
 import 'video_editor_screen.dart';
-import 'photo_editor_screen.dart';
+import 'camera_screen.dart';
 import 'widgets/video_message_bubble.dart';
 import 'widgets/decrypted_image_widget.dart';
 import '../../services/encryption_service.dart';
@@ -459,54 +459,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Pick Photo or Video from Camera (Normal video does NOT open editor)
-  Future<void> _pickAndSendMedia({required ImageSource source, required bool isVideo}) async {
-    try {
-      XFile? file;
-      if (isVideo) {
-        file = await _picker.pickVideo(
-          source: source,
-          maxDuration: const Duration(minutes: 5),
-        );
-      } else {
-        file = await _picker.pickImage(
-          source: source,
-          maxWidth: 1920,
-          maxHeight: 1920,
-          imageQuality: 85,
-        );
-      }
 
-      if (file == null) return;
-
-      File unencryptedLocalFile = File(file.path);
-      String caption = isVideo ? '🎥 Video' : '📷 Fotoğraf';
-
-      // Photo Editor if media is an image
-      if (!isVideo) {
-        final editorResult = await Navigator.push<PhotoEditorResult>(
-          context,
-          MaterialPageRoute(
-            builder: (_) => PhotoEditorScreen(imageFile: File(file!.path)),
-          ),
-        );
-        if (editorResult == null) return; // User cancelled editing
-        unencryptedLocalFile = editorResult.file;
-        if (editorResult.caption.isNotEmpty) {
-          caption = editorResult.caption;
-        }
-      }
-      // Note: Normal video is sent directly without forcing video editor!
-
-      await _uploadAndSendSingleMedia(
-        unencryptedLocalFile,
-        isVideo: isVideo,
-        caption: caption,
-      );
-    } catch (e) {
-      debugPrint('[MEDIA PICK ERROR] $e');
-    }
-  }
 
   // Unified Gallery Picker: Pick up to 30 Photos & Videos combined
   Future<void> _pickAndSendFromGallery() async {
@@ -783,131 +736,25 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Unified Camera Chooser: Photo or Video
-  void _openCameraChooser() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: Color(0xFF1F2C34),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-            border: Border(top: BorderSide(color: Colors.white12, width: 1)),
-          ),
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-          child: SafeArea(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.white24,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                const Row(
-                  children: [
-                    Icon(Icons.camera_alt_rounded, color: AppColors.accent, size: 22),
-                    SizedBox(width: 8),
-                    Text(
-                      'Kamera',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          Navigator.pop(ctx);
-                          _pickAndSendMedia(source: ImageSource.camera, isVideo: false);
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 18),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF263843),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: Colors.pinkAccent.withValues(alpha: 0.5)),
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              CircleAvatar(
-                                radius: 26,
-                                backgroundColor: Colors.pinkAccent.withValues(alpha: 0.2),
-                                child: const Icon(Icons.camera_alt_rounded, color: Colors.pinkAccent, size: 28),
-                              ),
-                              const SizedBox(height: 10),
-                              const Text(
-                                'Fotoğraf Çek',
-                                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                              ),
-                              const SizedBox(height: 4),
-                              const Text(
-                                'Anlık Fotoğraf',
-                                style: TextStyle(color: Colors.white54, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          Navigator.pop(ctx);
-                          _pickAndSendMedia(source: ImageSource.camera, isVideo: true);
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 18),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF263843),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.5)),
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              CircleAvatar(
-                                radius: 26,
-                                backgroundColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-                                child: const Icon(Icons.videocam_rounded, color: Colors.deepPurpleAccent, size: 28),
-                              ),
-                              const SizedBox(height: 10),
-                              const Text(
-                                'Video Kaydet',
-                                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                              ),
-                              const SizedBox(height: 4),
-                              const Text(
-                                'Anlık Video',
-                                style: TextStyle(color: Colors.white54, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+  // Direct In-App Camera Screen: Photo and Video switcher directly inside the live viewfinder
+  Future<void> _openCameraScreen() async {
+    final result = await Navigator.push<CameraCaptureResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const CameraScreen(),
+      ),
+    );
+
+    if (result == null || !mounted) return;
+
+    final caption = result.caption.isNotEmpty
+        ? result.caption
+        : (result.isVideo ? '🎥 Video' : '📷 Fotoğraf');
+
+    await _uploadAndSendSingleMedia(
+      result.file,
+      isVideo: result.isVideo,
+      caption: caption,
     );
   }
 
@@ -943,7 +790,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       color: Colors.pinkAccent,
                       onTap: () {
                         Navigator.pop(ctx);
-                        _openCameraChooser();
+                        _openCameraScreen();
                       },
                     ),
                     _buildMediaOption(
@@ -2063,7 +1910,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             IconButton(
               icon: const Icon(Icons.camera_alt_rounded, color: AppColors.primaryLight),
-              onPressed: _openCameraChooser,
+              onPressed: _openCameraScreen,
             ),
             Expanded(
               child: Container(

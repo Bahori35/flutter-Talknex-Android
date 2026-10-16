@@ -20,6 +20,7 @@ import '../../services/encryption_service.dart';
 import 'group_info_screen.dart';
 import '../chat/photo_editor_screen.dart';
 import '../chat/video_editor_screen.dart';
+import '../chat/camera_screen.dart';
 import '../chat/location_picker_screen.dart';
 import '../chat/widgets/video_message_bubble.dart';
 import '../chat/widgets/decrypted_image_widget.dart';
@@ -327,60 +328,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   // Pick Photo or Video from Camera or Gallery
-  Future<void> _pickAndSendMedia({required ImageSource source, required bool isVideo}) async {
-    try {
-      XFile? file;
-      if (isVideo) {
-        file = await _picker.pickVideo(
-          source: source,
-          maxDuration: const Duration(minutes: 3),
-        );
-      } else {
-        file = await _picker.pickImage(
-          source: source,
-          maxWidth: 1920,
-          maxHeight: 1920,
-          imageQuality: 85,
-        );
-      }
-
-      if (file == null) return;
-
-      File unencryptedLocalFile = File(file.path);
-      String caption = isVideo ? '🎥 Video' : '📷 Fotoğraf';
-
-      // WhatsApp-style Photo Editor if media is an image
-      if (!isVideo) {
-        final editorResult = await Navigator.push<PhotoEditorResult>(
-          context,
-          MaterialPageRoute(
-            builder: (_) => PhotoEditorScreen(imageFile: File(file!.path)),
-          ),
-        );
-        if (editorResult == null) return; // User cancelled editing
-        unencryptedLocalFile = editorResult.file;
-        if (editorResult.caption.isNotEmpty) {
-          caption = editorResult.caption;
-        }
-      } else {
-        // WhatsApp-style Video Editor (Trimming, Merging, Mute, Caption)
-        final videoResult = await Navigator.push<VideoEditorResult>(
-          context,
-          MaterialPageRoute(
-            builder: (_) => VideoEditorScreen(initialVideoFile: File(file!.path)),
-          ),
-        );
-        if (videoResult == null) return; // User cancelled editing
-        unencryptedLocalFile = videoResult.file;
-        if (videoResult.caption.isNotEmpty) {
-          caption = videoResult.caption;
-        }
-      }
-
+  Future<void> _uploadAndSendSingleMedia(
+    File unencryptedLocalFile, {
+    required bool isVideo,
+    required String caption,
+    bool showLoadingState = true,
+  }) async {
+    if (showLoadingState) {
       setState(() {
         _isUploadingMedia = true;
       });
+    }
 
+    try {
       File uploadTargetFile = unencryptedLocalFile;
       File? tempEncryptedFile;
       try {
@@ -397,7 +357,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final authService = CustomAuthService();
       final mediaUrl = await authService.uploadImage(uploadTargetFile.path);
 
-      // Clean up temporary encrypted upload file
       if (tempEncryptedFile != null && tempEncryptedFile.existsSync()) {
         try {
           await tempEncryptedFile.delete();
@@ -405,7 +364,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       }
 
       if (mediaUrl != null && mounted) {
-        // Cache original decrypted local file for sender
         try {
           if (isVideo) {
             final appDocDir = await getApplicationDocumentsDirectory();
@@ -454,13 +412,176 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         );
       }
     } catch (e) {
-      debugPrint('[MEDIA PICK ERROR] $e');
+      debugPrint('[GROUP UPLOAD ERR] $e');
+    } finally {
+      if (showLoadingState && mounted) {
+        setState(() {
+          _isUploadingMedia = false;
+        });
+      }
+    }
+  }
+
+  // Direct in-app Camera Screen: photo and video switching directly inside the live viewfinder
+  Future<void> _openCameraScreen() async {
+    final result = await Navigator.push<CameraCaptureResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const CameraScreen(),
+      ),
+    );
+
+    if (result == null || !mounted) return;
+
+    final caption = result.caption.isNotEmpty
+        ? result.caption
+        : (result.isVideo ? '🎥 Video' : '📷 Fotoğraf');
+
+    await _uploadAndSendSingleMedia(
+      result.file,
+      isVideo: result.isVideo,
+      caption: caption,
+    );
+  }
+
+  bool _isVideoFile(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.mp4') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.avi') ||
+        lower.endsWith('.mkv') ||
+        lower.endsWith('.3gp') ||
+        lower.endsWith('.webm');
+  }
+
+  // Pick up to 30 Photos and Videos combined from gallery
+  Future<void> _pickAndSendFromGallery() async {
+    try {
+      final List<XFile> mediaList = await _picker.pickMultipleMedia(limit: 30);
+      if (mediaList.isEmpty) return;
+
+      final selectedItems = mediaList.take(30).toList();
+      final int totalCount = selectedItems.length;
+
+      setState(() {
+        _isUploadingMedia = true;
+      });
+
+      for (int i = 0; i < selectedItems.length; i++) {
+        if (!mounted) break;
+        final xfile = selectedItems[i];
+        final file = File(xfile.path);
+        final isVideo = _isVideoFile(xfile.path);
+        final caption = isVideo ? '🎥 Video' : '📷 Fotoğraf';
+
+        await _uploadAndSendSingleMedia(
+          file,
+          isVideo: isVideo,
+          caption: caption,
+          showLoadingState: false,
+        );
+      }
+    } catch (e) {
+      debugPrint('[GROUP GALLERY PICK ERROR] $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Galeriden medya seçilirken bir hata oluştu.'),
+            backgroundColor: AppColors.callRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
           _isUploadingMedia = false;
         });
       }
+    }
+  }
+
+  // Dedicated Video Editor & Sender for Groups
+  Future<void> _pickAndEditVideo() async {
+    try {
+      final XFile? file = await _picker.pickVideo(
+        source: ImageSource.gallery,
+        maxDuration: const Duration(minutes: 10),
+      );
+      if (file == null) return;
+      if (!mounted) return;
+
+      final videoResult = await Navigator.push<VideoEditorResult>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => VideoEditorScreen(initialVideoFile: File(file.path)),
+        ),
+      );
+      if (videoResult == null) return;
+
+      final caption = videoResult.caption.isNotEmpty ? videoResult.caption : '🎥 Video';
+      await _uploadAndSendSingleMedia(
+        videoResult.file,
+        isVideo: true,
+        caption: caption,
+      );
+    } catch (e) {
+      debugPrint('[GROUP VIDEO EDIT PICK ERROR] $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Video düzenlenirken bir hata oluştu.'),
+            backgroundColor: AppColors.callRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _pickAndSendMedia({required ImageSource source, required bool isVideo}) async {
+    try {
+      XFile? file;
+      if (isVideo) {
+        file = await _picker.pickVideo(
+          source: source,
+          maxDuration: const Duration(minutes: 5),
+        );
+      } else {
+        file = await _picker.pickImage(
+          source: source,
+          maxWidth: 1920,
+          maxHeight: 1920,
+          imageQuality: 85,
+        );
+      }
+
+      if (file == null) return;
+
+      File unencryptedLocalFile = File(file.path);
+      String caption = isVideo ? '🎥 Video' : '📷 Fotoğraf';
+
+      if (!isVideo) {
+        final editorResult = await Navigator.push<PhotoEditorResult>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => PhotoEditorScreen(imageFile: File(file!.path)),
+          ),
+        );
+        if (editorResult == null) return;
+        unencryptedLocalFile = editorResult.file;
+        if (editorResult.caption.isNotEmpty) {
+          caption = editorResult.caption;
+        }
+      }
+
+      await _uploadAndSendSingleMedia(
+        unencryptedLocalFile,
+        isVideo: isVideo,
+        caption: caption,
+      );
+    } catch (e) {
+      debugPrint('[MEDIA PICK ERROR] $e');
     }
   }
 
@@ -2596,7 +2717,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             ),
             IconButton(
               icon: const Icon(Icons.camera_alt_rounded, color: AppColors.primaryLight),
-              onPressed: () => _pickAndSendMedia(source: ImageSource.camera, isVideo: false),
+              onPressed: _openCameraScreen,
             ),
             Expanded(
               child: Container(
@@ -3442,30 +3563,30 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     _buildMediaOption(
-                      icon: Icons.insert_drive_file,
-                      label: 'Belge / Dosya',
-                      color: const Color(0xFF5F66CD),
+                      icon: Icons.photo_library_rounded,
+                      label: 'Galeri',
+                      color: Colors.blueAccent,
                       onTap: () {
                         Navigator.pop(ctx);
-                        _pickAndSendDoc();
+                        _pickAndSendFromGallery();
                       },
                     ),
                     _buildMediaOption(
-                      icon: Icons.camera_alt,
-                      label: 'Fotoğraf Çek',
+                      icon: Icons.camera_alt_rounded,
+                      label: 'Kamera',
                       color: Colors.pinkAccent,
                       onTap: () {
                         Navigator.pop(ctx);
-                        _pickAndSendMedia(source: ImageSource.camera, isVideo: false);
+                        _openCameraScreen();
                       },
                     ),
                     _buildMediaOption(
-                      icon: Icons.videocam,
-                      label: 'Video Çek',
-                      color: Colors.deepPurpleAccent,
+                      icon: Icons.movie_filter_rounded,
+                      label: 'Video Düzenle',
+                      color: const Color(0xFF9C27B0),
                       onTap: () {
                         Navigator.pop(ctx);
-                        _pickAndSendMedia(source: ImageSource.camera, isVideo: true);
+                        _pickAndEditVideo();
                       },
                     ),
                   ],
@@ -3475,21 +3596,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     _buildMediaOption(
-                      icon: Icons.photo_library,
-                      label: 'Galeri Foto',
-                      color: Colors.blueAccent,
+                      icon: Icons.insert_drive_file_rounded,
+                      label: 'Belge / Dosya',
+                      color: const Color(0xFF5F66CD),
                       onTap: () {
                         Navigator.pop(ctx);
-                        _pickAndSendMedia(source: ImageSource.gallery, isVideo: false);
-                      },
-                    ),
-                    _buildMediaOption(
-                      icon: Icons.video_library,
-                      label: 'Galeri Video',
-                      color: Colors.green,
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        _pickAndSendMedia(source: ImageSource.gallery, isVideo: true);
+                        _pickAndSendDoc();
                       },
                     ),
                     _buildMediaOption(
@@ -3501,12 +3613,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         _openLocationPicker();
                       },
                     ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
                     _buildMediaOption(
                       icon: Icons.poll_rounded,
                       label: 'Anket',
@@ -3526,6 +3632,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         }
                       },
                     ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
                     _buildMediaOption(
                       icon: Icons.event_available_rounded,
                       label: 'Etkinlik',
@@ -3545,6 +3657,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         }
                       },
                     ),
+                    const SizedBox(width: 80),
                     const SizedBox(width: 80),
                   ],
                 ),
