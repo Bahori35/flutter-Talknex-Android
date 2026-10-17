@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:image_picker/image_picker.dart';
 import '../../constants/app_colors.dart';
 import 'location_picker_screen.dart';
 
@@ -13,11 +14,45 @@ import 'location_picker_screen.dart';
 class PhotoEditorResult {
   final File file;
   final String caption;
+  final bool isVideo;
+  final List<PhotoEditorResult>? allResults;
 
   PhotoEditorResult({
     required this.file,
     required this.caption,
+    this.isVideo = false,
+    this.allResults,
   });
+}
+
+class PhotoItemState {
+  final String id;
+  File originalFile;
+  File currentImageFile;
+  ui.Image? loadedUiImage;
+  String caption;
+  int selectedFilterIndex;
+  List<OverlayItem> overlays;
+  Rect cropRectNorm;
+  int cropRotationQuarter;
+  bool cropIsFlipped;
+  double? selectedAspectPreset;
+  bool isVideo;
+
+  PhotoItemState({
+    required this.id,
+    required this.originalFile,
+    required this.currentImageFile,
+    this.loadedUiImage,
+    this.caption = '',
+    this.selectedFilterIndex = 0,
+    List<OverlayItem>? overlays,
+    this.cropRectNorm = const Rect.fromLTWH(0, 0, 1, 1),
+    this.cropRotationQuarter = 0,
+    this.cropIsFlipped = false,
+    this.selectedAspectPreset,
+    this.isVideo = false,
+  }) : overlays = overlays ?? [];
 }
 
 enum OverlayType { text, emoji, location }
@@ -56,12 +91,20 @@ class FilterOption {
 enum _CropHandle { none, center, topLeft, topRight, bottomLeft, bottomRight }
 
 class PhotoEditorScreen extends StatefulWidget {
-  final File imageFile;
+  final File? imageFile;
+  final List<File>? imageFiles;
 
   const PhotoEditorScreen({
     super.key,
-    required this.imageFile,
-  });
+    required File imageFile,
+  })  : imageFile = imageFile,
+        imageFiles = null;
+
+  const PhotoEditorScreen.multiple({
+    super.key,
+    required List<File> imageFiles,
+  })  : imageFiles = imageFiles,
+        imageFile = null;
 
   @override
   State<PhotoEditorScreen> createState() => _PhotoEditorScreenState();
@@ -139,7 +182,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   int _selectedFilterIndex = 0;
   bool _showFilterTray = false;
 
-  // Overlays
+  // Multi-item WhatsApp-style management
+  final List<PhotoItemState> _items = [];
+  int _currentIndex = 0;
+  final ScrollController _thumbScrollController = ScrollController();
+
+  // Overlays for active photo
   final List<OverlayItem> _overlays = [];
   String? _selectedOverlayId;
   double _activeOverlayBaseScale = 1.0;
@@ -150,8 +198,167 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   @override
   void initState() {
     super.initState();
-    _currentImageFile = widget.imageFile;
-    _loadUiImage();
+    final List<File> initialFiles = widget.imageFiles ?? (widget.imageFile != null ? [widget.imageFile!] : []);
+    for (int i = 0; i < initialFiles.length; i++) {
+      final f = initialFiles[i];
+      final isVid = _checkIsVideo(f.path);
+      _items.add(
+        PhotoItemState(
+          id: '${DateTime.now().millisecondsSinceEpoch}_$i',
+          originalFile: f,
+          currentImageFile: f,
+          isVideo: isVid,
+        ),
+      );
+    }
+
+    if (_items.isNotEmpty) {
+      _currentImageFile = _items.first.currentImageFile;
+      _loadStateFromItem(_items[_currentIndex]);
+    } else {
+      _currentImageFile = File('');
+    }
+  }
+
+  bool _checkIsVideo(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.mp4') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.avi') ||
+        lower.endsWith('.mkv') ||
+        lower.endsWith('.3gp') ||
+        lower.endsWith('.webm');
+  }
+
+  void _syncCurrentItemOverlays() {
+    if (_items.isNotEmpty && _currentIndex < _items.length) {
+      _items[_currentIndex].overlays = List.from(_overlays);
+    }
+  }
+
+  void _saveStateToCurrentItem() {
+    if (_currentIndex < 0 || _currentIndex >= _items.length) return;
+    final item = _items[_currentIndex];
+    item.caption = _captionController.text;
+    item.selectedFilterIndex = _selectedFilterIndex;
+    item.currentImageFile = _currentImageFile;
+    item.loadedUiImage = _loadedUiImage;
+    item.overlays = List.from(_overlays);
+    item.cropRectNorm = _cropRectNorm;
+    item.cropRotationQuarter = _cropRotationQuarter;
+    item.cropIsFlipped = _cropIsFlipped;
+    item.selectedAspectPreset = _selectedAspectPreset;
+  }
+
+  void _loadStateFromItem(PhotoItemState item) {
+    _captionController.text = item.caption;
+    _selectedFilterIndex = item.selectedFilterIndex;
+    _currentImageFile = item.currentImageFile;
+    _loadedUiImage = item.loadedUiImage;
+    _overlays.clear();
+    _overlays.addAll(item.overlays);
+    _selectedOverlayId = null;
+    _cropRectNorm = item.cropRectNorm;
+    _cropRotationQuarter = item.cropRotationQuarter;
+    _cropIsFlipped = item.cropIsFlipped;
+    _selectedAspectPreset = item.selectedAspectPreset;
+    _isCropMode = false;
+    _showFilterTray = false;
+
+    if (!item.isVideo && _loadedUiImage == null) {
+      _loadUiImage();
+    }
+  }
+
+  void _switchPhoto(int newIndex) {
+    if (newIndex < 0 || newIndex >= _items.length || newIndex == _currentIndex) return;
+    _saveStateToCurrentItem();
+    setState(() {
+      _currentIndex = newIndex;
+      _loadStateFromItem(_items[_currentIndex]);
+    });
+    _scrollToThumbnail(newIndex);
+  }
+
+  void _scrollToThumbnail(int index) {
+    if (!_thumbScrollController.hasClients) return;
+    final targetOffset = (index * 64.0) - 100.0;
+    _thumbScrollController.animateTo(
+      targetOffset.clamp(0.0, _thumbScrollController.position.maxScrollExtent),
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _selectThumbnail(int index) {
+    if (index == _currentIndex) return;
+    _switchPhoto(index);
+  }
+
+  void _deleteCurrentItem() {
+    if (_items.length <= 1) {
+      Navigator.pop(context);
+      return;
+    }
+    setState(() {
+      _items.removeAt(_currentIndex);
+      if (_currentIndex >= _items.length) {
+        _currentIndex = _items.length - 1;
+      }
+      _loadStateFromItem(_items[_currentIndex]);
+    });
+  }
+
+  void _deleteItemAtIndex(int index) {
+    if (_items.length <= 1) {
+      Navigator.pop(context);
+      return;
+    }
+    setState(() {
+      _items.removeAt(index);
+      if (_currentIndex >= _items.length) {
+        _currentIndex = _items.length - 1;
+        _loadStateFromItem(_items[_currentIndex]);
+      } else if (_currentIndex == index) {
+        _loadStateFromItem(_items[_currentIndex]);
+      }
+    });
+  }
+
+  Future<void> _addMoreMedia() async {
+    final remainingLimit = 30 - _items.length;
+    if (remainingLimit <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('En fazla 30 medya ekleyebilirsiniz.'),
+          backgroundColor: AppColors.callRed,
+        ),
+      );
+      return;
+    }
+
+    try {
+      final picker = ImagePicker();
+      final List<XFile> additionalList = await picker.pickMultipleMedia(limit: remainingLimit);
+      if (additionalList.isEmpty) return;
+
+      final newItems = additionalList.map((x) {
+        final f = File(x.path);
+        final isVid = _checkIsVideo(x.path);
+        return PhotoItemState(
+          id: '${DateTime.now().millisecondsSinceEpoch}_${math.Random().nextInt(10000)}',
+          originalFile: f,
+          currentImageFile: f,
+          isVideo: isVid,
+        );
+      }).toList();
+
+      setState(() {
+        _items.addAll(newItems);
+      });
+    } catch (e) {
+      debugPrint('[ADD MORE MEDIA ERR] $e');
+    }
   }
 
   Future<void> _loadUiImage() async {
@@ -162,6 +369,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       if (mounted) {
         setState(() {
           _loadedUiImage = frame.image;
+          if (_items.isNotEmpty && _currentIndex < _items.length) {
+            _items[_currentIndex].loadedUiImage = frame.image;
+          }
         });
       }
     } catch (e) {
@@ -172,6 +382,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   @override
   void dispose() {
     _captionController.dispose();
+    _thumbScrollController.dispose();
     super.dispose();
   }
 
@@ -264,6 +475,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       );
 
       _currentImageFile = cropped;
+      if (_items.isNotEmpty && _currentIndex < _items.length) {
+        _items[_currentIndex].currentImageFile = cropped;
+      }
       await _loadUiImage();
 
       if (mounted) {
@@ -831,39 +1045,94 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   Future<void> _exportAndSend() async {
     if (_isExporting) return;
+    _saveStateToCurrentItem();
+
     setState(() {
       _isExporting = true;
       _selectedOverlayId = null; // hide bounding boxes
+      _showFilterTray = false;
     });
 
     try {
-      await Future.delayed(const Duration(milliseconds: 60));
+      final List<PhotoEditorResult> results = [];
+      final int total = _items.length;
 
-      final boundary = _repaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-      if (boundary == null) {
-        setState(() => _isExporting = false);
-        return;
+      for (int i = 0; i < total; i++) {
+        if (!mounted) return;
+        final item = _items[i];
+
+        if (item.isVideo) {
+          results.add(PhotoEditorResult(
+            file: item.originalFile,
+            caption: item.caption,
+            isVideo: true,
+          ));
+          continue;
+        }
+
+        final bool hasEdits = item.overlays.isNotEmpty ||
+            item.selectedFilterIndex != 0 ||
+            item.currentImageFile.path != item.originalFile.path;
+
+        if (!hasEdits) {
+          results.add(PhotoEditorResult(
+            file: item.originalFile,
+            caption: item.caption,
+            isVideo: false,
+          ));
+        } else {
+          // Switch to this item and render via RepaintBoundary
+          if (_currentIndex != i) {
+            setState(() {
+              _currentIndex = i;
+              _loadStateFromItem(item);
+            });
+            await Future.delayed(const Duration(milliseconds: 60));
+          } else {
+            await Future.delayed(const Duration(milliseconds: 30));
+          }
+
+          final boundary = _repaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+          if (boundary != null) {
+            final image = await boundary.toImage(pixelRatio: 2.2);
+            final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+            if (byteData != null) {
+              final bytes = byteData.buffer.asUint8List();
+              final tempDir = await getTemporaryDirectory();
+              final outPath = p.join(tempDir.path, 'edited_${DateTime.now().millisecondsSinceEpoch}_$i.jpg');
+              final exportedFile = File(outPath);
+              await exportedFile.writeAsBytes(bytes);
+              results.add(PhotoEditorResult(
+                file: exportedFile,
+                caption: item.caption,
+                isVideo: false,
+              ));
+              continue;
+            }
+          }
+
+          results.add(PhotoEditorResult(
+            file: item.currentImageFile,
+            caption: item.caption,
+            isVideo: false,
+          ));
+        }
       }
-
-      final image = await boundary.toImage(pixelRatio: 2.2);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) {
-        setState(() => _isExporting = false);
-        return;
-      }
-
-      final bytes = byteData.buffer.asUint8List();
-      final tempDir = await getTemporaryDirectory();
-      final outPath = p.join(tempDir.path, 'edited_${DateTime.now().millisecondsSinceEpoch}.jpg');
-      final exportedFile = File(outPath);
-      await exportedFile.writeAsBytes(bytes);
 
       if (!mounted) return;
+
+      if (results.isEmpty) {
+        setState(() => _isExporting = false);
+        return;
+      }
+
       Navigator.pop(
         context,
         PhotoEditorResult(
-          file: exportedFile,
-          caption: _captionController.text.trim(),
+          file: results.first.file,
+          caption: results.first.caption,
+          isVideo: results.first.isVideo,
+          allResults: results,
         ),
       );
     } catch (e) {
@@ -1112,311 +1381,635 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   Widget _buildMainEditorScreen() {
     final selectedFilter = _filters[_selectedFilterIndex];
     final selectedItem = _selectedOverlay;
+    final bool isCurrentVideo = _items.isNotEmpty &&
+        _currentIndex < _items.length &&
+        _items[_currentIndex].isVideo;
 
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            // TOP BAR
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              color: Colors.black.withOpacity(0.5),
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded, color: Colors.white, size: 26),
-                    onPressed: () => Navigator.pop(context),
+            Column(
+              children: [
+                // TOP BAR
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  color: Colors.black.withOpacity(0.5),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded, color: Colors.white, size: 26),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                      if (_items.length > 1) ...[
+                        const SizedBox(width: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Text(
+                            '${_currentIndex + 1} / ${_items.length}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline_rounded, color: Colors.white70, size: 22),
+                          tooltip: 'Bu medyayı sil',
+                          onPressed: _deleteCurrentItem,
+                        ),
+                      ],
+                      const Spacer(),
+                      if (!isCurrentVideo) ...[
+                        // Crop & Rotate
+                        IconButton(
+                          icon: const Icon(Icons.crop_rotate_rounded, color: Colors.white, size: 24),
+                          tooltip: 'Kırp & Döndür',
+                          onPressed: _enterCropMode,
+                        ),
+                        // Emoji
+                        IconButton(
+                          icon: const Icon(Icons.sentiment_satisfied_alt_rounded, color: Colors.white, size: 24),
+                          tooltip: 'Emoji / Çıkartma Ekle',
+                          onPressed: _openEmojiSheet,
+                        ),
+                        // Text
+                        IconButton(
+                          icon: const Icon(Icons.title_rounded, color: Colors.white, size: 24),
+                          tooltip: 'Yazı Ekle',
+                          onPressed: () => _openTextDialog(),
+                        ),
+                        // Location
+                        IconButton(
+                          icon: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
+                          tooltip: 'Konum Ekle',
+                          onPressed: _openLocationDialog,
+                        ),
+                        // Filters Toggle
+                        IconButton(
+                          icon: Icon(
+                            Icons.auto_awesome_rounded,
+                            color: _showFilterTray ? AppColors.accent : Colors.white,
+                            size: 24,
+                          ),
+                          tooltip: 'Filtreler',
+                          onPressed: () {
+                            setState(() {
+                              _showFilterTray = !_showFilterTray;
+                              _selectedOverlayId = null;
+                            });
+                          },
+                        ),
+                        // Undo Overlay
+                        if (_overlays.isNotEmpty)
+                          IconButton(
+                            icon: const Icon(Icons.undo_rounded, color: Colors.white, size: 24),
+                            tooltip: 'Geri Al',
+                            onPressed: _undoLastOverlay,
+                          ),
+                      ] else ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppColors.accent.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColors.accent.withOpacity(0.5)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.videocam_rounded, color: AppColors.accent, size: 16),
+                              SizedBox(width: 4),
+                              Text(
+                                'Video',
+                                style: TextStyle(
+                                  color: AppColors.accent,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                  const Spacer(),
-                  // Crop & Rotate
-                  IconButton(
-                    icon: const Icon(Icons.crop_rotate_rounded, color: Colors.white, size: 24),
-                    tooltip: 'Kırp & Döndür',
-                    onPressed: _enterCropMode,
-                  ),
-                  // Emoji
-                  IconButton(
-                    icon: const Icon(Icons.sentiment_satisfied_alt_rounded, color: Colors.white, size: 24),
-                    tooltip: 'Emoji / Çıkartma Ekle',
-                    onPressed: _openEmojiSheet,
-                  ),
-                  // Text
-                  IconButton(
-                    icon: const Icon(Icons.title_rounded, color: Colors.white, size: 24),
-                    tooltip: 'Yazı Ekle',
-                    onPressed: () => _openTextDialog(),
-                  ),
-                  // Location
-                  IconButton(
-                    icon: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
-                    tooltip: 'Konum Ekle',
-                    onPressed: _openLocationDialog,
-                  ),
-                  // Filters Toggle
-                  IconButton(
-                    icon: Icon(
-                      Icons.auto_awesome_rounded,
-                      color: _showFilterTray ? AppColors.accent : Colors.white,
-                      size: 24,
-                    ),
-                    tooltip: 'Filtreler',
-                    onPressed: () {
-                      setState(() {
-                        _showFilterTray = !_showFilterTray;
-                        _selectedOverlayId = null;
-                      });
+                ),
+
+                // CENTER CANVAS (Image + Filter + Overlays)
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTap: () {
+                      if (_selectedOverlayId != null) {
+                        setState(() => _selectedOverlayId = null);
+                      }
                     },
-                  ),
-                  // Undo Overlay
-                  if (_overlays.isNotEmpty)
-                    IconButton(
-                      icon: const Icon(Icons.undo_rounded, color: Colors.white, size: 24),
-                      tooltip: 'Geri Al',
-                      onPressed: _undoLastOverlay,
+                    onHorizontalDragEnd: (details) {
+                      if (_selectedOverlayId != null) return;
+                      final velocity = details.primaryVelocity ?? 0;
+                      if (velocity < -200 && _currentIndex < _items.length - 1) {
+                        _switchPhoto(_currentIndex + 1);
+                      } else if (velocity > 200 && _currentIndex > 0) {
+                        _switchPhoto(_currentIndex - 1);
+                      }
+                    },
+                    child: Center(
+                      child: RepaintBoundary(
+                        key: _repaintKey,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          clipBehavior: Clip.none,
+                          children: [
+                            // The Cropped Filtered Base Image / Video
+                            _buildFilteredImage(selectedFilter),
+
+                            // Overlays (Draggable & scalable text, emojis, location)
+                            if (!isCurrentVideo)
+                              ..._overlays.map((item) => _buildOverlayWidget(item)),
+                          ],
+                        ),
+                      ),
                     ),
-                ],
-              ),
+                  ),
+                ),
+
+                // FLOATING SIZE SLIDER (When an overlay is selected)
+                if (selectedItem != null && !isCurrentVideo)
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1F2C34).withOpacity(0.95),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: AppColors.accent.withOpacity(0.5), width: 1.2),
+                      boxShadow: [
+                        BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 8, offset: const Offset(0, 3)),
+                      ],
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.aspect_ratio_rounded, color: AppColors.accent, size: 18),
+                        const SizedBox(width: 6),
+                        const Text('Boyut:', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle_outline_rounded, color: Colors.white, size: 20),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () {
+                            setState(() {
+                              selectedItem.scale = (selectedItem.scale - 0.15).clamp(0.4, 4.0);
+                            });
+                          },
+                        ),
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              thumbColor: AppColors.accent,
+                              activeTrackColor: AppColors.accent,
+                              inactiveTrackColor: Colors.white24,
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                            ),
+                            child: Slider(
+                              value: selectedItem.scale,
+                              min: 0.4,
+                              max: 3.5,
+                              onChanged: (val) {
+                                setState(() {
+                                  selectedItem.scale = val;
+                                });
+                              },
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.white, size: 20),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () {
+                            setState(() {
+                              selectedItem.scale = (selectedItem.scale + 0.15).clamp(0.4, 4.0);
+                            });
+                          },
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${(selectedItem.scale * 100).round()}%',
+                          style: const TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(width: 8),
+                        GestureDetector(
+                          onTap: () => setState(() => _selectedOverlayId = null),
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: const BoxDecoration(
+                              color: AppColors.surfaceLight,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.check, color: Colors.white, size: 16),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                // FILTER CAROUSEL (if open)
+                if (_showFilterTray && !isCurrentVideo)
+                  Container(
+                    height: 96,
+                    color: const Color(0xFF141D22),
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      itemCount: _filters.length,
+                      itemBuilder: (context, idx) {
+                        final f = _filters[idx];
+                        final isSel = idx == _selectedFilterIndex;
+                        return GestureDetector(
+                          onTap: () => setState(() => _selectedFilterIndex = idx),
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 6),
+                            padding: const EdgeInsets.all(3),
+                            decoration: BoxDecoration(
+                              color: isSel ? AppColors.accent.withOpacity(0.2) : Colors.transparent,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: isSel ? AppColors.accent : Colors.transparent,
+                                width: 2,
+                              ),
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: SizedBox(
+                                    width: 50,
+                                    height: 50,
+                                    child: f.matrix != null
+                                        ? ColorFiltered(
+                                            colorFilter: ColorFilter.matrix(f.matrix!),
+                                            child: Image.file(_currentImageFile, fit: BoxFit.cover),
+                                          )
+                                        : Image.file(_currentImageFile, fit: BoxFit.cover),
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  f.name,
+                                  style: TextStyle(
+                                    color: isSel ? AppColors.accent : Colors.white70,
+                                    fontSize: 11,
+                                    fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+
+                // THUMBNAIL STRIP (WhatsApp style horizontal photo selector)
+                _buildThumbnailStrip(),
+
+                // BOTTOM BAR (WhatsApp style caption input & send button)
+                Container(
+                  padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+                  color: Colors.black.withOpacity(0.7),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1F2C34),
+                            borderRadius: BorderRadius.circular(24),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.edit_note_rounded, color: AppColors.accent, size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: TextField(
+                                  controller: _captionController,
+                                  onChanged: (val) {
+                                    if (_items.isNotEmpty && _currentIndex < _items.length) {
+                                      _items[_currentIndex].caption = val;
+                                    }
+                                  },
+                                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                                  decoration: const InputDecoration(
+                                    hintText: 'Bir başlık ekleyin...',
+                                    hintStyle: TextStyle(color: Colors.white54, fontSize: 14),
+                                    border: InputBorder.none,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      // Send / Done FAB
+                      GestureDetector(
+                        onTap: _isExporting ? null : _exportAndSend,
+                        child: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: const BoxDecoration(
+                            gradient: AppColors.primaryGradient,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.accent,
+                                blurRadius: 8,
+                                offset: Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Center(
+                            child: _isExporting
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  )
+                                : (_items.length > 1
+                                    ? Stack(
+                                        clipBehavior: Clip.none,
+                                        alignment: Alignment.center,
+                                        children: [
+                                          const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                                          Positioned(
+                                            top: -7,
+                                            right: -7,
+                                            child: Container(
+                                              padding: const EdgeInsets.all(4),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFF00A884),
+                                                shape: BoxShape.circle,
+                                                border: Border.all(color: Colors.white, width: 1.2),
+                                              ),
+                                              child: Text(
+                                                '${_items.length}',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      )
+                                    : const Icon(Icons.send_rounded, color: Colors.white, size: 22)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
 
-            // CENTER CANVAS (Image + Filter + Overlays)
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: () {
-                  if (_selectedOverlayId != null) {
-                    setState(() => _selectedOverlayId = null);
-                  }
-                },
+            // EXPORTING / PROCESSING OVERLAY
+            if (_isExporting)
+              Container(
+                color: Colors.black.withOpacity(0.7),
                 child: Center(
-                  child: RepaintBoundary(
-                    key: _repaintKey,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      clipBehavior: Clip.none,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1F2C34),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.accent.withOpacity(0.3)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.5),
+                          blurRadius: 16,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: const Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        // The Cropped Filtered Base Image
-                        _buildFilteredImage(selectedFilter),
-
-                        // Overlays (Draggable & scalable text, emojis, location)
-                        ..._overlays.map((item) => _buildOverlayWidget(item)),
+                        CircularProgressIndicator(color: AppColors.accent),
+                        SizedBox(height: 16),
+                        Text(
+                          'Fotoğraflar Hazırlanıyor...',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(height: 6),
+                        Text(
+                          'Lütfen bekleyin',
+                          style: TextStyle(
+                            color: Colors.white60,
+                            fontSize: 12,
+                          ),
+                        ),
                       ],
                     ),
                   ),
                 ),
               ),
-            ),
-
-            // FLOATING SIZE SLIDER (When an overlay is selected)
-            if (selectedItem != null)
-              Container(
-                margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1F2C34).withOpacity(0.95),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.accent.withOpacity(0.5), width: 1.2),
-                  boxShadow: [
-                    BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 8, offset: const Offset(0, 3)),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.aspect_ratio_rounded, color: AppColors.accent, size: 18),
-                    const SizedBox(width: 6),
-                    const Text('Boyut:', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
-                    IconButton(
-                      icon: const Icon(Icons.remove_circle_outline_rounded, color: Colors.white, size: 20),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      onPressed: () {
-                        setState(() {
-                          selectedItem.scale = (selectedItem.scale - 0.15).clamp(0.4, 4.0);
-                        });
-                      },
-                    ),
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          thumbColor: AppColors.accent,
-                          activeTrackColor: AppColors.accent,
-                          inactiveTrackColor: Colors.white24,
-                          trackHeight: 3,
-                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                        ),
-                        child: Slider(
-                          value: selectedItem.scale,
-                          min: 0.4,
-                          max: 3.5,
-                          onChanged: (val) {
-                            setState(() {
-                              selectedItem.scale = val;
-                            });
-                          },
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.white, size: 20),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      onPressed: () {
-                        setState(() {
-                          selectedItem.scale = (selectedItem.scale + 0.15).clamp(0.4, 4.0);
-                        });
-                      },
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${(selectedItem.scale * 100).round()}%',
-                      style: const TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: () => setState(() => _selectedOverlayId = null),
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: const BoxDecoration(
-                          color: AppColors.surfaceLight,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.check, color: Colors.white, size: 16),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-            // FILTER CAROUSEL (if open)
-            if (_showFilterTray)
-              Container(
-                height: 96,
-                color: const Color(0xFF141D22),
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  itemCount: _filters.length,
-                  itemBuilder: (context, idx) {
-                    final f = _filters[idx];
-                    final isSel = idx == _selectedFilterIndex;
-                    return GestureDetector(
-                      onTap: () => setState(() => _selectedFilterIndex = idx),
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 6),
-                        padding: const EdgeInsets.all(3),
-                        decoration: BoxDecoration(
-                          color: isSel ? AppColors.accent.withOpacity(0.2) : Colors.transparent,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: isSel ? AppColors.accent : Colors.transparent,
-                            width: 2,
-                          ),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(6),
-                              child: SizedBox(
-                                width: 50,
-                                height: 50,
-                                child: f.matrix != null
-                                    ? ColorFiltered(
-                                        colorFilter: ColorFilter.matrix(f.matrix!),
-                                        child: Image.file(_currentImageFile, fit: BoxFit.cover),
-                                      )
-                                    : Image.file(_currentImageFile, fit: BoxFit.cover),
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              f.name,
-                              style: TextStyle(
-                                color: isSel ? AppColors.accent : Colors.white70,
-                                fontSize: 11,
-                                fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-
-            // BOTTOM BAR (WhatsApp style caption input & send button)
-            Container(
-              padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-              color: Colors.black.withOpacity(0.7),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1F2C34),
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.edit_note_rounded, color: AppColors.accent, size: 20),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: TextField(
-                              controller: _captionController,
-                              style: const TextStyle(color: Colors.white, fontSize: 14),
-                              decoration: const InputDecoration(
-                                hintText: 'Bir başlık ekleyin...',
-                                hintStyle: TextStyle(color: Colors.white54, fontSize: 14),
-                                border: InputBorder.none,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  // Send / Done FAB
-                  GestureDetector(
-                    onTap: _isExporting ? null : _exportAndSend,
-                    child: Container(
-                      width: 48,
-                      height: 48,
-                      decoration: const BoxDecoration(
-                        gradient: AppColors.primaryGradient,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppColors.accent,
-                            blurRadius: 8,
-                            offset: Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Center(
-                        child: _isExporting
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              )
-                            : const Icon(Icons.send_rounded, color: Colors.white, size: 22),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
           ],
         ),
       ),
     );
   }
 
+  // --- WHATSAPP-STYLE THUMBNAIL STRIP ---
+  Widget _buildThumbnailStrip() {
+    return Container(
+      height: 74,
+      color: Colors.black.withOpacity(0.85),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: ListView.separated(
+        controller: _thumbScrollController,
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        itemCount: _items.length + 1,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          if (index == _items.length) {
+            // "+" Add More Media Button
+            return GestureDetector(
+              onTap: _isExporting ? null : _addMoreMedia,
+              child: Container(
+                width: 52,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1F2C34),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white24, width: 1.2),
+                ),
+                child: const Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.add_photo_alternate_rounded, color: AppColors.accent, size: 22),
+                    SizedBox(height: 2),
+                    Text(
+                      'Ekle',
+                      style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          final item = _items[index];
+          final bool isSelected = (index == _currentIndex);
+          final bool hasEdits = item.overlays.isNotEmpty ||
+              item.selectedFilterIndex != 0 ||
+              item.cropRotationQuarter != 0 ||
+              item.cropIsFlipped ||
+              item.currentImageFile.path != item.originalFile.path;
+
+          return GestureDetector(
+            onTap: () => _selectThumbnail(index),
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  width: isSelected ? 56 : 50,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isSelected ? AppColors.accent : Colors.white24,
+                      width: isSelected ? 2.5 : 1.0,
+                    ),
+                    boxShadow: isSelected
+                        ? [
+                            BoxShadow(
+                              color: AppColors.accent.withOpacity(0.4),
+                              blurRadius: 6,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        item.isVideo
+                            ? Container(
+                                color: const Color(0xFF141D22),
+                                child: const Center(
+                                  child: Icon(Icons.videocam_rounded, color: Colors.white70, size: 22),
+                                ),
+                              )
+                            : Image.file(
+                                item.currentImageFile,
+                                fit: BoxFit.cover,
+                              ),
+                        if (!isSelected)
+                          Container(
+                            color: Colors.black.withOpacity(0.35),
+                          ),
+                        if (item.isVideo)
+                          Positioned(
+                            bottom: 2,
+                            left: 2,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.black87,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 10),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                // Edited indicator dot
+                if (hasEdits)
+                  Positioned(
+                    top: -2,
+                    right: -2,
+                    child: Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: AppColors.accent,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.black, width: 1.5),
+                      ),
+                    ),
+                  ),
+                // Delete button for this thumbnail if multiple items
+                if (_items.length > 1 && isSelected)
+                  Positioned(
+                    top: -6,
+                    left: -6,
+                    child: GestureDetector(
+                      onTap: () => _deleteItemAtIndex(index),
+                      child: Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          color: AppColors.callRed,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 1.2),
+                        ),
+                        child: const Icon(Icons.close_rounded, color: Colors.white, size: 12),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildFilteredImage(FilterOption filter) {
+    if (_items.isNotEmpty && _currentIndex < _items.length && _items[_currentIndex].isVideo) {
+      return Container(
+        color: const Color(0xFF10191F),
+        child: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.videocam_rounded, color: AppColors.accent, size: 64),
+              SizedBox(height: 12),
+              Text(
+                'Video',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 4),
+              Text(
+                'Bu video için başlık ekleyebilirsiniz',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final imageWidget = Image.file(
       _currentImageFile,
       fit: BoxFit.contain,

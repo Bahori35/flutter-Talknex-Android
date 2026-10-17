@@ -23,6 +23,7 @@ import '../call/call_screen.dart';
 import 'location_picker_screen.dart';
 import 'live_location_screen.dart';
 import 'video_editor_screen.dart';
+import 'photo_editor_screen.dart';
 import 'camera_screen.dart';
 import 'widgets/video_message_bubble.dart';
 import 'widgets/decrypted_image_widget.dart';
@@ -467,8 +468,20 @@ class _ChatScreenState extends State<ChatScreen> {
       final List<XFile> mediaList = await _picker.pickMultipleMedia(limit: 30);
       if (mediaList.isEmpty) return;
 
-      final selectedItems = mediaList.take(30).toList();
-      final int totalCount = selectedItems.length;
+      final selectedFiles = mediaList.take(30).map((x) => File(x.path)).toList();
+      if (!mounted) return;
+
+      final editorResult = await Navigator.push<PhotoEditorResult>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PhotoEditorScreen.multiple(imageFiles: selectedFiles),
+        ),
+      );
+
+      if (editorResult == null) return; // User cancelled
+
+      final results = editorResult.allResults ?? [editorResult];
+      final int totalCount = results.length;
 
       setState(() {
         _isUploadingMedia = true;
@@ -477,12 +490,13 @@ class _ChatScreenState extends State<ChatScreen> {
             : 'Medya gönderiliyor...';
       });
 
-      for (int i = 0; i < selectedItems.length; i++) {
+      for (int i = 0; i < results.length; i++) {
         if (!mounted) break;
-        final xfile = selectedItems[i];
-        final file = File(xfile.path);
-        final isVideo = _isVideoFile(xfile.path);
-        final caption = isVideo ? '🎥 Video' : '📷 Fotoğraf';
+        final res = results[i];
+        final isVid = res.isVideo;
+        final caption = res.caption.isNotEmpty
+            ? res.caption
+            : (isVid ? '🎥 Video' : '📷 Fotoğraf');
 
         setState(() {
           _uploadingStatusText = totalCount > 1
@@ -491,8 +505,8 @@ class _ChatScreenState extends State<ChatScreen> {
         });
 
         await _uploadAndSendSingleMedia(
-          file,
-          isVideo: isVideo,
+          res.file,
+          isVideo: isVid,
           caption: caption,
           showLoadingState: false,
         );

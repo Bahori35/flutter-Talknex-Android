@@ -460,23 +460,35 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final List<XFile> mediaList = await _picker.pickMultipleMedia(limit: 30);
       if (mediaList.isEmpty) return;
 
-      final selectedItems = mediaList.take(30).toList();
-      final int totalCount = selectedItems.length;
+      final selectedFiles = mediaList.take(30).map((x) => File(x.path)).toList();
+      if (!mounted) return;
+
+      final editorResult = await Navigator.push<PhotoEditorResult>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PhotoEditorScreen.multiple(imageFiles: selectedFiles),
+        ),
+      );
+
+      if (editorResult == null) return; // User cancelled
+
+      final results = editorResult.allResults ?? [editorResult];
 
       setState(() {
         _isUploadingMedia = true;
       });
 
-      for (int i = 0; i < selectedItems.length; i++) {
+      for (int i = 0; i < results.length; i++) {
         if (!mounted) break;
-        final xfile = selectedItems[i];
-        final file = File(xfile.path);
-        final isVideo = _isVideoFile(xfile.path);
-        final caption = isVideo ? '🎥 Video' : '📷 Fotoğraf';
+        final res = results[i];
+        final isVid = res.isVideo;
+        final caption = res.caption.isNotEmpty
+            ? res.caption
+            : (isVid ? '🎥 Video' : '📷 Fotoğraf');
 
         await _uploadAndSendSingleMedia(
-          file,
-          isVideo: isVideo,
+          res.file,
+          isVideo: isVid,
           caption: caption,
           showLoadingState: false,
         );
