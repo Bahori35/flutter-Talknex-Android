@@ -253,23 +253,40 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
     try {
       final XFile videoFile = await _controller!.stopVideoRecording();
+      setState(() => _isRecording = false);
       if (!mounted) return;
 
       final file = File(videoFile.path);
 
-      // Initialize video preview player
-      final vp = VideoPlayerController.file(file);
-      await vp.initialize();
-      await vp.setLooping(true);
-      await vp.play();
+      try {
+        await _controller?.pausePreview();
+      } catch (_) {}
 
-      setState(() {
-        _isRecording = false;
-        _capturedFile = file;
-        _capturedIsVideo = true;
-        _videoPreviewController = vp;
-        _captionController.clear();
-      });
+      if (!mounted) return;
+
+      final editorResult = await Navigator.push<PhotoEditorResult>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PhotoEditorScreen(imageFile: file),
+        ),
+      );
+
+      if (!mounted) return;
+
+      if (editorResult != null) {
+        Navigator.pop(
+          context,
+          CameraCaptureResult(
+            file: editorResult.file,
+            isVideo: true,
+            caption: editorResult.caption,
+          ),
+        );
+      } else {
+        try {
+          await _controller?.resumePreview();
+        } catch (_) {}
+      }
     } catch (e) {
       debugPrint('[STOP VIDEO ERR] $e');
       setState(() => _isRecording = false);

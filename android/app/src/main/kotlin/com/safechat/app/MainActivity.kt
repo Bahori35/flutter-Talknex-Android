@@ -1,6 +1,8 @@
 package com.safechat.app
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.annotation.OptIn
@@ -12,6 +14,8 @@ import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.BitmapOverlay
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
@@ -21,6 +25,7 @@ import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
+import com.google.common.collect.ImmutableList
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -78,10 +83,107 @@ class MainActivity : FlutterActivity() {
                             result.error("VIDEO_PROCESS_ERROR", t.message ?: "Video birleştirilemedi", null)
                         }
                     }
+                } else if (call.method == "applyOverlayToVideo") {
+                    val videoPath = call.argument<String>("videoPath")
+                    val overlayPath = call.argument<String>("overlayPath")
+
+                    if (videoPath == null || overlayPath == null) {
+                        result.error("INVALID_ARGS", "videoPath and overlayPath cannot be null", null)
+                        return@setMethodCallHandler
+                    }
+
+                    CoroutineScope(Dispatchers.Main + Job()).launch {
+                        try {
+                            val outputPath = applyOverlayToVideoNative(
+                                context = applicationContext,
+                                videoPath = videoPath,
+                                overlayPath = overlayPath
+                            )
+                            result.success(outputPath)
+                        } catch (t: Throwable) {
+                            android.util.Log.e("MainActivity", "Video overlay failed", t)
+                            result.error("OVERLAY_ERROR", t.message ?: "Video overlay failed", null)
+                        }
+                    }
                 } else {
                     result.notImplemented()
                 }
             }
+    }
+
+    private suspend fun applyOverlayToVideoNative(
+        context: Context,
+        videoPath: String,
+        overlayPath: String
+    ): String = withContext(Dispatchers.Main) {
+        val videoFile = File(videoPath)
+        val overlayFile = File(overlayPath)
+        if (!videoFile.exists() || !overlayFile.exists()) {
+            throw IllegalArgumentException("Video veya overlay dosyası bulunamadı.")
+        }
+
+        val bitmap = BitmapFactory.decodeFile(overlayFile.absolutePath)
+            ?: throw IllegalArgumentException("Overlay resmi yüklenemedi.")
+
+        val (origW, origH) = getVideoDimensions(videoPath)
+        val isPortrait = origH >= origW
+        val targetWidth = if (isPortrait) 720 else 1280
+        val targetHeight = if (isPortrait) 1280 else 720
+
+        val outputFile = File(context.cacheDir, "edited_video_${System.currentTimeMillis()}.mp4").apply {
+            parentFile?.mkdirs()
+            if (exists()) delete()
+        }
+
+        val mediaItem = MediaItem.Builder().setUri(Uri.fromFile(videoFile)).build()
+        val presentation = Presentation.createForWidthAndHeight(
+            targetWidth,
+            targetHeight,
+            Presentation.LAYOUT_SCALE_TO_FIT
+        )
+
+        val bitmapOverlay = BitmapOverlay.createStaticBitmapOverlay(bitmap)
+        val overlayEffect = OverlayEffect(ImmutableList.of(bitmapOverlay))
+
+        val retriever = MediaMetadataRetriever()
+        val hasAudio = try {
+            retriever.setDataSource(videoPath)
+            val audioPresent = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
+            audioPresent != null && audioPresent.equals("yes", ignoreCase = true)
+        } catch (_: Throwable) {
+            true
+        } finally {
+            try { retriever.release() } catch (_: Throwable) {}
+        }
+
+        val audioProcessors = if (hasAudio) {
+            listOf(SonicAudioProcessor().apply { setOutputSampleRateHz(48000) })
+        } else {
+            emptyList()
+        }
+
+        val editedItem = EditedMediaItem.Builder(mediaItem)
+            .setEffects(Effects(audioProcessors, listOf(presentation, overlayEffect)))
+            .apply {
+                if (!hasAudio) {
+                    setRemoveAudio(true)
+                }
+            }
+            .build()
+
+        val sequence = if (hasAudio) {
+            EditedMediaItemSequence.withAudioAndVideoFrom(listOf(editedItem))
+        } else {
+            EditedMediaItemSequence.withVideoFrom(listOf(editedItem))
+        }
+
+        val composition = Composition.Builder(listOf(sequence))
+            .setTransmuxVideo(false)
+            .setTransmuxAudio(false)
+            .build()
+
+        runTransformerExport(context, composition, outputFile)
+        return@withContext outputFile.absolutePath
     }
 
     private suspend fun processVideosNative(

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
@@ -10,6 +11,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 import '../../constants/app_colors.dart';
 import 'location_picker_screen.dart';
+
+const MethodChannel _nativeVideoChannel = MethodChannel('com.safechat.app/video');
 
 /// The result returned when photo editing is completed
 class PhotoEditorResult {
@@ -132,6 +135,7 @@ class PhotoEditorScreen extends StatefulWidget {
 
 class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   final GlobalKey _repaintKey = GlobalKey();
+  final GlobalKey _videoOverlayRepaintKey = GlobalKey();
   final TextEditingController _captionController = TextEditingController();
 
   late File _currentImageFile;
@@ -1198,6 +1202,61 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         final item = _items[i];
 
         if (item.isVideo) {
+          final bool hasEdits = item.overlays.isNotEmpty || item.drawnStrokes.isNotEmpty;
+          if (!hasEdits) {
+            results.add(PhotoEditorResult(
+              file: item.originalFile,
+              caption: item.caption,
+              isVideo: true,
+            ));
+            continue;
+          }
+
+          // Switch to this video item to capture the overlay RepaintBoundary
+          if (_currentIndex != i) {
+            setState(() {
+              _currentIndex = i;
+              _loadStateFromItem(item);
+            });
+            await Future.delayed(const Duration(milliseconds: 100));
+          } else {
+            await Future.delayed(const Duration(milliseconds: 50));
+          }
+
+          try {
+            final boundary = _videoOverlayRepaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+            if (boundary != null) {
+              final image = await boundary.toImage(pixelRatio: 2.0);
+              final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+              if (byteData != null) {
+                final bytes = byteData.buffer.asUint8List();
+                final tempDir = await getTemporaryDirectory();
+                final overlayPngPath = p.join(tempDir.path, 'video_overlay_${DateTime.now().millisecondsSinceEpoch}_$i.png');
+                await File(overlayPngPath).writeAsBytes(bytes);
+
+                final String? outputPath = await _nativeVideoChannel.invokeMethod<String>(
+                  'applyOverlayToVideo',
+                  {
+                    'videoPath': item.originalFile.path,
+                    'overlayPath': overlayPngPath,
+                  },
+                );
+
+                if (outputPath != null && File(outputPath).exists()) {
+                  results.add(PhotoEditorResult(
+                    file: File(outputPath),
+                    caption: item.caption,
+                    isVideo: true,
+                  ));
+                  continue;
+                }
+              }
+            }
+          } catch (e) {
+            debugPrint('[VIDEO OVERLAY BURN ERROR] $e');
+          }
+
+          // Fallback to original file if overlay burn failed
           results.add(PhotoEditorResult(
             file: item.originalFile,
             caption: item.caption,
@@ -1665,40 +1724,40 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 ),
                               ],
                               const Spacer(),
+                              // Pen & Drawing
+                              IconButton(
+                                icon: Icon(
+                                  Icons.edit_rounded,
+                                  color: _drawnStrokes.isNotEmpty ? AppColors.accent : Colors.white,
+                                  size: 24,
+                                ),
+                                tooltip: 'Kalem & Çizim',
+                                onPressed: _enterDrawingMode,
+                              ),
+                              // Emoji
+                              IconButton(
+                                icon: const Icon(Icons.sentiment_satisfied_alt_rounded, color: Colors.white, size: 24),
+                                tooltip: 'Emoji / Çıkartma Ekle',
+                                onPressed: _openEmojiSheet,
+                              ),
+                              // Text
+                              IconButton(
+                                icon: const Icon(Icons.title_rounded, color: Colors.white, size: 24),
+                                tooltip: 'Yazı Ekle',
+                                onPressed: () => _openTextDialog(),
+                              ),
+                              // Location
+                              IconButton(
+                                icon: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
+                                tooltip: 'Konum Ekle',
+                                onPressed: _openLocationDialog,
+                              ),
                               if (!isCurrentVideo) ...[
                                 // Crop & Rotate
                                 IconButton(
                                   icon: const Icon(Icons.crop_rotate_rounded, color: Colors.white, size: 24),
                                   tooltip: 'Kırp & Döndür',
                                   onPressed: _enterCropMode,
-                                ),
-                                // Pen & Drawing
-                                IconButton(
-                                  icon: Icon(
-                                    Icons.edit_rounded,
-                                    color: _drawnStrokes.isNotEmpty ? AppColors.accent : Colors.white,
-                                    size: 24,
-                                  ),
-                                  tooltip: 'Kalem & Çizim',
-                                  onPressed: _enterDrawingMode,
-                                ),
-                                // Emoji
-                                IconButton(
-                                  icon: const Icon(Icons.sentiment_satisfied_alt_rounded, color: Colors.white, size: 24),
-                                  tooltip: 'Emoji / Çıkartma Ekle',
-                                  onPressed: _openEmojiSheet,
-                                ),
-                                // Text
-                                IconButton(
-                                  icon: const Icon(Icons.title_rounded, color: Colors.white, size: 24),
-                                  tooltip: 'Yazı Ekle',
-                                  onPressed: () => _openTextDialog(),
-                                ),
-                                // Location
-                                IconButton(
-                                  icon: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
-                                  tooltip: 'Konum Ekle',
-                                  onPressed: _openLocationDialog,
                                 ),
                                 // Filters Toggle
                                 IconButton(
@@ -1715,44 +1774,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                     });
                                   },
                                 ),
-                                // Undo Overlay
-                                if (_overlays.isNotEmpty)
-                                  IconButton(
-                                    icon: const Icon(Icons.undo_rounded, color: Colors.white, size: 24),
-                                    tooltip: 'Geri Al',
-                                    onPressed: _undoLastOverlay,
-                                  ),
-                              ] else ...[
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.accent.withOpacity(0.2),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: AppColors.accent.withOpacity(0.5)),
-                                  ),
-                                  child: const Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.videocam_rounded, color: AppColors.accent, size: 16),
-                                      SizedBox(width: 4),
-                                      Text(
-                                        'Video',
-                                        style: TextStyle(
-                                          color: AppColors.accent,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
                               ],
+                              // Undo Overlay
+                              if (_overlays.isNotEmpty)
+                                IconButton(
+                                  icon: const Icon(Icons.undo_rounded, color: Colors.white, size: 24),
+                                  tooltip: 'Geri Al',
+                                  onPressed: _undoLastOverlay,
+                                ),
                             ],
                           ),
                   ),
 
                   // DRAWING TOOLBAR (Colors & Thickness)
-                  if (_isDrawingMode && !isCurrentVideo)
+                  if (_isDrawingMode)
                     Container(
                       color: const Color(0xFF141D22),
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1851,25 +1886,30 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                               // The Cropped Filtered Base Image / Video
                               _buildFilteredImage(selectedFilter),
 
-                              // Overlays (Draggable & scalable text, emojis, location)
-                              if (!isCurrentVideo)
-                                ..._overlays.map((item) => _buildOverlayWidget(item)),
-
-                              // Drawn Strokes (CustomPaint)
-                              if (!isCurrentVideo)
-                                Positioned.fill(
-                                  child: IgnorePointer(
-                                    child: CustomPaint(
-                                      painter: DrawingPainter(
-                                        strokes: _drawnStrokes,
-                                        currentStroke: _currentStroke,
+                              // Overlays & Drawings in a dedicated transparent RepaintBoundary for video overlay capture
+                              Positioned.fill(
+                                child: RepaintBoundary(
+                                  key: _videoOverlayRepaintKey,
+                                  child: Stack(
+                                    children: [
+                                      ..._overlays.map((item) => _buildOverlayWidget(item)),
+                                      Positioned.fill(
+                                        child: IgnorePointer(
+                                          child: CustomPaint(
+                                            painter: DrawingPainter(
+                                              strokes: _drawnStrokes,
+                                              currentStroke: _currentStroke,
+                                            ),
+                                          ),
+                                        ),
                                       ),
-                                    ),
+                                    ],
                                   ),
                                 ),
+                              ),
 
                               // Drawing Gesture Detector (when in drawing mode)
-                              if (!isCurrentVideo && _isDrawingMode)
+                              if (_isDrawingMode)
                                 Positioned.fill(
                                   child: GestureDetector(
                                     behavior: HitTestBehavior.opaque,
@@ -1910,7 +1950,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   ),
 
                   // FLOATING SIZE SLIDER (When an overlay is selected)
-                  if (selectedItem != null && !isCurrentVideo && !_isDrawingMode)
+                  if (selectedItem != null && !_isDrawingMode)
                     Container(
                       margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
