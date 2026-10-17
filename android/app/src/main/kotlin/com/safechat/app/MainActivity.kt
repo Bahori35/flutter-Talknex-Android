@@ -17,6 +17,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.RgbMatrix
 import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
@@ -87,9 +88,10 @@ class MainActivity : FlutterActivity() {
                 } else if (call.method == "applyOverlayToVideo") {
                     val videoPath = call.argument<String>("videoPath")
                     val overlayPath = call.argument<String>("overlayPath")
+                    val colorMatrix = call.argument<List<Double>>("colorMatrix")
 
-                    if (videoPath == null || overlayPath == null) {
-                        result.error("INVALID_ARGS", "videoPath and overlayPath cannot be null", null)
+                    if (videoPath == null) {
+                        result.error("INVALID_ARGS", "videoPath cannot be null", null)
                         return@setMethodCallHandler
                     }
 
@@ -98,7 +100,8 @@ class MainActivity : FlutterActivity() {
                             val outputPath = applyOverlayToVideoNative(
                                 context = applicationContext,
                                 videoPath = videoPath,
-                                overlayPath = overlayPath
+                                overlayPath = overlayPath,
+                                colorMatrix = colorMatrix
                             )
                             result.success(outputPath)
                         } catch (t: Throwable) {
@@ -115,16 +118,13 @@ class MainActivity : FlutterActivity() {
     private suspend fun applyOverlayToVideoNative(
         context: Context,
         videoPath: String,
-        overlayPath: String
+        overlayPath: String?,
+        colorMatrix: List<Double>?
     ): String = withContext(Dispatchers.Main) {
         val videoFile = File(videoPath)
-        val overlayFile = File(overlayPath)
-        if (!videoFile.exists() || !overlayFile.exists()) {
-            throw IllegalArgumentException("Video veya overlay dosyası bulunamadı.")
+        if (!videoFile.exists()) {
+            throw IllegalArgumentException("Video dosyası bulunamadı.")
         }
-
-        val bitmap = BitmapFactory.decodeFile(overlayFile.absolutePath)
-            ?: throw IllegalArgumentException("Overlay resmi yüklenemedi.")
 
         val (origW, origH) = getVideoDimensions(videoPath)
         val isPortrait = origH >= origW
@@ -143,8 +143,25 @@ class MainActivity : FlutterActivity() {
             Presentation.LAYOUT_SCALE_TO_FIT
         )
 
-        val bitmapOverlay: TextureOverlay = BitmapOverlay.createStaticBitmapOverlay(bitmap)
-        val overlayEffect = OverlayEffect(ImmutableList.of<TextureOverlay>(bitmapOverlay))
+        val videoEffects = mutableListOf<androidx.media3.common.Effect>(presentation)
+
+        if (colorMatrix != null && colorMatrix.size == 16) {
+            val matrixFloats = FloatArray(16) { i -> colorMatrix[i].toFloat() }
+            val rgbMatrixEffect = RgbMatrix { _, _ -> matrixFloats }
+            videoEffects.add(rgbMatrixEffect)
+        }
+
+        if (overlayPath != null) {
+            val overlayFile = File(overlayPath)
+            if (overlayFile.exists()) {
+                val bitmap = BitmapFactory.decodeFile(overlayFile.absolutePath)
+                if (bitmap != null) {
+                    val bitmapOverlay: TextureOverlay = BitmapOverlay.createStaticBitmapOverlay(bitmap)
+                    val overlayEffect = OverlayEffect(ImmutableList.of<TextureOverlay>(bitmapOverlay))
+                    videoEffects.add(overlayEffect)
+                }
+            }
+        }
 
         val retriever = MediaMetadataRetriever()
         val hasAudio = try {
@@ -164,7 +181,7 @@ class MainActivity : FlutterActivity() {
         }
 
         val editedItem = EditedMediaItem.Builder(mediaItem)
-            .setEffects(Effects(audioProcessors, listOf(presentation, overlayEffect)))
+            .setEffects(Effects(audioProcessors, videoEffects))
             .apply {
                 if (!hasAudio) {
                     setRemoveAudio(true)

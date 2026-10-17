@@ -1202,7 +1202,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         final item = _items[i];
 
         if (item.isVideo) {
-          final bool hasEdits = item.overlays.isNotEmpty || item.drawnStrokes.isNotEmpty;
+          final bool hasFilter = item.selectedFilterIndex != 0 &&
+              item.selectedFilterIndex < _filters.length &&
+              _filters[item.selectedFilterIndex].matrix != null;
+          final bool hasOverlays = item.overlays.isNotEmpty || item.drawnStrokes.isNotEmpty;
+          final bool hasEdits = hasFilter || hasOverlays;
+
           if (!hasEdits) {
             results.add(PhotoEditorResult(
               file: item.originalFile,
@@ -1212,45 +1217,65 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             continue;
           }
 
-          // Switch to this video item to capture the overlay RepaintBoundary
-          if (_currentIndex != i) {
-            setState(() {
-              _currentIndex = i;
-              _loadStateFromItem(item);
-            });
-            await Future.delayed(const Duration(milliseconds: 100));
-          } else {
-            await Future.delayed(const Duration(milliseconds: 50));
+          // Switch to this video item to capture the overlay RepaintBoundary if overlays exist
+          if (hasOverlays) {
+            if (_currentIndex != i) {
+              setState(() {
+                _currentIndex = i;
+                _loadStateFromItem(item);
+              });
+              await Future.delayed(const Duration(milliseconds: 100));
+            } else {
+              await Future.delayed(const Duration(milliseconds: 50));
+            }
           }
 
           try {
-            final boundary = _videoOverlayRepaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-            if (boundary != null) {
-              final image = await boundary.toImage(pixelRatio: 2.0);
-              final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-              if (byteData != null) {
-                final bytes = byteData.buffer.asUint8List();
-                final tempDir = await getTemporaryDirectory();
-                final overlayPngPath = p.join(tempDir.path, 'video_overlay_${DateTime.now().millisecondsSinceEpoch}_$i.png');
-                await File(overlayPngPath).writeAsBytes(bytes);
-
-                final String? outputPath = await _nativeVideoChannel.invokeMethod<String>(
-                  'applyOverlayToVideo',
-                  {
-                    'videoPath': item.originalFile.path,
-                    'overlayPath': overlayPngPath,
-                  },
-                );
-
-                if (outputPath != null && File(outputPath).existsSync()) {
-                  results.add(PhotoEditorResult(
-                    file: File(outputPath),
-                    caption: item.caption,
-                    isVideo: true,
-                  ));
-                  continue;
+            String? overlayPngPath;
+            if (hasOverlays) {
+              final boundary = _videoOverlayRepaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+              if (boundary != null) {
+                final image = await boundary.toImage(pixelRatio: 2.0);
+                final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+                if (byteData != null) {
+                  final bytes = byteData.buffer.asUint8List();
+                  final tempDir = await getTemporaryDirectory();
+                  overlayPngPath = p.join(tempDir.path, 'video_overlay_${DateTime.now().millisecondsSinceEpoch}_$i.png');
+                  await File(overlayPngPath).writeAsBytes(bytes);
                 }
               }
+            }
+
+            List<double>? colorMatrix16;
+            if (hasFilter) {
+              final rawMatrix = _filters[item.selectedFilterIndex].matrix;
+              if (rawMatrix != null && rawMatrix.length >= 20) {
+                // Convert Flutter Skia 4x5 row-major to OpenGL 4x4 column-major:
+                colorMatrix16 = [
+                  rawMatrix[0], rawMatrix[5], rawMatrix[10], 0.0,
+                  rawMatrix[1], rawMatrix[6], rawMatrix[11], 0.0,
+                  rawMatrix[2], rawMatrix[7], rawMatrix[12], 0.0,
+                  rawMatrix[4] / 255.0, rawMatrix[9] / 255.0, rawMatrix[14] / 255.0, 1.0,
+                ];
+              }
+            }
+
+            final String? outputPath = await _nativeVideoChannel.invokeMethod<String>(
+              'applyOverlayToVideo',
+              {
+                'videoPath': item.originalFile.path,
+                'overlayPath': overlayPngPath,
+                'colorMatrix': colorMatrix16,
+              },
+            );
+
+            if (outputPath != null && File(outputPath).existsSync()) {
+              results.add(PhotoEditorResult(
+                file: File(outputPath),
+                caption: item.caption,
+                isVideo: true,
+              ));
+              continue;
             }
           } catch (e) {
             debugPrint('[VIDEO OVERLAY BURN ERROR] $e');
@@ -1752,29 +1777,28 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 tooltip: 'Konum Ekle',
                                 onPressed: _openLocationDialog,
                               ),
-                              if (!isCurrentVideo) ...[
+                              if (!isCurrentVideo)
                                 // Crop & Rotate
                                 IconButton(
                                   icon: const Icon(Icons.crop_rotate_rounded, color: Colors.white, size: 24),
                                   tooltip: 'Kırp & Döndür',
                                   onPressed: _enterCropMode,
                                 ),
-                                // Filters Toggle
-                                IconButton(
-                                  icon: Icon(
-                                    Icons.auto_awesome_rounded,
-                                    color: _showFilterTray ? AppColors.accent : Colors.white,
-                                    size: 24,
-                                  ),
-                                  tooltip: 'Filtreler',
-                                  onPressed: () {
-                                    setState(() {
-                                      _showFilterTray = !_showFilterTray;
-                                      _selectedOverlayId = null;
-                                    });
-                                  },
+                              // Filters & Effects Toggle (Available for both photos and videos)
+                              IconButton(
+                                icon: Icon(
+                                  Icons.auto_awesome_rounded,
+                                  color: _showFilterTray ? AppColors.accent : Colors.white,
+                                  size: 24,
                                 ),
-                              ],
+                                tooltip: 'Filtreler & Efektler',
+                                onPressed: () {
+                                  setState(() {
+                                    _showFilterTray = !_showFilterTray;
+                                    _selectedOverlayId = null;
+                                  });
+                                },
+                              ),
                               // Undo Overlay
                               if (_overlays.isNotEmpty)
                                 IconButton(
@@ -1874,6 +1898,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                           _switchPhoto(_currentIndex + 1);
                         } else if (velocity > 200 && _currentIndex > 0) {
                           _switchPhoto(_currentIndex - 1);
+                        }
+                      },
+                      onVerticalDragEnd: (details) {
+                        if (_isDrawingMode) return;
+                        if (_selectedOverlayId != null) return;
+                        final velocity = details.primaryVelocity ?? 0;
+                        if (velocity < -200 && !_showFilterTray) {
+                          setState(() => _showFilterTray = true);
+                        } else if (velocity > 200 && _showFilterTray) {
+                          setState(() => _showFilterTray = false);
                         }
                       },
                       child: Center(
@@ -2030,7 +2064,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     ),
 
                   // FILTER CAROUSEL (if open)
-                  if (_showFilterTray && !isCurrentVideo && !_isDrawingMode)
+                  if (_showFilterTray && !_isDrawingMode)
                     Container(
                       height: 96,
                       color: const Color(0xFF141D22),
@@ -2041,8 +2075,18 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         itemBuilder: (context, idx) {
                           final f = _filters[idx];
                           final isSel = idx == _selectedFilterIndex;
+                          final currItem = _items.isNotEmpty && _currentIndex < _items.length
+                              ? _items[_currentIndex]
+                              : null;
                           return GestureDetector(
-                            onTap: () => setState(() => _selectedFilterIndex = idx),
+                            onTap: () {
+                              setState(() {
+                                _selectedFilterIndex = idx;
+                                if (currItem != null) {
+                                  currItem.selectedFilterIndex = idx;
+                                }
+                              });
+                            },
                             child: Container(
                               margin: const EdgeInsets.symmetric(horizontal: 6),
                               padding: const EdgeInsets.all(3),
@@ -2065,9 +2109,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       child: f.matrix != null
                                           ? ColorFiltered(
                                               colorFilter: ColorFilter.matrix(f.matrix!),
-                                              child: Image.file(_currentImageFile, fit: BoxFit.cover),
+                                              child: _buildFilterThumbnailChild(currItem),
                                             )
-                                          : Image.file(_currentImageFile, fit: BoxFit.cover),
+                                          : _buildFilterThumbnailChild(currItem),
                                     ),
                                   ),
                                   const SizedBox(height: 4),
@@ -2447,9 +2491,43 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
   }
 
+  Widget _buildFilterThumbnailChild(PhotoItemState? currItem) {
+    if (currItem != null && currItem.isVideo) {
+      if (currItem.videoController != null && currItem.isVideoInitialized) {
+        return FittedBox(
+          fit: BoxFit.cover,
+          clipBehavior: Clip.hardEdge,
+          child: SizedBox(
+            width: currItem.videoController!.value.size.width > 0
+                ? currItem.videoController!.value.size.width
+                : 100,
+            height: currItem.videoController!.value.size.height > 0
+                ? currItem.videoController!.value.size.height
+                : 100,
+            child: VideoPlayer(currItem.videoController!),
+          ),
+        );
+      }
+      return Container(
+        color: const Color(0xFF1B2831),
+        child: const Center(
+          child: Icon(Icons.play_circle_outline_rounded, color: Colors.white70, size: 24),
+        ),
+      );
+    }
+    return Image.file(_currentImageFile, fit: BoxFit.cover);
+  }
+
   Widget _buildFilteredImage(FilterOption filter) {
     if (_items.isNotEmpty && _currentIndex < _items.length && _items[_currentIndex].isVideo) {
-      return _buildVideoPlayerArea(_items[_currentIndex]);
+      final videoWidget = _buildVideoPlayerArea(_items[_currentIndex]);
+      if (filter.matrix != null) {
+        return ColorFiltered(
+          colorFilter: ColorFilter.matrix(filter.matrix!),
+          child: videoWidget,
+        );
+      }
+      return videoWidget;
     }
 
     final imageWidget = Image.file(
