@@ -26,6 +26,18 @@ class PhotoEditorResult {
   });
 }
 
+class DrawnStroke {
+  final List<Offset> points;
+  final Color color;
+  final double strokeWidth;
+
+  DrawnStroke({
+    required this.points,
+    required this.color,
+    required this.strokeWidth,
+  });
+}
+
 class PhotoItemState {
   final String id;
   File originalFile;
@@ -34,6 +46,7 @@ class PhotoItemState {
   String caption;
   int selectedFilterIndex;
   List<OverlayItem> overlays;
+  List<DrawnStroke> drawnStrokes;
   Rect cropRectNorm;
   int cropRotationQuarter;
   bool cropIsFlipped;
@@ -50,6 +63,7 @@ class PhotoItemState {
     this.caption = '',
     this.selectedFilterIndex = 0,
     List<OverlayItem>? overlays,
+    List<DrawnStroke>? drawnStrokes,
     this.cropRectNorm = const Rect.fromLTWH(0, 0, 1, 1),
     this.cropRotationQuarter = 0,
     this.cropIsFlipped = false,
@@ -57,7 +71,8 @@ class PhotoItemState {
     this.isVideo = false,
     this.videoController,
     this.isVideoInitialized = false,
-  }) : overlays = overlays ?? [];
+  })  : overlays = overlays ?? [],
+        drawnStrokes = drawnStrokes ?? [];
 }
 
 enum OverlayType { text, emoji, location }
@@ -198,6 +213,66 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   double _activeOverlayBaseScale = 1.0;
   double _activeOverlayBaseRotation = 0.0;
 
+  // Drawing / Pen mode state
+  bool _isDrawingMode = false;
+  bool _isHighlighter = false;
+  final List<DrawnStroke> _drawnStrokes = [];
+  DrawnStroke? _currentStroke;
+  Color _selectedDrawColor = const Color(0xFF00E676);
+  double _selectedStrokeWidth = 6.0;
+
+  final List<Color> _drawColors = const [
+    Color(0xFF00E676), // WhatsApp Green
+    Colors.white,
+    Colors.black,
+    Color(0xFFFF3B30), // Red
+    Color(0xFF00B0FF), // Blue
+    Color(0xFFFFD600), // Yellow
+    Color(0xFFFF4081), // Pink
+    Color(0xFFFF9100), // Orange
+    Color(0xFFE040FB), // Purple
+    Color(0xFF00E5FF), // Cyan
+  ];
+
+  void _enterDrawingMode() {
+    setState(() {
+      _isDrawingMode = true;
+      _showFilterTray = false;
+      _selectedOverlayId = null;
+    });
+  }
+
+  void _exitDrawingMode() {
+    setState(() {
+      _isDrawingMode = false;
+      _syncCurrentItemDrawnStrokes();
+    });
+  }
+
+  void _undoLastStroke() {
+    if (_drawnStrokes.isNotEmpty) {
+      setState(() {
+        _drawnStrokes.removeLast();
+        _syncCurrentItemDrawnStrokes();
+      });
+    }
+  }
+
+  void _clearAllStrokes() {
+    if (_drawnStrokes.isNotEmpty) {
+      setState(() {
+        _drawnStrokes.clear();
+        _syncCurrentItemDrawnStrokes();
+      });
+    }
+  }
+
+  void _syncCurrentItemDrawnStrokes() {
+    if (_items.isNotEmpty && _currentIndex < _items.length) {
+      _items[_currentIndex].drawnStrokes = List.from(_drawnStrokes);
+    }
+  }
+
   bool _isExporting = false;
 
   @override
@@ -286,6 +361,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     item.currentImageFile = _currentImageFile;
     item.loadedUiImage = _loadedUiImage;
     item.overlays = List.from(_overlays);
+    item.drawnStrokes = List.from(_drawnStrokes);
     item.cropRectNorm = _cropRectNorm;
     item.cropRotationQuarter = _cropRotationQuarter;
     item.cropIsFlipped = _cropIsFlipped;
@@ -299,6 +375,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     _loadedUiImage = item.loadedUiImage;
     _overlays.clear();
     _overlays.addAll(item.overlays);
+    _drawnStrokes.clear();
+    _drawnStrokes.addAll(item.drawnStrokes);
+    _isDrawingMode = false;
+    _isHighlighter = false;
     _selectedOverlayId = null;
     _cropRectNorm = item.cropRectNorm;
     _cropRotationQuarter = item.cropRotationQuarter;
@@ -1127,6 +1207,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         }
 
         final bool hasEdits = item.overlays.isNotEmpty ||
+            item.drawnStrokes.isNotEmpty ||
             item.selectedFilterIndex != 0 ||
             item.currentImageFile.path != item.originalFile.path;
 
@@ -1433,6 +1514,51 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
   }
 
+  Widget _buildStrokeWidthChip(String label, double width, {bool isHighlighter = false}) {
+    final bool isSel = (_selectedStrokeWidth == width && _isHighlighter == isHighlighter);
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _selectedStrokeWidth = width;
+          _isHighlighter = isHighlighter;
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isSel ? AppColors.accent.withOpacity(0.25) : const Color(0xFF1F2C34),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSel ? AppColors.accent : Colors.white24,
+            width: isSel ? 1.5 : 1.0,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: isHighlighter ? 12 : math.max(width * 0.7, 4.0),
+              height: isHighlighter ? 6 : math.max(width * 0.7, 4.0),
+              decoration: BoxDecoration(
+                color: isSel ? AppColors.accent : Colors.white70,
+                borderRadius: BorderRadius.circular(isHighlighter ? 2 : 10),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSel ? AppColors.accent : Colors.white,
+                fontSize: 11.5,
+                fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // --- MAIN EDITOR SCREEN ---
   Widget _buildMainEditorScreen() {
     final selectedFilter = _filters[_selectedFilterIndex];
@@ -1441,450 +1567,639 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         _currentIndex < _items.length &&
         _items[_currentIndex].isVideo;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            Column(
-              children: [
-                // TOP BAR
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  color: Colors.black.withOpacity(0.5),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded, color: Colors.white, size: 26),
-                        onPressed: () => Navigator.pop(context),
-                      ),
-                      if (_items.length > 1) ...[
-                        const SizedBox(width: 4),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Text(
-                            '${_currentIndex + 1} / ${_items.length}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline_rounded, color: Colors.white70, size: 22),
-                          tooltip: 'Bu medyayı sil',
-                          onPressed: _deleteCurrentItem,
-                        ),
-                      ],
-                      const Spacer(),
-                      if (!isCurrentVideo) ...[
-                        // Crop & Rotate
-                        IconButton(
-                          icon: const Icon(Icons.crop_rotate_rounded, color: Colors.white, size: 24),
-                          tooltip: 'Kırp & Döndür',
-                          onPressed: _enterCropMode,
-                        ),
-                        // Emoji
-                        IconButton(
-                          icon: const Icon(Icons.sentiment_satisfied_alt_rounded, color: Colors.white, size: 24),
-                          tooltip: 'Emoji / Çıkartma Ekle',
-                          onPressed: _openEmojiSheet,
-                        ),
-                        // Text
-                        IconButton(
-                          icon: const Icon(Icons.title_rounded, color: Colors.white, size: 24),
-                          tooltip: 'Yazı Ekle',
-                          onPressed: () => _openTextDialog(),
-                        ),
-                        // Location
-                        IconButton(
-                          icon: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
-                          tooltip: 'Konum Ekle',
-                          onPressed: _openLocationDialog,
-                        ),
-                        // Filters Toggle
-                        IconButton(
-                          icon: Icon(
-                            Icons.auto_awesome_rounded,
-                            color: _showFilterTray ? AppColors.accent : Colors.white,
-                            size: 24,
-                          ),
-                          tooltip: 'Filtreler',
-                          onPressed: () {
-                            setState(() {
-                              _showFilterTray = !_showFilterTray;
-                              _selectedOverlayId = null;
-                            });
-                          },
-                        ),
-                        // Undo Overlay
-                        if (_overlays.isNotEmpty)
-                          IconButton(
-                            icon: const Icon(Icons.undo_rounded, color: Colors.white, size: 24),
-                            tooltip: 'Geri Al',
-                            onPressed: _undoLastOverlay,
-                          ),
-                      ] else ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: AppColors.accent.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: AppColors.accent.withOpacity(0.5)),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
+    return PopScope(
+      canPop: !_isDrawingMode,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _isDrawingMode) {
+          _exitDrawingMode();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  // TOP BAR
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    color: Colors.black.withOpacity(0.5),
+                    child: _isDrawingMode
+                        ? Row(
                             children: [
-                              Icon(Icons.videocam_rounded, color: AppColors.accent, size: 16),
-                              SizedBox(width: 4),
-                              Text(
-                                'Video',
+                              IconButton(
+                                icon: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 26),
+                                tooltip: 'Geri',
+                                onPressed: _exitDrawingMode,
+                              ),
+                              const SizedBox(width: 4),
+                              const Text(
+                                'Kalem & Çizim',
                                 style: TextStyle(
-                                  color: AppColors.accent,
-                                  fontSize: 12,
+                                  color: Colors.white,
+                                  fontSize: 16,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-
-                // CENTER CANVAS (Image + Filter + Overlays)
-                Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: () {
-                      if (_selectedOverlayId != null) {
-                        setState(() => _selectedOverlayId = null);
-                      }
-                    },
-                    onHorizontalDragEnd: (details) {
-                      if (_selectedOverlayId != null) return;
-                      final velocity = details.primaryVelocity ?? 0;
-                      if (velocity < -200 && _currentIndex < _items.length - 1) {
-                        _switchPhoto(_currentIndex + 1);
-                      } else if (velocity > 200 && _currentIndex > 0) {
-                        _switchPhoto(_currentIndex - 1);
-                      }
-                    },
-                    child: Center(
-                      child: RepaintBoundary(
-                        key: _repaintKey,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          clipBehavior: Clip.none,
-                          children: [
-                            // The Cropped Filtered Base Image / Video
-                            _buildFilteredImage(selectedFilter),
-
-                            // Overlays (Draggable & scalable text, emojis, location)
-                            if (!isCurrentVideo)
-                              ..._overlays.map((item) => _buildOverlayWidget(item)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-                // FLOATING SIZE SLIDER (When an overlay is selected)
-                if (selectedItem != null && !isCurrentVideo)
-                  Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1F2C34).withOpacity(0.95),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppColors.accent.withOpacity(0.5), width: 1.2),
-                      boxShadow: [
-                        BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 8, offset: const Offset(0, 3)),
-                      ],
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.aspect_ratio_rounded, color: AppColors.accent, size: 18),
-                        const SizedBox(width: 6),
-                        const Text('Boyut:', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
-                        IconButton(
-                          icon: const Icon(Icons.remove_circle_outline_rounded, color: Colors.white, size: 20),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: () {
-                            setState(() {
-                              selectedItem.scale = (selectedItem.scale - 0.15).clamp(0.4, 4.0);
-                            });
-                          },
-                        ),
-                        Expanded(
-                          child: SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              thumbColor: AppColors.accent,
-                              activeTrackColor: AppColors.accent,
-                              inactiveTrackColor: Colors.white24,
-                              trackHeight: 3,
-                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                            ),
-                            child: Slider(
-                              value: selectedItem.scale,
-                              min: 0.4,
-                              max: 3.5,
-                              onChanged: (val) {
-                                setState(() {
-                                  selectedItem.scale = val;
-                                });
-                              },
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.white, size: 20),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: () {
-                            setState(() {
-                              selectedItem.scale = (selectedItem.scale + 0.15).clamp(0.4, 4.0);
-                            });
-                          },
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          '${(selectedItem.scale * 100).round()}%',
-                          style: const TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(width: 8),
-                        GestureDetector(
-                          onTap: () => setState(() => _selectedOverlayId = null),
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: const BoxDecoration(
-                              color: AppColors.surfaceLight,
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(Icons.check, color: Colors.white, size: 16),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                // FILTER CAROUSEL (if open)
-                if (_showFilterTray && !isCurrentVideo)
-                  Container(
-                    height: 96,
-                    color: const Color(0xFF141D22),
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      itemCount: _filters.length,
-                      itemBuilder: (context, idx) {
-                        final f = _filters[idx];
-                        final isSel = idx == _selectedFilterIndex;
-                        return GestureDetector(
-                          onTap: () => setState(() => _selectedFilterIndex = idx),
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 6),
-                            padding: const EdgeInsets.all(3),
-                            decoration: BoxDecoration(
-                              color: isSel ? AppColors.accent.withOpacity(0.2) : Colors.transparent,
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: isSel ? AppColors.accent : Colors.transparent,
-                                width: 2,
+                              const Spacer(),
+                              IconButton(
+                                icon: const Icon(Icons.undo_rounded, size: 24),
+                                color: _drawnStrokes.isNotEmpty ? Colors.white : Colors.white38,
+                                tooltip: 'Son Çizgiyi Geri Al',
+                                onPressed: _drawnStrokes.isNotEmpty ? _undoLastStroke : null,
                               ),
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: SizedBox(
-                                    width: 50,
-                                    height: 50,
-                                    child: f.matrix != null
-                                        ? ColorFiltered(
-                                            colorFilter: ColorFilter.matrix(f.matrix!),
-                                            child: Image.file(_currentImageFile, fit: BoxFit.cover),
-                                          )
-                                        : Image.file(_currentImageFile, fit: BoxFit.cover),
+                              IconButton(
+                                icon: const Icon(Icons.delete_sweep_rounded, size: 24),
+                                color: _drawnStrokes.isNotEmpty ? Colors.white : Colors.white38,
+                                tooltip: 'Tümünü Temizle',
+                                onPressed: _drawnStrokes.isNotEmpty ? _clearAllStrokes : null,
+                              ),
+                              const SizedBox(width: 6),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.accent,
+                                  foregroundColor: Colors.black,
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                  minimumSize: Size.zero,
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                ),
+                                icon: const Icon(Icons.check_rounded, color: Colors.black, size: 18),
+                                label: const Text(
+                                  'Bitti',
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                ),
+                                onPressed: _exitDrawingMode,
+                              ),
+                            ],
+                          )
+                        : Row(
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.close_rounded, color: Colors.white, size: 26),
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                              if (_items.length > 1) ...[
+                                const SizedBox(width: 4),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.15),
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  child: Text(
+                                    '${_currentIndex + 1} / ${_items.length}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  f.name,
-                                  style: TextStyle(
-                                    color: isSel ? AppColors.accent : Colors.white70,
-                                    fontSize: 11,
-                                    fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                                const SizedBox(width: 4),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.white70, size: 22),
+                                  tooltip: 'Bu medyayı sil',
+                                  onPressed: _deleteCurrentItem,
+                                ),
+                              ],
+                              const Spacer(),
+                              if (!isCurrentVideo) ...[
+                                // Crop & Rotate
+                                IconButton(
+                                  icon: const Icon(Icons.crop_rotate_rounded, color: Colors.white, size: 24),
+                                  tooltip: 'Kırp & Döndür',
+                                  onPressed: _enterCropMode,
+                                ),
+                                // Pen & Drawing
+                                IconButton(
+                                  icon: Icon(
+                                    Icons.edit_rounded,
+                                    color: _drawnStrokes.isNotEmpty ? AppColors.accent : Colors.white,
+                                    size: 24,
+                                  ),
+                                  tooltip: 'Kalem & Çizim',
+                                  onPressed: _enterDrawingMode,
+                                ),
+                                // Emoji
+                                IconButton(
+                                  icon: const Icon(Icons.sentiment_satisfied_alt_rounded, color: Colors.white, size: 24),
+                                  tooltip: 'Emoji / Çıkartma Ekle',
+                                  onPressed: _openEmojiSheet,
+                                ),
+                                // Text
+                                IconButton(
+                                  icon: const Icon(Icons.title_rounded, color: Colors.white, size: 24),
+                                  tooltip: 'Yazı Ekle',
+                                  onPressed: () => _openTextDialog(),
+                                ),
+                                // Location
+                                IconButton(
+                                  icon: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
+                                  tooltip: 'Konum Ekle',
+                                  onPressed: _openLocationDialog,
+                                ),
+                                // Filters Toggle
+                                IconButton(
+                                  icon: Icon(
+                                    Icons.auto_awesome_rounded,
+                                    color: _showFilterTray ? AppColors.accent : Colors.white,
+                                    size: 24,
+                                  ),
+                                  tooltip: 'Filtreler',
+                                  onPressed: () {
+                                    setState(() {
+                                      _showFilterTray = !_showFilterTray;
+                                      _selectedOverlayId = null;
+                                    });
+                                  },
+                                ),
+                                // Undo Overlay
+                                if (_overlays.isNotEmpty)
+                                  IconButton(
+                                    icon: const Icon(Icons.undo_rounded, color: Colors.white, size: 24),
+                                    tooltip: 'Geri Al',
+                                    onPressed: _undoLastOverlay,
+                                  ),
+                              ] else ...[
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.accent.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(color: AppColors.accent.withOpacity(0.5)),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.videocam_rounded, color: AppColors.accent, size: 16),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        'Video',
+                                        style: TextStyle(
+                                          color: AppColors.accent,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],
+                            ],
+                          ),
+                  ),
+
+                  // DRAWING TOOLBAR (Colors & Thickness)
+                  if (_isDrawingMode && !isCurrentVideo)
+                    Container(
+                      color: const Color(0xFF141D22),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Thickness presets row
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              _buildStrokeWidthChip('İnce', 3.0),
+                              const SizedBox(width: 6),
+                              _buildStrokeWidthChip('Normal', 6.0),
+                              const SizedBox(width: 6),
+                              _buildStrokeWidthChip('Kalın', 12.0),
+                              const SizedBox(width: 6),
+                              _buildStrokeWidthChip('Vurgulayıcı', 24.0, isHighlighter: true),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          // Color Palette
+                          SizedBox(
+                            height: 36,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
+                              itemCount: _drawColors.length,
+                              separatorBuilder: (_, __) => const SizedBox(width: 10),
+                              itemBuilder: (context, idx) {
+                                final color = _drawColors[idx];
+                                final isSel = (_selectedDrawColor.value == color.value);
+                                return GestureDetector(
+                                  onTap: () => setState(() => _selectedDrawColor = color),
+                                  child: Container(
+                                    width: isSel ? 34 : 28,
+                                    height: isSel ? 34 : 28,
+                                    decoration: BoxDecoration(
+                                      color: color,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: isSel ? Colors.white : Colors.white24,
+                                        width: isSel ? 2.5 : 1.2,
+                                      ),
+                                      boxShadow: isSel
+                                          ? [
+                                              BoxShadow(
+                                                color: color.withOpacity(0.6),
+                                                blurRadius: 8,
+                                                spreadRadius: 1,
+                                              ),
+                                            ]
+                                          : null,
+                                    ),
+                                    child: isSel
+                                        ? Icon(
+                                            Icons.check,
+                                            size: 16,
+                                            color: color.computeLuminance() > 0.5 ? Colors.black : Colors.white,
+                                          )
+                                        : null,
+                                  ),
+                                );
+                              },
                             ),
                           ),
-                        );
-                      },
+                        ],
+                      ),
                     ),
-                  ),
 
-                // THUMBNAIL STRIP (WhatsApp style horizontal photo selector)
-                _buildThumbnailStrip(),
-
-                // BOTTOM BAR (WhatsApp style caption input & send button)
-                Container(
-                  padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-                  color: Colors.black.withOpacity(0.7),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF1F2C34),
-                            borderRadius: BorderRadius.circular(24),
-                            border: Border.all(color: Colors.white12),
-                          ),
-                          child: Row(
+                  // CENTER CANVAS (Image + Filter + Overlays + Drawings)
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onTap: () {
+                        if (_selectedOverlayId != null) {
+                          setState(() => _selectedOverlayId = null);
+                        }
+                      },
+                      onHorizontalDragEnd: (details) {
+                        if (_isDrawingMode) return;
+                        if (_selectedOverlayId != null) return;
+                        final velocity = details.primaryVelocity ?? 0;
+                        if (velocity < -200 && _currentIndex < _items.length - 1) {
+                          _switchPhoto(_currentIndex + 1);
+                        } else if (velocity > 200 && _currentIndex > 0) {
+                          _switchPhoto(_currentIndex - 1);
+                        }
+                      },
+                      child: Center(
+                        child: RepaintBoundary(
+                          key: _repaintKey,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            clipBehavior: Clip.hardEdge,
                             children: [
-                              const Icon(Icons.edit_note_rounded, color: AppColors.accent, size: 20),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: TextField(
-                                  controller: _captionController,
-                                  onChanged: (val) {
-                                    if (_items.isNotEmpty && _currentIndex < _items.length) {
-                                      _items[_currentIndex].caption = val;
-                                    }
-                                  },
-                                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                                  decoration: const InputDecoration(
-                                    hintText: 'Bir başlık ekleyin...',
-                                    hintStyle: TextStyle(color: Colors.white54, fontSize: 14),
-                                    border: InputBorder.none,
+                              // The Cropped Filtered Base Image / Video
+                              _buildFilteredImage(selectedFilter),
+
+                              // Overlays (Draggable & scalable text, emojis, location)
+                              if (!isCurrentVideo)
+                                ..._overlays.map((item) => _buildOverlayWidget(item)),
+
+                              // Drawn Strokes (CustomPaint)
+                              if (!isCurrentVideo)
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: CustomPaint(
+                                      painter: DrawingPainter(
+                                        strokes: _drawnStrokes,
+                                        currentStroke: _currentStroke,
+                                      ),
+                                    ),
                                   ),
                                 ),
-                              ),
+
+                              // Drawing Gesture Detector (when in drawing mode)
+                              if (!isCurrentVideo && _isDrawingMode)
+                                Positioned.fill(
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onPanStart: (details) {
+                                      final Color strokeColor = _isHighlighter
+                                          ? _selectedDrawColor.withOpacity(0.45)
+                                          : _selectedDrawColor;
+                                      setState(() {
+                                        _currentStroke = DrawnStroke(
+                                          points: [details.localPosition],
+                                          color: strokeColor,
+                                          strokeWidth: _selectedStrokeWidth,
+                                        );
+                                      });
+                                    },
+                                    onPanUpdate: (details) {
+                                      if (_currentStroke == null) return;
+                                      setState(() {
+                                        _currentStroke!.points.add(details.localPosition);
+                                      });
+                                    },
+                                    onPanEnd: (details) {
+                                      if (_currentStroke != null) {
+                                        setState(() {
+                                          _drawnStrokes.add(_currentStroke!);
+                                          _currentStroke = null;
+                                          _syncCurrentItemDrawnStrokes();
+                                        });
+                                      }
+                                    },
+                                  ),
+                                ),
                             ],
                           ),
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      // Send / Done FAB
-                      GestureDetector(
-                        onTap: _isExporting ? null : _exportAndSend,
-                        child: Container(
-                          width: 48,
-                          height: 48,
-                          decoration: const BoxDecoration(
-                            gradient: AppColors.primaryGradient,
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppColors.accent,
-                                blurRadius: 8,
-                                offset: Offset(0, 2),
-                              ),
-                            ],
+                    ),
+                  ),
+
+                  // FLOATING SIZE SLIDER (When an overlay is selected)
+                  if (selectedItem != null && !isCurrentVideo && !_isDrawingMode)
+                    Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1F2C34).withOpacity(0.95),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: AppColors.accent.withOpacity(0.5), width: 1.2),
+                        boxShadow: [
+                          BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 8, offset: const Offset(0, 3)),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.aspect_ratio_rounded, color: AppColors.accent, size: 18),
+                          const SizedBox(width: 6),
+                          const Text('Boyut:', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+                          IconButton(
+                            icon: const Icon(Icons.remove_circle_outline_rounded, color: Colors.white, size: 20),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () {
+                              setState(() {
+                                selectedItem.scale = (selectedItem.scale - 0.15).clamp(0.4, 4.0);
+                              });
+                            },
                           ),
-                          child: Center(
-                            child: _isExporting
-                                ? const SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                  )
-                                : (_items.length > 1
-                                    ? Stack(
-                                        clipBehavior: Clip.none,
-                                        alignment: Alignment.center,
-                                        children: [
-                                          const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                                          Positioned(
-                                            top: -7,
-                                            right: -7,
-                                            child: Container(
-                                              padding: const EdgeInsets.all(4),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFF00A884),
-                                                shape: BoxShape.circle,
-                                                border: Border.all(color: Colors.white, width: 1.2),
-                                              ),
-                                              child: Text(
-                                                '${_items.length}',
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 10,
-                                                  fontWeight: FontWeight.bold,
+                          Expanded(
+                            child: SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                thumbColor: AppColors.accent,
+                                activeTrackColor: AppColors.accent,
+                                inactiveTrackColor: Colors.white24,
+                                trackHeight: 3,
+                                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                              ),
+                              child: Slider(
+                                value: selectedItem.scale,
+                                min: 0.4,
+                                max: 3.5,
+                                onChanged: (val) {
+                                  setState(() {
+                                    selectedItem.scale = val;
+                                  });
+                                },
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.white, size: 20),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () {
+                              setState(() {
+                                selectedItem.scale = (selectedItem.scale + 0.15).clamp(0.4, 4.0);
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            '${(selectedItem.scale * 100).round()}%',
+                            style: const TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: () => setState(() => _selectedOverlayId = null),
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: const BoxDecoration(
+                                color: AppColors.surfaceLight,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.check, color: Colors.white, size: 16),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                  // FILTER CAROUSEL (if open)
+                  if (_showFilterTray && !isCurrentVideo && !_isDrawingMode)
+                    Container(
+                      height: 96,
+                      color: const Color(0xFF141D22),
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        itemCount: _filters.length,
+                        itemBuilder: (context, idx) {
+                          final f = _filters[idx];
+                          final isSel = idx == _selectedFilterIndex;
+                          return GestureDetector(
+                            onTap: () => setState(() => _selectedFilterIndex = idx),
+                            child: Container(
+                              margin: const EdgeInsets.symmetric(horizontal: 6),
+                              padding: const EdgeInsets.all(3),
+                              decoration: BoxDecoration(
+                                color: isSel ? AppColors.accent.withOpacity(0.2) : Colors.transparent,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: isSel ? AppColors.accent : Colors.transparent,
+                                  width: 2,
+                                ),
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: SizedBox(
+                                      width: 50,
+                                      height: 50,
+                                      child: f.matrix != null
+                                          ? ColorFiltered(
+                                              colorFilter: ColorFilter.matrix(f.matrix!),
+                                              child: Image.file(_currentImageFile, fit: BoxFit.cover),
+                                            )
+                                          : Image.file(_currentImageFile, fit: BoxFit.cover),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    f.name,
+                                    style: TextStyle(
+                                      color: isSel ? AppColors.accent : Colors.white70,
+                                      fontSize: 11,
+                                      fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+
+                  // THUMBNAIL STRIP (WhatsApp style horizontal photo selector)
+                  if (!_isDrawingMode)
+                    _buildThumbnailStrip(),
+
+                  // BOTTOM BAR (WhatsApp style caption input & send button)
+                  if (!_isDrawingMode)
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+                      color: Colors.black.withOpacity(0.7),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 14),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1F2C34),
+                                borderRadius: BorderRadius.circular(24),
+                                border: Border.all(color: Colors.white12),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.edit_note_rounded, color: AppColors.accent, size: 20),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _captionController,
+                                      onChanged: (val) {
+                                        if (_items.isNotEmpty && _currentIndex < _items.length) {
+                                          _items[_currentIndex].caption = val;
+                                        }
+                                      },
+                                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                                      decoration: const InputDecoration(
+                                        hintText: 'Bir başlık ekleyin...',
+                                        hintStyle: TextStyle(color: Colors.white54, fontSize: 14),
+                                        border: InputBorder.none,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          // Send / Done FAB
+                          GestureDetector(
+                            onTap: _isExporting ? null : _exportAndSend,
+                            child: Container(
+                              width: 48,
+                              height: 48,
+                              decoration: const BoxDecoration(
+                                gradient: AppColors.primaryGradient,
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.accent,
+                                    blurRadius: 8,
+                                    offset: Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Center(
+                                child: _isExporting
+                                    ? const SizedBox(
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                      )
+                                    : (_items.length > 1
+                                        ? Stack(
+                                            clipBehavior: Clip.none,
+                                            alignment: Alignment.center,
+                                            children: [
+                                              const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                                              Positioned(
+                                                top: -7,
+                                                right: -7,
+                                                child: Container(
+                                                  padding: const EdgeInsets.all(4),
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFF00A884),
+                                                    shape: BoxShape.circle,
+                                                    border: Border.all(color: Colors.white, width: 1.2),
+                                                  ),
+                                                  child: Text(
+                                                    '${_items.length}',
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 10,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
                                                 ),
                                               ),
-                                            ),
-                                          ),
-                                        ],
-                                      )
-                                    : const Icon(Icons.send_rounded, color: Colors.white, size: 22)),
+                                            ],
+                                          )
+                                        : const Icon(Icons.send_rounded, color: Colors.white, size: 22)),
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-
-            // EXPORTING / PROCESSING OVERLAY
-            if (_isExporting)
-              Container(
-                color: Colors.black.withOpacity(0.7),
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1F2C34),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: AppColors.accent.withOpacity(0.3)),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.5),
-                          blurRadius: 16,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
                     ),
-                    child: const Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircularProgressIndicator(color: AppColors.accent),
-                        SizedBox(height: 16),
-                        Text(
-                          'Fotoğraflar Hazırlanıyor...',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        SizedBox(height: 6),
-                        Text(
-                          'Lütfen bekleyin',
-                          style: TextStyle(
-                            color: Colors.white60,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+                ],
               ),
-          ],
+
+              // EXPORTING / PROCESSING OVERLAY
+              if (_isExporting)
+                Container(
+                  color: Colors.black.withOpacity(0.7),
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1F2C34),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: AppColors.accent.withOpacity(0.3)),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.5),
+                            blurRadius: 16,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(color: AppColors.accent),
+                          SizedBox(height: 16),
+                          Text(
+                            'Fotoğraflar Hazırlanıyor...',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          SizedBox(height: 6),
+                          Text(
+                            'Lütfen bekleyin',
+                            style: TextStyle(
+                              color: Colors.white60,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -1934,6 +2249,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           final item = _items[index];
           final bool isSelected = (index == _currentIndex);
           final bool hasEdits = item.overlays.isNotEmpty ||
+              item.drawnStrokes.isNotEmpty ||
               item.selectedFilterIndex != 0 ||
               item.cropRotationQuarter != 0 ||
               item.cropIsFlipped ||
@@ -2496,4 +2812,53 @@ class CropOverlayPainter extends CustomPainter {
   bool shouldRepaint(covariant CropOverlayPainter oldDelegate) {
     return oldDelegate.cropRect != cropRect || oldDelegate.imageRect != imageRect;
   }
+}
+
+/// Custom painter for smooth freehand drawing (Pen & Marker)
+class DrawingPainter extends CustomPainter {
+  final List<DrawnStroke> strokes;
+  final DrawnStroke? currentStroke;
+
+  DrawingPainter({
+    required this.strokes,
+    this.currentStroke,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final allStrokes = currentStroke != null ? [...strokes, currentStroke!] : strokes;
+
+    for (final stroke in allStrokes) {
+      if (stroke.points.isEmpty) continue;
+
+      final paint = Paint()
+        ..color = stroke.color
+        ..strokeWidth = stroke.strokeWidth
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke;
+
+      if (stroke.points.length == 1) {
+        canvas.drawCircle(stroke.points.first, stroke.strokeWidth / 2, paint..style = PaintingStyle.fill);
+      } else {
+        final path = Path();
+        path.moveTo(stroke.points[0].dx, stroke.points[0].dy);
+        for (int i = 1; i < stroke.points.length; i++) {
+          final p0 = stroke.points[i - 1];
+          final p1 = stroke.points[i];
+          path.quadraticBezierTo(
+            p0.dx,
+            p0.dy,
+            (p0.dx + p1.dx) / 2,
+            (p0.dy + p1.dy) / 2,
+          );
+        }
+        path.lineTo(stroke.points.last.dx, stroke.points.last.dy);
+        canvas.drawPath(path, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant DrawingPainter oldDelegate) => true;
 }
