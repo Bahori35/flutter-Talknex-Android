@@ -1837,15 +1837,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   // --- WHATSAPP-STYLE THUMBNAIL STRIP ---
   Widget _buildThumbnailStrip() {
     return Container(
-      height: 74,
+      height: 86,
       color: Colors.black.withOpacity(0.85),
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 10),
       child: ListView.separated(
         controller: _thumbScrollController,
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        clipBehavior: Clip.none,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: _items.length + 1,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (context, index) {
           if (index == _items.length) {
             // "+" Add More Media Button
@@ -1944,36 +1945,51 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     ),
                   ),
                 ),
-                // Edited indicator dot
+                // Edited indicator badge
                 if (hasEdits)
                   Positioned(
-                    top: -2,
-                    right: -2,
+                    bottom: 2,
+                    left: 2,
                     child: Container(
-                      width: 10,
-                      height: 10,
+                      padding: const EdgeInsets.all(2),
                       decoration: BoxDecoration(
                         color: AppColors.accent,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.black, width: 1.5),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.black87, width: 1),
                       ),
+                      child: const Icon(Icons.edit_rounded, color: Colors.black, size: 10),
                     ),
                   ),
-                // Delete button for this thumbnail if multiple items
-                if (_items.length > 1 && isSelected)
+                // Delete button (X) on thumbnails if multiple items
+                if (_items.length > 1)
                   Positioned(
                     top: -6,
-                    left: -6,
+                    right: -6,
                     child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
                       onTap: () => _deleteItemAtIndex(index),
                       child: Container(
-                        padding: const EdgeInsets.all(2),
+                        width: isSelected ? 22 : 20,
+                        height: isSelected ? 22 : 20,
                         decoration: BoxDecoration(
-                          color: AppColors.callRed,
+                          color: isSelected ? const Color(0xFFFF3B30) : const Color(0xFF333333),
                           shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 1.2),
+                          border: Border.all(color: Colors.white, width: 1.8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.6),
+                              blurRadius: 4,
+                              offset: const Offset(0, 1),
+                            ),
+                          ],
                         ),
-                        child: const Icon(Icons.close_rounded, color: Colors.white, size: 12),
+                        child: Center(
+                          child: Icon(
+                            Icons.close_rounded,
+                            color: Colors.white,
+                            size: isSelected ? 13 : 11,
+                          ),
+                        ),
                       ),
                     ),
                   ),
