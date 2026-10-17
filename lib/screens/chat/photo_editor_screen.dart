@@ -1242,7 +1242,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   },
                 );
 
-                if (outputPath != null && File(outputPath).exists()) {
+                if (outputPath != null && File(outputPath).existsSync()) {
                   results.add(PhotoEditorResult(
                     file: File(outputPath),
                     caption: item.caption,
