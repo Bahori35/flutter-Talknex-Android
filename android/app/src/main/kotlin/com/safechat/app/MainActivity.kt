@@ -17,6 +17,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
@@ -142,8 +143,8 @@ class MainActivity : FlutterActivity() {
             Presentation.LAYOUT_SCALE_TO_FIT
         )
 
-        val bitmapOverlay = BitmapOverlay.createStaticBitmapOverlay(bitmap)
-        val overlayEffect = OverlayEffect(ImmutableList.of(bitmapOverlay))
+        val bitmapOverlay: TextureOverlay = BitmapOverlay.createStaticBitmapOverlay(bitmap)
+        val overlayEffect = OverlayEffect(ImmutableList.of<TextureOverlay>(bitmapOverlay))
 
         val retriever = MediaMetadataRetriever()
         val hasAudio = try {
