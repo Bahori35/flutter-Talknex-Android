@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:image_picker/image_picker.dart';
+import 'package:video_player/video_player.dart';
 import '../../constants/app_colors.dart';
 import 'location_picker_screen.dart';
 
@@ -38,6 +39,8 @@ class PhotoItemState {
   bool cropIsFlipped;
   double? selectedAspectPreset;
   bool isVideo;
+  VideoPlayerController? videoController;
+  bool isVideoInitialized;
 
   PhotoItemState({
     required this.id,
@@ -52,6 +55,8 @@ class PhotoItemState {
     this.cropIsFlipped = false,
     this.selectedAspectPreset,
     this.isVideo = false,
+    this.videoController,
+    this.isVideoInitialized = false,
   }) : overlays = overlays ?? [];
 }
 
@@ -202,14 +207,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     for (int i = 0; i < initialFiles.length; i++) {
       final f = initialFiles[i];
       final isVid = _checkIsVideo(f.path);
-      _items.add(
-        PhotoItemState(
-          id: '${DateTime.now().millisecondsSinceEpoch}_$i',
-          originalFile: f,
-          currentImageFile: f,
-          isVideo: isVid,
-        ),
+      final item = PhotoItemState(
+        id: '${DateTime.now().millisecondsSinceEpoch}_$i',
+        originalFile: f,
+        currentImageFile: f,
+        isVideo: isVid,
       );
+      _items.add(item);
+      if (isVid) {
+        _initVideoControllerForItem(item);
+      }
     }
 
     if (_items.isNotEmpty) {
@@ -218,6 +225,41 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     } else {
       _currentImageFile = File('');
     }
+  }
+
+  Future<void> _initVideoControllerForItem(PhotoItemState item) async {
+    if (!item.isVideo || item.videoController != null) return;
+    try {
+      final controller = VideoPlayerController.file(item.originalFile);
+      item.videoController = controller;
+      await controller.initialize();
+      controller.setLooping(true);
+      if (controller.value.duration.inMilliseconds > 200) {
+        await controller.seekTo(const Duration(milliseconds: 200));
+      }
+      item.isVideoInitialized = true;
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('[VIDEO CONTROLLER INIT ERR] $e');
+    }
+  }
+
+  void _disposeItemVideo(PhotoItemState item) {
+    try {
+      item.videoController?.pause();
+      item.videoController?.dispose();
+      item.videoController = null;
+      item.isVideoInitialized = false;
+    } catch (_) {}
+  }
+
+  String _formatDuration(Duration duration) {
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    if (duration.inHours > 0) {
+      return '${duration.inHours}:$minutes:$seconds';
+    }
+    return '$minutes:$seconds';
   }
 
   bool _checkIsVideo(String path) {
@@ -272,6 +314,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   void _switchPhoto(int newIndex) {
     if (newIndex < 0 || newIndex >= _items.length || newIndex == _currentIndex) return;
+    // Pause currently playing video if switching away
+    if (_items[_currentIndex].isVideo) {
+      _items[_currentIndex].videoController?.pause();
+    }
     _saveStateToCurrentItem();
     setState(() {
       _currentIndex = newIndex;
@@ -300,8 +346,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       Navigator.pop(context);
       return;
     }
+    final removed = _items.removeAt(_currentIndex);
+    _disposeItemVideo(removed);
     setState(() {
-      _items.removeAt(_currentIndex);
       if (_currentIndex >= _items.length) {
         _currentIndex = _items.length - 1;
       }
@@ -314,8 +361,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       Navigator.pop(context);
       return;
     }
+    final removed = _items.removeAt(index);
+    _disposeItemVideo(removed);
     setState(() {
-      _items.removeAt(index);
       if (_currentIndex >= _items.length) {
         _currentIndex = _items.length - 1;
         _loadStateFromItem(_items[_currentIndex]);
@@ -353,9 +401,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         );
       }).toList();
 
-      setState(() {
-        _items.addAll(newItems);
-      });
+      for (final item in newItems) {
+        _items.add(item);
+        if (item.isVideo) {
+          _initVideoControllerForItem(item);
+        }
+      }
+
+      setState(() {});
     } catch (e) {
       debugPrint('[ADD MORE MEDIA ERR] $e');
     }
@@ -381,6 +434,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   @override
   void dispose() {
+    for (final item in _items) {
+      _disposeItemVideo(item);
+    }
     _captionController.dispose();
     _thumbScrollController.dispose();
     super.dispose();
@@ -1914,12 +1970,30 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       fit: StackFit.expand,
                       children: [
                         item.isVideo
-                            ? Container(
-                                color: const Color(0xFF141D22),
-                                child: const Center(
-                                  child: Icon(Icons.videocam_rounded, color: Colors.white70, size: 22),
-                                ),
-                              )
+                            ? (item.videoController != null && item.isVideoInitialized
+                                ? FittedBox(
+                                    fit: BoxFit.cover,
+                                    clipBehavior: Clip.hardEdge,
+                                    child: SizedBox(
+                                      width: item.videoController!.value.size.width > 0
+                                          ? item.videoController!.value.size.width
+                                          : 100,
+                                      height: item.videoController!.value.size.height > 0
+                                          ? item.videoController!.value.size.height
+                                          : 100,
+                                      child: VideoPlayer(item.videoController!),
+                                    ),
+                                  )
+                                : Container(
+                                    color: const Color(0xFF141D22),
+                                    child: const Center(
+                                      child: SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent),
+                                      ),
+                                    ),
+                                  ))
                             : Image.file(
                                 item.currentImageFile,
                                 fit: BoxFit.cover,
@@ -1933,12 +2007,28 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                             bottom: 2,
                             left: 2,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                               decoration: BoxDecoration(
-                                color: Colors.black87,
-                                borderRadius: BorderRadius.circular(3),
+                                color: Colors.black.withOpacity(0.85),
+                                borderRadius: BorderRadius.circular(4),
                               ),
-                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 10),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 10),
+                                  if (item.videoController != null && item.isVideoInitialized) ...[
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      _formatDuration(item.videoController!.value.duration),
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 8.5,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
                             ),
                           ),
                       ],
@@ -2003,27 +2093,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   Widget _buildFilteredImage(FilterOption filter) {
     if (_items.isNotEmpty && _currentIndex < _items.length && _items[_currentIndex].isVideo) {
-      return Container(
-        color: const Color(0xFF10191F),
-        child: const Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.videocam_rounded, color: AppColors.accent, size: 64),
-              SizedBox(height: 12),
-              Text(
-                'Video',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              SizedBox(height: 4),
-              Text(
-                'Bu video için başlık ekleyebilirsiniz',
-                style: TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-            ],
-          ),
-        ),
-      );
+      return _buildVideoPlayerArea(_items[_currentIndex]);
     }
 
     final imageWidget = Image.file(
@@ -2038,6 +2108,134 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       );
     }
     return imageWidget;
+  }
+
+  Widget _buildVideoPlayerArea(PhotoItemState item) {
+    final controller = item.videoController;
+    if (controller == null || !item.isVideoInitialized) {
+      return Container(
+        color: const Color(0xFF10191F),
+        child: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: AppColors.accent),
+              SizedBox(height: 14),
+              Text(
+                'Video hazırlanıyor...',
+                style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final bool isPlaying = controller.value.isPlaying;
+
+    return Center(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          setState(() {
+            if (controller.value.isPlaying) {
+              controller.pause();
+            } else {
+              controller.play();
+            }
+          });
+        },
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Video Frame
+            AspectRatio(
+              aspectRatio: controller.value.aspectRatio > 0 ? controller.value.aspectRatio : 16 / 9,
+              child: VideoPlayer(controller),
+            ),
+
+            // Play / Pause Glass Overlay button
+            AnimatedOpacity(
+              opacity: isPlaying ? 0.0 : 0.9,
+              duration: const Duration(milliseconds: 180),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.6),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white38, width: 2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.5),
+                      blurRadius: 10,
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.play_arrow_rounded,
+                  color: Colors.white,
+                  size: 46,
+                ),
+              ),
+            ),
+
+            // Duration and time indicator at bottom
+            Positioned(
+              bottom: 12,
+              left: 14,
+              right: 14,
+              child: ValueListenableBuilder<VideoPlayerValue>(
+                valueListenable: controller,
+                builder: (context, val, _) {
+                  final totalMs = val.duration.inMilliseconds.toDouble();
+                  final curMs = val.position.inMilliseconds.toDouble().clamp(0.0, totalMs > 0 ? totalMs : 1.0);
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.65),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Row(
+                      children: [
+                        Text(
+                          _formatDuration(val.position),
+                          style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              activeTrackColor: AppColors.accent,
+                              inactiveTrackColor: Colors.white24,
+                              thumbColor: AppColors.accent,
+                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                              trackHeight: 2.5,
+                              overlayShape: const RoundSliderOverlayShape(overlayRadius: 8),
+                            ),
+                            child: Slider(
+                              min: 0.0,
+                              max: totalMs > 0 ? totalMs : 1.0,
+                              value: curMs,
+                              onChanged: (newMs) {
+                                controller.seekTo(Duration(milliseconds: newMs.toInt()));
+                              },
+                            ),
+                          ),
+                        ),
+                        Text(
+                          _formatDuration(val.duration),
+                          style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildOverlayWidget(OverlayItem item) {
