@@ -1721,91 +1721,106 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         : Row(
                             children: [
                               IconButton(
-                                icon: const Icon(Icons.close_rounded, color: Colors.white, size: 26),
+                                icon: const Icon(Icons.close_rounded, color: Colors.white, size: 24),
+                                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                padding: EdgeInsets.zero,
                                 onPressed: () => Navigator.pop(context),
                               ),
                               if (_items.length > 1) ...[
                                 const SizedBox(width: 4),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.15),
-                                    borderRadius: BorderRadius.circular(14),
+                                    color: Colors.white.withOpacity(0.18),
+                                    borderRadius: BorderRadius.circular(10),
                                   ),
                                   child: Text(
-                                    '${_currentIndex + 1} / ${_items.length}',
+                                    '${_currentIndex + 1}/${_items.length}',
                                     style: const TextStyle(
                                       color: Colors.white,
-                                      fontSize: 13,
+                                      fontSize: 12,
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: 4),
+                                const SizedBox(width: 2),
                                 IconButton(
-                                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.white70, size: 22),
+                                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.white70, size: 20),
+                                  constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+                                  padding: EdgeInsets.zero,
                                   tooltip: 'Bu medyayı sil',
                                   onPressed: _deleteCurrentItem,
                                 ),
                               ],
-                              const Spacer(),
-                              // Pen & Drawing
-                              IconButton(
-                                icon: Icon(
-                                  Icons.edit_rounded,
-                                  color: _drawnStrokes.isNotEmpty ? AppColors.accent : Colors.white,
-                                  size: 24,
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  reverse: true,
+                                  physics: const BouncingScrollPhysics(),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      // Pen & Drawing
+                                      _buildTopActionButton(
+                                        icon: Icons.edit_rounded,
+                                        color: _drawnStrokes.isNotEmpty ? AppColors.accent : Colors.white,
+                                        tooltip: 'Kalem & Çizim',
+                                        onPressed: _enterDrawingMode,
+                                      ),
+                                      // Emoji
+                                      _buildTopActionButton(
+                                        icon: Icons.sentiment_satisfied_alt_rounded,
+                                        color: Colors.white,
+                                        tooltip: 'Emoji / Çıkartma Ekle',
+                                        onPressed: _openEmojiSheet,
+                                      ),
+                                      // Text
+                                      _buildTopActionButton(
+                                        icon: Icons.title_rounded,
+                                        color: Colors.white,
+                                        tooltip: 'Yazı Ekle',
+                                        onPressed: () => _openTextDialog(),
+                                      ),
+                                      // Location
+                                      _buildTopActionButton(
+                                        icon: Icons.location_on_rounded,
+                                        color: Colors.white,
+                                        tooltip: 'Konum Ekle',
+                                        onPressed: _openLocationDialog,
+                                      ),
+                                      if (!isCurrentVideo)
+                                        // Crop & Rotate
+                                        _buildTopActionButton(
+                                          icon: Icons.crop_rotate_rounded,
+                                          color: Colors.white,
+                                          tooltip: 'Kırp & Döndür',
+                                          onPressed: _enterCropMode,
+                                        ),
+                                      // Filters & Effects Toggle (Available for both photos and videos)
+                                      _buildTopActionButton(
+                                        icon: Icons.auto_awesome_rounded,
+                                        color: _showFilterTray ? AppColors.accent : Colors.white,
+                                        tooltip: 'Filtreler & Efektler',
+                                        onPressed: () {
+                                          setState(() {
+                                            _showFilterTray = !_showFilterTray;
+                                            _selectedOverlayId = null;
+                                          });
+                                        },
+                                      ),
+                                      // Undo Overlay
+                                      if (_overlays.isNotEmpty)
+                                        _buildTopActionButton(
+                                          icon: Icons.undo_rounded,
+                                          color: Colors.white,
+                                          tooltip: 'Geri Al',
+                                          onPressed: _undoLastOverlay,
+                                        ),
+                                    ],
+                                  ),
                                 ),
-                                tooltip: 'Kalem & Çizim',
-                                onPressed: _enterDrawingMode,
                               ),
-                              // Emoji
-                              IconButton(
-                                icon: const Icon(Icons.sentiment_satisfied_alt_rounded, color: Colors.white, size: 24),
-                                tooltip: 'Emoji / Çıkartma Ekle',
-                                onPressed: _openEmojiSheet,
-                              ),
-                              // Text
-                              IconButton(
-                                icon: const Icon(Icons.title_rounded, color: Colors.white, size: 24),
-                                tooltip: 'Yazı Ekle',
-                                onPressed: () => _openTextDialog(),
-                              ),
-                              // Location
-                              IconButton(
-                                icon: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
-                                tooltip: 'Konum Ekle',
-                                onPressed: _openLocationDialog,
-                              ),
-                              if (!isCurrentVideo)
-                                // Crop & Rotate
-                                IconButton(
-                                  icon: const Icon(Icons.crop_rotate_rounded, color: Colors.white, size: 24),
-                                  tooltip: 'Kırp & Döndür',
-                                  onPressed: _enterCropMode,
-                                ),
-                              // Filters & Effects Toggle (Available for both photos and videos)
-                              IconButton(
-                                icon: Icon(
-                                  Icons.auto_awesome_rounded,
-                                  color: _showFilterTray ? AppColors.accent : Colors.white,
-                                  size: 24,
-                                ),
-                                tooltip: 'Filtreler & Efektler',
-                                onPressed: () {
-                                  setState(() {
-                                    _showFilterTray = !_showFilterTray;
-                                    _selectedOverlayId = null;
-                                  });
-                                },
-                              ),
-                              // Undo Overlay
-                              if (_overlays.isNotEmpty)
-                                IconButton(
-                                  icon: const Icon(Icons.undo_rounded, color: Colors.white, size: 24),
-                                  tooltip: 'Geri Al',
-                                  onPressed: _undoLastOverlay,
-                                ),
                             ],
                           ),
                   ),
@@ -2487,6 +2502,28 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildTopActionButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+    Color color = Colors.white,
+    double size = 22,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          width: 36,
+          height: 36,
+          alignment: Alignment.center,
+          child: Icon(icon, color: color, size: size),
+        ),
       ),
     );
   }
