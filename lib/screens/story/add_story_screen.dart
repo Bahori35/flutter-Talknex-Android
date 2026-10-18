@@ -20,11 +20,29 @@ class GalleryMediaItem {
   final String path;
   final bool isVideo;
   final int durationMs;
+  final String bucketName;
 
   GalleryMediaItem({
     required this.path,
     required this.isVideo,
     this.durationMs = 0,
+    this.bucketName = '',
+  });
+}
+
+class AlbumCategory {
+  final String id;
+  final String name;
+  final int count;
+  final String? coverPath;
+  final IconData icon;
+
+  AlbumCategory({
+    required this.id,
+    required this.name,
+    required this.count,
+    this.coverPath,
+    required this.icon,
   });
 }
 
@@ -42,7 +60,11 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
   final ImagePicker _picker = ImagePicker();
   final CustomChatService _chatService = CustomChatService();
 
-  List<GalleryMediaItem> _galleryMedia = [];
+  List<GalleryMediaItem> _allMedia = [];
+  List<GalleryMediaItem> _filteredMedia = [];
+  String _selectedAlbumId = 'all';
+  String _selectedAlbumName = 'Son kullanılanlar';
+
   bool _isLoadingGallery = true;
   bool _isPublishing = false;
   String _publishingMessage = 'Durum paylaşılıyor...';
@@ -67,7 +89,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
       }
 
       // 2. Fetch from native MediaStore via method channel
-      final List<dynamic>? rawList = await _galleryChannel.invokeListMethod('getGalleryMedia', {'limit': 150});
+      final List<dynamic>? rawList = await _galleryChannel.invokeListMethod('getGalleryMedia', {'limit': 400});
       final List<GalleryMediaItem> items = [];
 
       if (rawList != null && rawList.isNotEmpty) {
@@ -79,6 +101,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                 path: p,
                 isVideo: entry['isVideo'] == true,
                 durationMs: (entry['durationMs'] as num?)?.toInt() ?? 0,
+                bucketName: entry['bucketName']?.toString() ?? '',
               ));
             }
           }
@@ -87,36 +110,37 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
 
       // 3. Fallback: scan common storage paths if MediaStore returned empty
       if (items.isEmpty && Platform.isAndroid) {
-        final commonPaths = [
-          '/storage/emulated/0/DCIM/Camera',
-          '/storage/emulated/0/Pictures',
-          '/storage/emulated/0/Movies',
-          '/storage/emulated/0/Download',
+        final commonDirs = [
+          {'path': '/storage/emulated/0/DCIM/Camera', 'bucket': 'Camera'},
+          {'path': '/storage/emulated/0/Pictures', 'bucket': 'Pictures'},
+          {'path': '/storage/emulated/0/Download', 'bucket': 'Download'},
+          {'path': '/storage/emulated/0/Movies', 'bucket': 'Movies'},
         ];
 
-        for (final dirPath in commonPaths) {
-          final dir = Directory(dirPath);
+        for (final cDir in commonDirs) {
+          final dir = Directory(cDir['path']!);
           if (dir.existsSync()) {
             try {
               final files = dir.listSync().whereType<File>().toList();
               for (final f in files) {
                 final lower = f.path.toLowerCase();
                 if (lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png') || lower.endsWith('.webp')) {
-                  items.add(GalleryMediaItem(path: f.path, isVideo: false));
+                  items.add(GalleryMediaItem(path: f.path, isVideo: false, bucketName: cDir['bucket']!));
                 } else if (lower.endsWith('.mp4') || lower.endsWith('.mkv') || lower.endsWith('.mov')) {
-                  items.add(GalleryMediaItem(path: f.path, isVideo: true));
+                  items.add(GalleryMediaItem(path: f.path, isVideo: true, bucketName: cDir['bucket']!));
                 }
-                if (items.length >= 100) break;
+                if (items.length >= 250) break;
               }
             } catch (_) {}
           }
-          if (items.length >= 100) break;
+          if (items.length >= 250) break;
         }
       }
 
       if (mounted) {
         setState(() {
-          _galleryMedia = items;
+          _allMedia = items;
+          _filteredMedia = items;
           _isLoadingGallery = false;
         });
       }
@@ -126,6 +150,260 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         setState(() => _isLoadingGallery = false);
       }
     }
+  }
+
+  List<AlbumCategory> _buildAlbumList() {
+    final List<AlbumCategory> albums = [];
+
+    // 1. Son kullanılanlar (All)
+    albums.add(AlbumCategory(
+      id: 'all',
+      name: 'Son kullanılanlar',
+      count: _allMedia.length,
+      coverPath: _allMedia.isNotEmpty ? _allMedia.first.path : null,
+      icon: Icons.history_rounded,
+    ));
+
+    // 2. Kamera
+    final cameraItems = _allMedia.where((m) {
+      final b = m.bucketName.toLowerCase();
+      final p = m.path.toLowerCase();
+      return b == 'camera' || b == 'kamera' || p.contains('/dcim/camera');
+    }).toList();
+    if (cameraItems.isNotEmpty) {
+      albums.add(AlbumCategory(
+        id: 'camera',
+        name: 'Kamera',
+        count: cameraItems.length,
+        coverPath: cameraItems.first.path,
+        icon: Icons.photo_camera_rounded,
+      ));
+    }
+
+    // 3. İndirilenler (Downloads)
+    final downloadItems = _allMedia.where((m) {
+      final b = m.bucketName.toLowerCase();
+      final p = m.path.toLowerCase();
+      return b == 'download' || b == 'downloads' || b == 'indirilenler' || p.contains('/download');
+    }).toList();
+    if (downloadItems.isNotEmpty) {
+      albums.add(AlbumCategory(
+        id: 'downloads',
+        name: 'İndirilenler',
+        count: downloadItems.length,
+        coverPath: downloadItems.first.path,
+        icon: Icons.download_rounded,
+      ));
+    }
+
+    // 4. Videolar
+    final videoItems = _allMedia.where((m) => m.isVideo).toList();
+    if (videoItems.isNotEmpty) {
+      albums.add(AlbumCategory(
+        id: 'videos',
+        name: 'Videolar',
+        count: videoItems.length,
+        coverPath: videoItems.first.path,
+        icon: Icons.videocam_rounded,
+      ));
+    }
+
+    // 5. Ekran Görüntüleri
+    final screenshotItems = _allMedia.where((m) {
+      final b = m.bucketName.toLowerCase();
+      final p = m.path.toLowerCase();
+      return b.contains('screenshot') || p.contains('screenshot') || b.contains('ekran');
+    }).toList();
+    if (screenshotItems.isNotEmpty) {
+      albums.add(AlbumCategory(
+        id: 'screenshots',
+        name: 'Ekran Görüntüleri',
+        count: screenshotItems.length,
+        coverPath: screenshotItems.first.path,
+        icon: Icons.screenshot_rounded,
+      ));
+    }
+
+    // 6. WhatsApp Medyaları
+    final waItems = _allMedia.where((m) {
+      final b = m.bucketName.toLowerCase();
+      final p = m.path.toLowerCase();
+      return b.contains('whatsapp') || p.contains('whatsapp');
+    }).toList();
+    if (waItems.isNotEmpty) {
+      albums.add(AlbumCategory(
+        id: 'whatsapp',
+        name: 'WhatsApp',
+        count: waItems.length,
+        coverPath: waItems.first.path,
+        icon: Icons.chat_bubble_outline_rounded,
+      ));
+    }
+
+    // 7. Other custom folders
+    final handledIds = {'all', 'camera', 'downloads', 'videos', 'screenshots', 'whatsapp'};
+    final Map<String, List<GalleryMediaItem>> otherBuckets = {};
+    for (final item in _allMedia) {
+      final b = item.bucketName.trim();
+      if (b.isNotEmpty && !handledIds.contains(b.toLowerCase()) && b.toLowerCase() != 'other' && b.toLowerCase() != 'diğer') {
+        otherBuckets.putIfAbsent(b, () => []).add(item);
+      }
+    }
+
+    otherBuckets.forEach((bucketName, bItems) {
+      albums.add(AlbumCategory(
+        id: 'bucket_$bucketName',
+        name: bucketName,
+        count: bItems.length,
+        coverPath: bItems.first.path,
+        icon: Icons.folder_outlined,
+      ));
+    });
+
+    return albums;
+  }
+
+  void _selectAlbum(AlbumCategory album) {
+    setState(() {
+      _selectedAlbumId = album.id;
+      _selectedAlbumName = album.name;
+
+      if (album.id == 'all') {
+        _filteredMedia = _allMedia;
+      } else if (album.id == 'camera') {
+        _filteredMedia = _allMedia.where((m) {
+          final b = m.bucketName.toLowerCase();
+          final p = m.path.toLowerCase();
+          return b == 'camera' || b == 'kamera' || p.contains('/dcim/camera');
+        }).toList();
+      } else if (album.id == 'downloads') {
+        _filteredMedia = _allMedia.where((m) {
+          final b = m.bucketName.toLowerCase();
+          final p = m.path.toLowerCase();
+          return b == 'download' || b == 'downloads' || b == 'indirilenler' || p.contains('/download');
+        }).toList();
+      } else if (album.id == 'videos') {
+        _filteredMedia = _allMedia.where((m) => m.isVideo).toList();
+      } else if (album.id == 'screenshots') {
+        _filteredMedia = _allMedia.where((m) {
+          final b = m.bucketName.toLowerCase();
+          final p = m.path.toLowerCase();
+          return b.contains('screenshot') || p.contains('screenshot') || b.contains('ekran');
+        }).toList();
+      } else if (album.id == 'whatsapp') {
+        _filteredMedia = _allMedia.where((m) {
+          final b = m.bucketName.toLowerCase();
+          final p = m.path.toLowerCase();
+          return b.contains('whatsapp') || p.contains('whatsapp');
+        }).toList();
+      } else if (album.id.startsWith('bucket_')) {
+        final bName = album.id.substring(7);
+        _filteredMedia = _allMedia.where((m) => m.bucketName == bName).toList();
+      }
+    });
+  }
+
+  void _showAlbumBottomSheet() {
+    final albums = _buildAlbumList();
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E2128),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Sheet Drag Handle
+              Center(
+                child: Container(
+                  margin: const EdgeInsets.only(top: 10, bottom: 8),
+                  width: 38,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Albümler',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+              const Divider(color: Colors.white12, height: 1),
+
+              // Album List
+              Expanded(
+                child: ListView.builder(
+                  itemCount: albums.length,
+                  itemBuilder: (context, idx) {
+                    final album = albums[idx];
+                    final isSelected = album.id == _selectedAlbumId;
+
+                    return ListTile(
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: album.coverPath != null && File(album.coverPath!).existsSync()
+                            ? Image.file(
+                                File(album.coverPath!),
+                                width: 44,
+                                height: 44,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Container(
+                                  width: 44,
+                                  height: 44,
+                                  color: Colors.white12,
+                                  child: Icon(album.icon, color: Colors.white70),
+                                ),
+                              )
+                            : Container(
+                                width: 44,
+                                height: 44,
+                                color: Colors.white12,
+                                child: Icon(album.icon, color: Colors.white70),
+                              ),
+                      ),
+                      title: Text(
+                        album.name,
+                        style: TextStyle(
+                          color: isSelected ? AppColors.accent : Colors.white,
+                          fontSize: 15,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                        ),
+                      ),
+                      subtitle: Text(
+                        '${album.count} öğe',
+                        style: const TextStyle(color: Colors.white54, fontSize: 13),
+                      ),
+                      trailing: isSelected
+                          ? const Icon(Icons.check_circle_rounded, color: AppColors.accent, size: 22)
+                          : null,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _selectAlbum(album);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   // 1. OPEN CAMERA
@@ -338,7 +616,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                 ),
                 const SizedBox(height: 10),
 
-                // Top Action Buttons (Metin, Müzik, Yerleşim, Ses) - Kept as requested
+                // Top Action Buttons (Metin, Müzik, Yerleşim, Ses) - Preserved
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
@@ -367,9 +645,37 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
 
-                // Direct Gallery Grid (Top Left: Camera, Remaining: Device Photos & Videos)
+                // Album Selector Header: "Son kullanılanlar ▼" / "İndirilenler ▼" (WhatsApp style)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                  child: GestureDetector(
+                    onTap: _showAlbumBottomSheet,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _selectedAlbumName,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          color: Colors.white70,
+                          size: 24,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+
+                // Gallery Grid (Top Left: Camera, Remaining: Filtered Device Photos & Videos)
                 Expanded(
                   child: _isLoadingGallery
                       ? const Center(
@@ -382,8 +688,8 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                             crossAxisSpacing: 3,
                             mainAxisSpacing: 3,
                           ),
-                          // 1st item is always Camera, rest are gallery media
-                          itemCount: 1 + _galleryMedia.length,
+                          // 1st item is always Camera, rest are filtered gallery media
+                          itemCount: 1 + _filteredMedia.length,
                           itemBuilder: (context, index) {
                             // 1. TOP-LEFT CAMERA TILE (index 0)
                             if (index == 0) {
@@ -415,7 +721,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                             }
 
                             // 2. REAL DEVICE GALLERY MEDIA ITEMS (index 1 to N)
-                            final mediaItem = _galleryMedia[index - 1];
+                            final mediaItem = _filteredMedia[index - 1];
                             return GestureDetector(
                               onTap: () {
                                 if (mediaItem.isVideo) {

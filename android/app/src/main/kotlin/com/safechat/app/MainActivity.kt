@@ -248,7 +248,7 @@ class MainActivity : FlutterActivity() {
                 if (call.method == "getGalleryMedia") {
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
-                            val limit = call.argument<Int>("limit") ?: 150
+                            val limit = call.argument<Int>("limit") ?: 400
                             val mediaList = mutableListOf<Map<String, Any?>>()
 
                             val projection = arrayOf(
@@ -289,11 +289,13 @@ class MainActivity : FlutterActivity() {
                                             val mediaType = if (typeCol != -1) c.getInt(typeCol) else 1
                                             val isVideo = mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
                                             val durationMs = if (isVideo && durCol != -1) c.getLong(durCol) else 0L
+                                            val parentFolder = f.parentFile?.name ?: "Diğer"
 
                                             mediaList.add(mapOf(
                                                 "path" to path,
                                                 "isVideo" to isVideo,
-                                                "durationMs" to durationMs
+                                                "durationMs" to durationMs,
+                                                "bucketName" to parentFolder
                                             ))
                                             count++
                                         }
