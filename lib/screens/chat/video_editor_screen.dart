@@ -1,12 +1,19 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import 'package:video_player/video_player.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../../constants/app_colors.dart';
+import 'location_picker_screen.dart';
+import 'photo_editor_screen.dart' show OverlayType, OverlayItem, DrawnStroke, DrawingPainter, FilterOption;
 
 const MethodChannel _nativeVideoChannel = MethodChannel('com.safechat.app/video');
 
@@ -85,6 +92,600 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
   bool _isProcessing = false;
   double _processingProgress = 0.0;
   String _processingStatus = '';
+
+  // --- PHOTO EDITING TOOLS: OVERLAYS, DRAWINGS & FILTERS ---
+  final GlobalKey _videoOverlayRepaintKey = GlobalKey();
+
+  final List<FilterOption> _filters = const [
+    FilterOption('Orijinal', null),
+    FilterOption('Canlı', [
+      1.25, 0,    0,    0, 0,
+      0,    1.25, 0,    0, 0,
+      0,    0,    1.25, 0, 0,
+      0,    0,    0,    1, 0,
+    ]),
+    FilterOption('Sıcak', [
+      1.18, 0,    0,    0, 10,
+      0,    1.08, 0,    0, 5,
+      0,    0,    0.85, 0, -10,
+      0,    0,    0,    1, 0,
+    ]),
+    FilterOption('Soğuk', [
+      0.85, 0,    0,    0, -10,
+      0,    1.0,  0,    0, 0,
+      0,    0,    1.25, 0, 15,
+      0,    0,    0,    1, 0,
+    ]),
+    FilterOption('S&B', [
+      0.2126, 0.7152, 0.0722, 0, 0,
+      0.2126, 0.7152, 0.0722, 0, 0,
+      0.2126, 0.7152, 0.0722, 0, 0,
+      0,      0,      0,      1, 0,
+    ]),
+    FilterOption('Sepia', [
+      0.393, 0.769, 0.189, 0, 0,
+      0.349, 0.686, 0.168, 0, 0,
+      0.272, 0.534, 0.131, 0, 0,
+      0,     0,     0,     1, 0,
+    ]),
+    FilterOption('Dramatik', [
+      1.4, 0,   0,   0, -25,
+      0,   1.4, 0,   0, -25,
+      0,   0,   1.4, 0, -25,
+      0,   0,   0,   1, 0,
+    ]),
+    FilterOption('Sinematik', [
+      1.12, 0,   0,    0, 8,
+      0,    1.0, 0,    0, 0,
+      0,    0,   1.20, 0, 12,
+      0,    0,   0,    1, 0,
+    ]),
+    FilterOption('Nostalji', [
+      0.9, 0,   0,   0, 35,
+      0,   0.9, 0,   0, 35,
+      0,   0,   0.9, 0, 35,
+      0,   0,   0,   1, 0,
+    ]),
+  ];
+
+  int _selectedFilterIndex = 0;
+  bool _showFilterTray = false;
+
+  // Overlays (Text, Emoji, Location)
+  final List<OverlayItem> _overlays = [];
+  String? _selectedOverlayId;
+  double _activeOverlayBaseScale = 1.0;
+  double _activeOverlayBaseRotation = 0.0;
+
+  OverlayItem? get _selectedOverlay {
+    if (_selectedOverlayId == null) return null;
+    try {
+      return _overlays.firstWhere((o) => o.id == _selectedOverlayId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Drawing / Pen mode state
+  bool _isDrawingMode = false;
+  bool _isHighlighter = false;
+  final List<DrawnStroke> _drawnStrokes = [];
+  DrawnStroke? _currentStroke;
+  Color _selectedDrawColor = const Color(0xFF00E676);
+  double _selectedStrokeWidth = 6.0;
+
+  final List<Color> _drawColors = const [
+    Color(0xFF00E676), // WhatsApp Green
+    Colors.white,
+    Colors.black,
+    Color(0xFFFF3B30), // Red
+    Color(0xFF00B0FF), // Blue
+    Color(0xFFFFD600), // Yellow
+    Color(0xFFFF4081), // Pink
+    Color(0xFFFF9100), // Orange
+    Color(0xFFE040FB), // Purple
+    Color(0xFF00E5FF), // Cyan
+  ];
+
+  void _enterDrawingMode() {
+    setState(() {
+      _isDrawingMode = true;
+      _showFilterTray = false;
+      _selectedOverlayId = null;
+    });
+  }
+
+  void _exitDrawingMode() {
+    setState(() {
+      _isDrawingMode = false;
+    });
+  }
+
+  void _undoLastStroke() {
+    if (_drawnStrokes.isNotEmpty) {
+      setState(() {
+        _drawnStrokes.removeLast();
+      });
+    }
+  }
+
+  void _clearAllStrokes() {
+    setState(() {
+      _drawnStrokes.clear();
+      _currentStroke = null;
+    });
+  }
+
+  void _undoLastOverlayOrStroke() {
+    setState(() {
+      if (_overlays.isNotEmpty) {
+        _overlays.removeLast();
+        _selectedOverlayId = null;
+      } else if (_drawnStrokes.isNotEmpty) {
+        _drawnStrokes.removeLast();
+      }
+    });
+  }
+
+  void _openEmojiSheet() {
+    final emojiCategories = {
+      'İfadeler': ['😍', '😂', '🔥', '❤️', '😎', '🥳', '🤩', '👏', '🙌', '💯', '✨', '🥰', '😭', '🤯', '🤫', '👀'],
+      'Kutlama': ['🎉', '🎂', '🍾', '🎈', '🎁', '🏆', '🥇', '👑', '⭐', '🌟', '💥', '🍹', '🍕', '🍔', '🍦', '🍩'],
+      'Doğa': ['🌸', '☀️', '🌴', '☕', '🐱', '🐶', '🦁', '🍀', '🌈', '⚡', '🌙', '🌊', '🍁', '🍓', '🥑', '🏖️'],
+      'Semboller': ['📍', '🚀', '💬', '📢', '💡', '🎵', '🚗', '✈️', '🎮', '⚽', '💎', '🎯', '🔔', '🏷️', '✅', '❤️‍🔥'],
+    };
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1F2C34),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return DefaultTabController(
+          length: emojiCategories.length,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+              ),
+              TabBar(
+                isScrollable: true,
+                indicatorColor: AppColors.accent,
+                labelColor: AppColors.accent,
+                unselectedLabelColor: Colors.white60,
+                tabs: emojiCategories.keys.map((title) => Tab(text: title)).toList(),
+              ),
+              SizedBox(
+                height: 250,
+                child: TabBarView(
+                  children: emojiCategories.values.map((emojis) {
+                    return GridView.builder(
+                      padding: const EdgeInsets.all(16),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 6,
+                        crossAxisSpacing: 12,
+                        mainAxisSpacing: 12,
+                      ),
+                      itemCount: emojis.length,
+                      itemBuilder: (context, idx) {
+                        final emoji = emojis[idx];
+                        return GestureDetector(
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            setState(() {
+                              final newItem = OverlayItem(
+                                id: DateTime.now().millisecondsSinceEpoch.toString(),
+                                type: OverlayType.emoji,
+                                text: emoji,
+                                position: const Offset(120, 160),
+                                fontSize: 48.0,
+                              );
+                              _overlays.add(newItem);
+                              _selectedOverlayId = newItem.id;
+                            });
+                          },
+                          child: Center(
+                            child: Text(emoji, style: const TextStyle(fontSize: 32)),
+                          ),
+                        );
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openLocationDialog() async {
+    final locCtrl = TextEditingController();
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            return Container(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+                top: 16,
+                left: 16,
+                right: 16,
+              ),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1F2C34),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 38,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.callRed.withValues(alpha: 0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.location_on_rounded, color: AppColors.callRed, size: 22),
+                      ),
+                      const SizedBox(width: 10),
+                      const Text(
+                        'Konum Çıkartması Ekle',
+                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 22),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () async {
+                      final LocationPickerResult? picked = await Navigator.push<LocationPickerResult>(
+                        ctx,
+                        MaterialPageRoute(builder: (_) => const LocationPickerScreen()),
+                      );
+                      if (picked != null) {
+                        String name = picked.address;
+                        if (name.isEmpty || name.startsWith('Enlem:')) {
+                          name = picked.title;
+                        }
+                        if (name.isEmpty || name == 'İşaretlenen Nokta' || name.startsWith('Enlem:')) {
+                          name = 'Seçilen Konum';
+                        }
+                        setSheetState(() {
+                          locCtrl.text = name;
+                        });
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF00A884), Color(0xFF008069)],
+                        ),
+                        borderRadius: BorderRadius.circular(14),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF00A884).withValues(alpha: 0.35),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.map_rounded, color: Colors.white, size: 24),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Haritadan Konum İşaretle',
+                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14.5),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Harita üzerinde istediğiniz yeri seçin',
+                                  style: TextStyle(color: Colors.white70, fontSize: 11.5),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Icon(Icons.chevron_right_rounded, color: Colors.white70, size: 22),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      const Expanded(child: Divider(color: Colors.white12)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Text(
+                          'veya konumu yazın',
+                          style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12),
+                        ),
+                      ),
+                      const Expanded(child: Divider(color: Colors.white12)),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: TextField(
+                      controller: locCtrl,
+                      style: const TextStyle(color: Colors.white, fontSize: 15),
+                      decoration: InputDecoration(
+                        hintText: 'Örn: Kadıköy, İstanbul veya Kordon...',
+                        hintStyle: const TextStyle(color: Colors.white38, fontSize: 13.5),
+                        border: InputBorder.none,
+                        prefixIcon: const Icon(Icons.edit_location_alt_rounded, color: AppColors.accent, size: 20),
+                        suffixIcon: locCtrl.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear_rounded, color: Colors.white54, size: 18),
+                                onPressed: () => setSheetState(() => locCtrl.clear()),
+                              )
+                            : null,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                      onChanged: (_) => setSheetState(() {}),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      'Kadıköy',
+                      'Beşiktaş',
+                      'Taksim',
+                      'İzmir Kordon',
+                      'Ankara Kızılay',
+                      'Antalya Kaleiçi',
+                      'Bodrum',
+                    ].map((place) {
+                      return ActionChip(
+                        label: Text(place),
+                        backgroundColor: const Color(0xFF263238),
+                        labelStyle: const TextStyle(color: Colors.white70, fontSize: 11.5),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        side: BorderSide.none,
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        onPressed: () {
+                          setSheetState(() {
+                            locCtrl.text = place;
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.accent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: () {
+                      final place = locCtrl.text.trim();
+                      if (place.isNotEmpty) {
+                        Navigator.pop(ctx);
+                        setState(() {
+                          final newItem = OverlayItem(
+                            id: DateTime.now().millisecondsSinceEpoch.toString(),
+                            type: OverlayType.location,
+                            text: '📍 $place',
+                            position: const Offset(80, 140),
+                            fontSize: 16.0,
+                          );
+                          _overlays.add(newItem);
+                          _selectedOverlayId = newItem.id;
+                        });
+                      }
+                    },
+                    child: const Text('Çıkartmayı Ekle', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _openTextDialog({OverlayItem? existing}) {
+    final textCtrl = TextEditingController(text: existing?.text ?? '');
+    Color selectedColor = existing?.color ?? Colors.white;
+    Color selectedBg = existing?.backgroundColor ?? Colors.black54;
+
+    final colors = [
+      Colors.white,
+      Colors.black,
+      AppColors.accent,
+      const Color(0xFFFF3B30),
+      const Color(0xFF00B0FF),
+      const Color(0xFFFFD600),
+      const Color(0xFFFF4081),
+      const Color(0xFFFF9100),
+      const Color(0xFFE040FB),
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1F2C34),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+                top: 16,
+                left: 16,
+                right: 16,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        existing != null ? 'Yazıyı Düzenle' : 'Yazı Ekle',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.check_circle_rounded, color: AppColors.accent, size: 28),
+                        onPressed: () {
+                          final text = textCtrl.text.trim();
+                          if (text.isNotEmpty) {
+                            setState(() {
+                              if (existing != null) {
+                                existing.text = text;
+                                existing.color = selectedColor;
+                                existing.backgroundColor = selectedBg;
+                              } else {
+                                final newItem = OverlayItem(
+                                  id: DateTime.now().millisecondsSinceEpoch.toString(),
+                                  type: OverlayType.text,
+                                  text: text,
+                                  color: selectedColor,
+                                  backgroundColor: selectedBg,
+                                  position: const Offset(60, 120),
+                                  fontSize: 22.0,
+                                );
+                                _overlays.add(newItem);
+                                _selectedOverlayId = newItem.id;
+                              }
+                            });
+                          }
+                          Navigator.pop(ctx);
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: selectedBg,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: TextField(
+                      controller: textCtrl,
+                      autofocus: true,
+                      style: TextStyle(
+                        color: selectedColor,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      decoration: const InputDecoration(
+                        hintText: 'Metin yazın...',
+                        hintStyle: TextStyle(color: Colors.white54),
+                        border: InputBorder.none,
+                      ),
+                      maxLines: 3,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const Text('Arka Plan:', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                      const SizedBox(width: 12),
+                      ActionChip(
+                        label: const Text('Şeffaf'),
+                        backgroundColor: selectedBg == Colors.transparent ? AppColors.accent : const Color(0xFF243642),
+                        labelStyle: TextStyle(color: selectedBg == Colors.transparent ? Colors.black : Colors.white),
+                        onPressed: () => setSheetState(() => selectedBg = Colors.transparent),
+                      ),
+                      const SizedBox(width: 8),
+                      ActionChip(
+                        label: const Text('Koyu'),
+                        backgroundColor: selectedBg == Colors.black54 ? AppColors.accent : const Color(0xFF243642),
+                        labelStyle: TextStyle(color: selectedBg == Colors.black54 ? Colors.black : Colors.white),
+                        onPressed: () => setSheetState(() => selectedBg = Colors.black54),
+                      ),
+                      const SizedBox(width: 8),
+                      ActionChip(
+                        label: const Text('Açık'),
+                        backgroundColor: selectedBg == Colors.white70 ? AppColors.accent : const Color(0xFF243642),
+                        labelStyle: TextStyle(color: selectedBg == Colors.white70 ? Colors.black : Colors.white),
+                        onPressed: () => setSheetState(() => selectedBg = Colors.white70),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    height: 38,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: colors.length,
+                      separatorBuilder: (_, __) => const SizedBox(width: 10),
+                      itemBuilder: (context, idx) {
+                        final c = colors[idx];
+                        final isSel = selectedColor == c;
+                        return GestureDetector(
+                          onTap: () => setSheetState(() => selectedColor = c),
+                          child: Container(
+                            width: 34,
+                            height: 34,
+                            decoration: BoxDecoration(
+                              color: c,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: isSel ? Colors.white : Colors.white24,
+                                width: isSel ? 2.5 : 1,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
 
   @override
   void initState() {
@@ -719,7 +1320,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     }
   }
 
-  // --- EXPORT & MERGE (CRASH-PROOF & 720P STANDARDIZED) ---
+  // --- EXPORT & MERGE (CRASH-PROOF, 720P STANDARDIZED, OVERLAYS & FILTERS) ---
 
   Future<void> _processAndExport() async {
     if (_isProcessing || _clips.isEmpty) return;
@@ -728,10 +1329,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       _isProcessing = true;
       _processingProgress = 0.0;
       _processingStatus = 'Hazırlanıyor...';
+      _selectedOverlayId = null;
+      _showFilterTray = false;
+      _isDrawingMode = false;
     });
 
     try {
-      // 1. Pause and release active VideoPlayerControllers & audio player to free Android MediaCodec hardware slots
+      // 1. Capture overlay RepaintBoundary to transparent PNG before controllers are disposed
+      String? overlayPngPath;
+      final bool hasOverlays = _overlays.isNotEmpty || _drawnStrokes.isNotEmpty;
+      if (hasOverlays) {
+        final boundary = _videoOverlayRepaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+        if (boundary != null) {
+          final image = await boundary.toImage(pixelRatio: 2.0);
+          final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+          if (byteData != null) {
+            final bytes = byteData.buffer.asUint8List();
+            final tempDir = await getTemporaryDirectory();
+            overlayPngPath = p.join(tempDir.path, 'video_overlay_${DateTime.now().millisecondsSinceEpoch}.png');
+            await File(overlayPngPath).writeAsBytes(bytes);
+          }
+        }
+      }
+
+      // 2. Pause and release active VideoPlayerControllers & audio player to free Android MediaCodec hardware slots
       _pauseAllControllers();
       await _bgMusicPlayer?.stop();
       for (final c in _controllers.values) {
@@ -742,63 +1363,120 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
 
       await Future.delayed(const Duration(milliseconds: 300));
 
-      setState(() {
-        _processingStatus = _clips.length > 1
-            ? '${_clips.length} video birleştiriliyor...'
-            : 'Video işleniyor...';
-        _processingProgress = 0.5;
-      });
+      final bool hasMultiClips = _clips.length > 1;
+      final bool hasTrims = _clips.any((c) =>
+          c.startTrim > Duration.zero ||
+          (c.totalDuration > Duration.zero && c.endTrim < c.totalDuration));
+      final bool hasBgMusic = _bgMusicFile != null;
+      final bool hasVolumeChange = _isMuted || _videoVolume != 1.0;
+      final bool needsMerge = hasMultiClips || hasTrims || hasBgMusic || hasVolumeChange;
 
-      final videoPaths = _clips.map((c) => c.file.path).toList();
-      final Map<String, int> trimStarts = {};
-      final Map<String, int> trimEnds = {};
-      final Map<String, int> totalDurations = {};
+      String baseVideoPath = _clips[0].file.path;
 
-      for (final clip in _clips) {
-        trimStarts[clip.file.path] = clip.startTrim.inMilliseconds;
-        trimEnds[clip.file.path] = clip.endTrim.inMilliseconds;
-        totalDurations[clip.file.path] = clip.totalDuration.inMilliseconds;
-      }
+      if (needsMerge) {
+        setState(() {
+          _processingStatus = _clips.length > 1
+              ? '${_clips.length} video birleştiriliyor...'
+              : 'Video işleniyor...';
+          _processingProgress = 0.4;
+        });
 
-      // Call native crash-proof Media3 video processor
-      String? resultPath;
-      try {
-        resultPath = await _nativeVideoChannel.invokeMethod<String>(
-          'mergeAndProcessVideos',
-          {
-            'videoPaths': videoPaths,
-            'isMuted': _isMuted || _videoVolume == 0.0,
-            'videoVolume': _isMuted ? 0.0 : _videoVolume,
-            'audioTrackPath': _bgMusicFile?.path,
-            'audioTrackVolume': _bgMusicVolume,
-            'audioTrackStartMs': _bgMusicStartTrim.inMilliseconds,
-            'audioTrackEndMs': _bgMusicEndTrim.inMilliseconds,
-            'trimStarts': trimStarts,
-            'trimEnds': trimEnds,
-            'totalDurations': totalDurations,
-          },
-        );
-      } catch (nativeErr) {
-        debugPrint('[NATIVE VIDEO PROCESSING ERR] $nativeErr');
-        if (_clips.length > 1) {
-          rethrow;
+        final videoPaths = _clips.map((c) => c.file.path).toList();
+        final Map<String, int> trimStarts = {};
+        final Map<String, int> trimEnds = {};
+        final Map<String, int> totalDurations = {};
+
+        for (final clip in _clips) {
+          trimStarts[clip.file.path] = clip.startTrim.inMilliseconds;
+          trimEnds[clip.file.path] = clip.endTrim.inMilliseconds;
+          totalDurations[clip.file.path] = clip.totalDuration.inMilliseconds;
+        }
+
+        // Call native crash-proof Media3 video processor
+        String? resultPath;
+        try {
+          resultPath = await _nativeVideoChannel.invokeMethod<String>(
+            'mergeAndProcessVideos',
+            {
+              'videoPaths': videoPaths,
+              'isMuted': _isMuted || _videoVolume == 0.0,
+              'videoVolume': _isMuted ? 0.0 : _videoVolume,
+              'audioTrackPath': _bgMusicFile?.path,
+              'audioTrackVolume': _bgMusicVolume,
+              'audioTrackStartMs': _bgMusicStartTrim.inMilliseconds,
+              'audioTrackEndMs': _bgMusicEndTrim.inMilliseconds,
+              'trimStarts': trimStarts,
+              'trimEnds': trimEnds,
+              'totalDurations': totalDurations,
+            },
+          );
+        } catch (nativeErr) {
+          debugPrint('[NATIVE VIDEO PROCESSING ERR] $nativeErr');
+          if (hasMultiClips) {
+            rethrow;
+          }
+        }
+
+        if (hasMultiClips && (resultPath == null || !File(resultPath).existsSync())) {
+          throw Exception('Videolar birleştirilemedi.');
+        }
+
+        if (resultPath != null && File(resultPath).existsSync()) {
+          baseVideoPath = resultPath;
         }
       }
 
-      if (_clips.length > 1 && (resultPath == null || !File(resultPath).existsSync())) {
-        throw Exception('Videolar birleştirilemedi.');
+      // 3. Apply Overlays (drawings, text, stickers, location) and Filters if present
+      final bool hasFilter = _selectedFilterIndex != 0;
+      if (hasOverlays || hasFilter) {
+        setState(() {
+          _processingStatus = 'Efektler ve çıkartmalar uygulanıyor...';
+          _processingProgress = 0.75;
+        });
+
+        List<double>? colorMatrix16;
+        if (hasFilter) {
+          final rawMatrix = _filters[_selectedFilterIndex].matrix;
+          if (rawMatrix != null && rawMatrix.length >= 20) {
+            // Convert Flutter Skia 4x5 row-major to OpenGL 4x4 column-major:
+            colorMatrix16 = [
+              rawMatrix[0], rawMatrix[5], rawMatrix[10], 0.0,
+              rawMatrix[1], rawMatrix[6], rawMatrix[11], 0.0,
+              rawMatrix[2], rawMatrix[7], rawMatrix[12], 0.0,
+              rawMatrix[4] / 255.0, rawMatrix[9] / 255.0, rawMatrix[14] / 255.0, 1.0,
+            ];
+          }
+        }
+
+        try {
+          final String? overlaidPath = await _nativeVideoChannel.invokeMethod<String>(
+            'applyOverlayToVideo',
+            {
+              'videoPath': baseVideoPath,
+              'overlayPath': overlayPngPath,
+              'colorMatrix': colorMatrix16,
+            },
+          );
+
+          if (overlaidPath != null && File(overlaidPath).existsSync()) {
+            baseVideoPath = overlaidPath;
+          }
+        } catch (burnErr) {
+          debugPrint('[VIDEO OVERLAY BURN ERROR] $burnErr');
+        }
       }
 
-      final finalVideoPath = (resultPath != null && File(resultPath).existsSync())
-          ? resultPath
-          : _clips[0].file.path;
+      setState(() {
+        _processingProgress = 1.0;
+        _processingStatus = 'Tamamlandı';
+      });
 
       if (!mounted) return;
 
       Navigator.pop(
         context,
         VideoEditorResult(
-          file: File(finalVideoPath),
+          file: File(baseVideoPath),
           caption: _captionController.text.trim(),
         ),
       );
@@ -831,61 +1509,83 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
         _controllers.containsKey(_playingClipIndex) &&
         _controllers[_playingClipIndex]!.value.isInitialized;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF0B1014),
-      body: SafeArea(
-        child: Stack(
-          children: [
-            Column(
-              children: [
-                // 1. Sleek Glass Header Bar
-                _buildHeaderBar(currentMerged, totalMerged),
+    return PopScope(
+      canPop: !_isDrawingMode,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _isDrawingMode) {
+          _exitDrawingMode();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0B1014),
+        body: SafeArea(
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  // 1. Sleek Glass Header Bar
+                  _buildHeaderBar(currentMerged, totalMerged),
 
-                // 2. Center Video Canvas Viewport (Rounded studio frame with overlays)
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    child: Center(
-                      child: isInitialized
-                          ? _buildVideoCanvas(currentMerged, totalMerged)
-                          : const Center(
-                              child: CircularProgressIndicator(
-                                color: AppColors.accent,
-                                strokeWidth: 3,
+                  // 1.5 Drawing Toolbar (Thickness & Colors)
+                  if (_isDrawingMode) _buildDrawingToolbar(),
+
+                  // 2. Center Video Canvas Viewport (Rounded studio frame with overlays)
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      child: Center(
+                        child: isInitialized
+                            ? _buildVideoCanvas(currentMerged, totalMerged)
+                            : const Center(
+                                child: CircularProgressIndicator(
+                                  color: AppColors.accent,
+                                  strokeWidth: 3,
+                                ),
                               ),
-                            ),
+                      ),
                     ),
                   ),
-                ),
 
-                // 3. Merged Timeline Scrubber
-                if (totalMerged.inMilliseconds > 0)
-                  _buildMergedTimelineScrubber(currentMerged, totalMerged),
+                  // Floating Size Slider when an overlay is selected and not in drawing mode
+                  if (_selectedOverlay != null && !_isDrawingMode)
+                    _buildFloatingSizeSlider(_selectedOverlay!),
 
-                // 4. Studio Segmented Mode Switcher (Klip Kırp / Şarkı Kırp / Mikser)
-                _buildStudioTabBar(),
+                  // Filter Tray when toggled open
+                  if (_showFilterTray && !_isDrawingMode)
+                    _buildFilterTray(),
 
-                // 5. Active Tool Panel (Switches smoothly between tabs)
-                Container(
-                  color: const Color(0xFF131D24),
-                  constraints: const BoxConstraints(minHeight: 110),
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
-                    child: _buildActiveTabContent(selectedClip),
-                  ),
-                ),
+                  // Studio editing panels (hidden during drawing mode for clean full-canvas drawing)
+                  if (!_isDrawingMode) ...[
+                    // 3. Merged Timeline Scrubber
+                    if (totalMerged.inMilliseconds > 0)
+                      _buildMergedTimelineScrubber(currentMerged, totalMerged),
 
-                // 6. Multi-Video Clips Carousel
-                _buildClipsCarousel(),
+                    // 4. Studio Segmented Mode Switcher (Klip Kırp / Şarkı Kırp / Mikser)
+                    _buildStudioTabBar(),
 
-                // 7. Bottom Bar (Caption Input + Send FAB)
-                _buildBottomBar(),
-              ],
-            ),
+                    // 5. Active Tool Panel (Switches smoothly between tabs)
+                    Container(
+                      color: const Color(0xFF131D24),
+                      constraints: const BoxConstraints(minHeight: 110),
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        child: _buildActiveTabContent(selectedClip),
+                      ),
+                    ),
 
-            // Fullscreen Processing Overlay
-            if (_isProcessing) _buildProcessingOverlay(),
-          ],
+                    // 6. Multi-Video Clips Carousel
+                    _buildClipsCarousel(),
+
+                    // 7. Bottom Bar (Caption Input + Send FAB)
+                    _buildBottomBar(),
+                  ],
+                ],
+              ),
+
+              // Fullscreen Processing Overlay
+              if (_isProcessing) _buildProcessingOverlay(),
+            ],
+          ),
         ),
       ),
     );
@@ -893,6 +1593,64 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
 
   // --- UI COMPONENT: HEADER BAR ---
   Widget _buildHeaderBar(Duration currentMerged, Duration totalMerged) {
+    if (_isDrawingMode) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: const BoxDecoration(
+          color: Color(0xFF0E161B),
+          border: Border(bottom: BorderSide(color: Colors.white10)),
+        ),
+        child: Row(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 24),
+              tooltip: 'Geri',
+              onPressed: _exitDrawingMode,
+            ),
+            const SizedBox(width: 4),
+            const Text(
+              'Kalem & Çizim',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 15.5,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.undo_rounded, size: 22),
+              color: _drawnStrokes.isNotEmpty ? Colors.white : Colors.white38,
+              tooltip: 'Son Çizgiyi Geri Al',
+              onPressed: _drawnStrokes.isNotEmpty ? _undoLastStroke : null,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_sweep_rounded, size: 22),
+              color: _drawnStrokes.isNotEmpty ? Colors.white : Colors.white38,
+              tooltip: 'Tümünü Temizle',
+              onPressed: _drawnStrokes.isNotEmpty ? _clearAllStrokes : null,
+            ),
+            const SizedBox(width: 6),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              icon: const Icon(Icons.check_rounded, color: Colors.black, size: 18),
+              label: const Text(
+                'Bitti',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              onPressed: _exitDrawingMode,
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: const BoxDecoration(
@@ -907,36 +1665,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
             icon: const Icon(Icons.close_rounded, color: Colors.white, size: 24),
             onPressed: () => Navigator.pop(context),
             tooltip: 'Kapat',
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Video Düzenleyici',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-                Text(
-                  '${_clips.length} Klip • Toplam ${_formatDuration(totalMerged)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
           ),
           const SizedBox(width: 6),
           // Mute Toggle Icon Button
@@ -953,32 +1681,304 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
             tooltip: _isMuted ? 'Sesi Aç' : 'Sesi Kapat',
             onPressed: _toggleMute,
           ),
-          const SizedBox(width: 6),
-          // Total Duration Pill
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1B2730),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.timer_outlined, color: AppColors.accent, size: 13),
-                const SizedBox(width: 4),
-                Text(
-                  '${_formatDuration(currentMerged)} / ${_formatDuration(totalMerged)}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 11,
-                  ),
+          if (_clips.length > 1) ...[
+            const SizedBox(width: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '${_selectedClipIndex + 1}/${_clips.length}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
                 ),
-              ],
+              ),
+            ),
+          ],
+          const SizedBox(width: 6),
+          // Scrollable Action Tools (Reversed so tools expand nicely)
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              reverse: true,
+              physics: const BouncingScrollPhysics(),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Pen & Drawing
+                  _buildTopActionButton(
+                    icon: Icons.edit_rounded,
+                    color: _drawnStrokes.isNotEmpty ? AppColors.accent : Colors.white,
+                    tooltip: 'Kalem & Çizim',
+                    onPressed: _enterDrawingMode,
+                  ),
+                  // Emoji
+                  _buildTopActionButton(
+                    icon: Icons.sentiment_satisfied_alt_rounded,
+                    color: Colors.white,
+                    tooltip: 'Emoji / Çıkartma Ekle',
+                    onPressed: _openEmojiSheet,
+                  ),
+                  // Text
+                  _buildTopActionButton(
+                    icon: Icons.title_rounded,
+                    color: Colors.white,
+                    tooltip: 'Yazı Ekle',
+                    onPressed: () => _openTextDialog(),
+                  ),
+                  // Location
+                  _buildTopActionButton(
+                    icon: Icons.location_on_rounded,
+                    color: Colors.white,
+                    tooltip: 'Konum Ekle',
+                    onPressed: _openLocationDialog,
+                  ),
+                  // Filters & Effects Toggle
+                  _buildTopActionButton(
+                    icon: Icons.auto_awesome_rounded,
+                    color: _showFilterTray ? AppColors.accent : Colors.white,
+                    tooltip: 'Filtreler & Efektler',
+                    onPressed: () {
+                      setState(() {
+                        _showFilterTray = !_showFilterTray;
+                        _selectedOverlayId = null;
+                      });
+                    },
+                  ),
+                  // Undo Overlay or Stroke
+                  if (_overlays.isNotEmpty || _drawnStrokes.isNotEmpty)
+                    _buildTopActionButton(
+                      icon: Icons.undo_rounded,
+                      color: Colors.white,
+                      tooltip: 'Geri Al',
+                      onPressed: _undoLastOverlayOrStroke,
+                    ),
+                ],
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // --- UI COMPONENT: DRAWING TOOLBAR ---
+  Widget _buildDrawingToolbar() {
+    return Container(
+      color: const Color(0xFF141D22),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _buildStrokeWidthChip('İnce', 3.0),
+              const SizedBox(width: 6),
+              _buildStrokeWidthChip('Normal', 6.0),
+              const SizedBox(width: 6),
+              _buildStrokeWidthChip('Kalın', 12.0),
+              const SizedBox(width: 6),
+              _buildStrokeWidthChip('Vurgulayıcı', 24.0, isHighlighter: true),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 36,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _drawColors.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, idx) {
+                final color = _drawColors[idx];
+                final bool isSel = (_selectedDrawColor == color);
+                return GestureDetector(
+                  onTap: () {
+                    setState(() => _selectedDrawColor = color);
+                  },
+                  child: Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: isSel ? Colors.white : Colors.white24,
+                        width: isSel ? 2.5 : 1.0,
+                      ),
+                      boxShadow: isSel
+                          ? [
+                              BoxShadow(
+                                color: color.withValues(alpha: 0.6),
+                                blurRadius: 6,
+                                spreadRadius: 1,
+                              ),
+                            ]
+                          : null,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStrokeWidthChip(String label, double width, {bool isHighlighter = false}) {
+    final bool isSel = (_selectedStrokeWidth == width && _isHighlighter == isHighlighter);
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _selectedStrokeWidth = width;
+          _isHighlighter = isHighlighter;
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isSel ? AppColors.accent.withValues(alpha: 0.25) : const Color(0xFF1F2C34),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSel ? AppColors.accent : Colors.white24,
+            width: isSel ? 1.5 : 1.0,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: isHighlighter ? 12 : math.max(width * 0.7, 4.0),
+              height: isHighlighter ? 6 : math.max(width * 0.7, 4.0),
+              decoration: BoxDecoration(
+                color: isSel ? AppColors.accent : Colors.white70,
+                borderRadius: BorderRadius.circular(isHighlighter ? 2 : 10),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSel ? AppColors.accent : Colors.white,
+                fontSize: 11.5,
+                fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- UI COMPONENT: FILTER TRAY ---
+  Widget _buildFilterTray() {
+    return Container(
+      height: 82,
+      color: Colors.black.withValues(alpha: 0.85),
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        itemCount: _filters.length,
+        itemBuilder: (context, idx) {
+          final f = _filters[idx];
+          final isSel = idx == _selectedFilterIndex;
+          return GestureDetector(
+            onTap: () {
+              setState(() {
+                _selectedFilterIndex = idx;
+              });
+            },
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isSel ? AppColors.accent : Colors.transparent,
+                        width: 2,
+                      ),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: f.matrix != null
+                            ? ColorFiltered(
+                                colorFilter: ColorFilter.matrix(f.matrix!),
+                                child: _buildFilterThumbnailChild(),
+                              )
+                            : _buildFilterThumbnailChild(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    f.name,
+                    style: TextStyle(
+                      color: isSel ? AppColors.accent : Colors.white70,
+                      fontSize: 10.5,
+                      fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildFilterThumbnailChild() {
+    final activeController = _controllers[_playingClipIndex];
+    if (activeController != null && activeController.value.isInitialized) {
+      return FittedBox(
+        fit: BoxFit.cover,
+        clipBehavior: Clip.hardEdge,
+        child: SizedBox(
+          width: activeController.value.size.width > 0 ? activeController.value.size.width : 100,
+          height: activeController.value.size.height > 0 ? activeController.value.size.height : 100,
+          child: VideoPlayer(activeController),
+        ),
+      );
+    }
+    return Container(
+      color: const Color(0xFF1B2831),
+      child: const Center(
+        child: Icon(Icons.movie_filter_rounded, color: Colors.white70, size: 20),
+      ),
+    );
+  }
+
+  Widget _buildTopActionButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+    Color color = Colors.white,
+    double size = 22,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          width: 36,
+          height: 36,
+          alignment: Alignment.center,
+          child: Icon(icon, color: color, size: size),
+        ),
       ),
     );
   }
@@ -988,6 +1988,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
     final activeController = _controllers[_playingClipIndex];
     if (activeController == null || !activeController.value.isInitialized) {
       return const SizedBox.shrink();
+    }
+
+    final selectedFilter = _filters[_selectedFilterIndex];
+
+    Widget videoPlayerWidget = AspectRatio(
+      aspectRatio: activeController.value.aspectRatio > 0
+          ? activeController.value.aspectRatio
+          : 16 / 9,
+      child: VideoPlayer(activeController),
+    );
+
+    if (selectedFilter.matrix != null) {
+      videoPlayerWidget = ColorFiltered(
+        colorFilter: ColorFilter.matrix(selectedFilter.matrix!),
+        child: videoPlayerWidget,
+      );
     }
 
     return Container(
@@ -1005,59 +2021,219 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
       ),
       clipBehavior: Clip.antiAlias,
       child: GestureDetector(
-        onTap: _togglePlayPause,
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          if (_isDrawingMode) return;
+          if (_selectedOverlayId != null) {
+            setState(() => _selectedOverlayId = null);
+          } else {
+            _togglePlayPause();
+          }
+        },
         child: Stack(
           alignment: Alignment.center,
           children: [
-            AspectRatio(
-              aspectRatio: activeController.value.aspectRatio,
-              child: VideoPlayer(activeController),
-            ),
+            // Video Player with Filter applied
+            videoPlayerWidget,
 
-            // Play / Pause Glass Overlay
-            AnimatedOpacity(
-              opacity: _isPlaying ? 0.0 : 0.9,
-              duration: const Duration(milliseconds: 200),
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.6),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white30, width: 2),
-                ),
-                child: const Icon(
-                  Icons.play_arrow_rounded,
-                  color: Colors.white,
-                  size: 44,
+            // Overlays & Drawings in a dedicated transparent RepaintBoundary for video overlay capture
+            Positioned.fill(
+              child: RepaintBoundary(
+                key: _videoOverlayRepaintKey,
+                child: Stack(
+                  children: [
+                    ..._overlays.map((item) => _buildOverlayWidget(item)),
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: DrawingPainter(
+                            strokes: _drawnStrokes,
+                            currentStroke: _currentStroke,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
 
+            // Drawing Gesture Detector (when in drawing mode)
+            if (_isDrawingMode)
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanStart: (details) {
+                    final Color strokeColor = _isHighlighter
+                        ? _selectedDrawColor.withValues(alpha: 0.45)
+                        : _selectedDrawColor;
+                    setState(() {
+                      _currentStroke = DrawnStroke(
+                        points: [details.localPosition],
+                        color: strokeColor,
+                        strokeWidth: _selectedStrokeWidth,
+                      );
+                    });
+                  },
+                  onPanUpdate: (details) {
+                    if (_currentStroke == null) return;
+                    setState(() {
+                      _currentStroke!.points.add(details.localPosition);
+                    });
+                  },
+                  onPanEnd: (details) {
+                    if (_currentStroke != null) {
+                      setState(() {
+                        _drawnStrokes.add(_currentStroke!);
+                        _currentStroke = null;
+                      });
+                    }
+                  },
+                ),
+              ),
+
+            // Play / Pause Glass Overlay (hidden when playing or drawing)
+            if (!_isDrawingMode)
+              IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: _isPlaying ? 0.0 : 0.9,
+                  duration: const Duration(milliseconds: 200),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.6),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white30, width: 2),
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: 44,
+                    ),
+                  ),
+                ),
+              ),
+
             // Floating Top Overlay (Clip Tag & Music Pill)
-            Positioned(
-              top: 10,
-              left: 10,
-              right: 10,
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            if (!_isDrawingMode)
+              Positioned(
+                top: 10,
+                left: 10,
+                right: 10,
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.75),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.auto_awesome_motion_rounded,
+                              color: AppColors.accent, size: 13),
+                          const SizedBox(width: 5),
+                          Text(
+                            _clips.length > 1
+                                ? 'Klip ${_playingClipIndex + 1}/${_clips.length}'
+                                : 'Önizleme',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Spacer(),
+                    // Floating Music Badge (Tap opens song trim tab)
+                    GestureDetector(
+                      onTap: () {
+                        if (_bgMusicFile == null) {
+                          _pickMusic();
+                        } else {
+                          setState(() => _activeEditorTab = 1);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: _bgMusicFile != null
+                              ? AppColors.accent.withValues(alpha: 0.92)
+                              : Colors.black.withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: AppColors.accent,
+                            width: 1.2,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.accent.withValues(alpha: 0.35),
+                              blurRadius: 6,
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _bgMusicFile != null
+                                  ? Icons.audiotrack_rounded
+                                  : Icons.library_music_rounded,
+                              color: _bgMusicFile != null ? Colors.white : AppColors.accent,
+                              size: 13,
+                            ),
+                            const SizedBox(width: 5),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 110),
+                              child: Text(
+                                _bgMusicFile != null
+                                    ? (_bgMusicName ?? 'Müzik')
+                                    : '🎵 + Müzik Ekle',
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // Floating Bottom Overlay (Quick Replay Button)
+            if (!_isDrawingMode)
+              Positioned(
+                bottom: 10,
+                right: 10,
+                child: GestureDetector(
+                  onTap: () {
+                    _seekMergedPosition(Duration.zero);
+                    if (!_isPlaying) _togglePlayPause();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
                     decoration: BoxDecoration(
                       color: Colors.black.withValues(alpha: 0.75),
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
+                      border: Border.all(color: Colors.white24),
                     ),
-                    child: Row(
+                    child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.auto_awesome_motion_rounded,
-                            color: AppColors.accent, size: 13),
-                        const SizedBox(width: 5),
+                        Icon(Icons.replay_rounded, color: AppColors.accent, size: 14),
+                        SizedBox(width: 4),
                         Text(
-                          _clips.length > 1
-                              ? 'Klip ${_playingClipIndex + 1}/${_clips.length}'
-                              : 'Önizleme',
-                          style: const TextStyle(
+                          'Baştan',
+                          style: TextStyle(
                             color: Colors.white,
                             fontSize: 11,
                             fontWeight: FontWeight.bold,
@@ -1066,101 +2242,255 @@ class _VideoEditorScreenState extends State<VideoEditorScreen> {
                       ],
                     ),
                   ),
-                  const Spacer(),
-                  // Floating Music Badge (Tap opens song trim tab)
-                  GestureDetector(
-                    onTap: () {
-                      if (_bgMusicFile == null) {
-                        _pickMusic();
-                      } else {
-                        setState(() => _activeEditorTab = 1);
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: _bgMusicFile != null
-                            ? AppColors.accent.withValues(alpha: 0.92)
-                            : Colors.black.withValues(alpha: 0.75),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: AppColors.accent,
-                          width: 1.2,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppColors.accent.withValues(alpha: 0.35),
-                            blurRadius: 6,
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _bgMusicFile != null
-                                ? Icons.audiotrack_rounded
-                                : Icons.library_music_rounded,
-                            color: _bgMusicFile != null ? Colors.white : AppColors.accent,
-                            size: 13,
-                          ),
-                          const SizedBox(width: 5),
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 110),
-                            child: Text(
-                              _bgMusicFile != null
-                                  ? (_bgMusicName ?? 'Müzik')
-                                  : '🎵 + Müzik Ekle',
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- UI COMPONENT: FLOATING SIZE SLIDER ---
+  Widget _buildFloatingSizeSlider(OverlayItem selectedItem) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1F2C34).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.accent.withValues(alpha: 0.5), width: 1.2),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 8, offset: const Offset(0, 3)),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.aspect_ratio_rounded, color: AppColors.accent, size: 18),
+          const SizedBox(width: 6),
+          const Text('Boyut:', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+          IconButton(
+            icon: const Icon(Icons.remove_circle_outline_rounded, color: Colors.white, size: 20),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: () {
+              setState(() {
+                selectedItem.scale = (selectedItem.scale - 0.15).clamp(0.4, 4.0);
+              });
+            },
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                thumbColor: AppColors.accent,
+                activeTrackColor: AppColors.accent,
+                inactiveTrackColor: Colors.white24,
+                trackHeight: 3,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+              ),
+              child: Slider(
+                value: selectedItem.scale,
+                min: 0.4,
+                max: 3.5,
+                onChanged: (val) {
+                  setState(() {
+                    selectedItem.scale = val;
+                  });
+                },
               ),
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.white, size: 20),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: () {
+              setState(() {
+                selectedItem.scale = (selectedItem.scale + 0.15).clamp(0.4, 4.0);
+              });
+            },
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '${(selectedItem.scale * 100).round()}%',
+            style: const TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(width: 8),
+          GestureDetector(
+            onTap: () => setState(() => _selectedOverlayId = null),
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: const BoxDecoration(
+                color: Colors.white12,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.check, color: Colors.white, size: 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-            // Floating Bottom Overlay (Quick Replay Button)
-            Positioned(
-              bottom: 10,
-              right: 10,
-              child: GestureDetector(
-                onTap: () {
-                  _seekMergedPosition(Duration.zero);
-                  if (!_isPlaying) _togglePlayPause();
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.75),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: Colors.white24),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.replay_rounded, color: AppColors.accent, size: 14),
-                      SizedBox(width: 4),
-                      Text(
-                        'Baştan',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
+  // --- UI COMPONENT: OVERLAY WIDGET (DRAG, ROTATE, PINCH-TO-ZOOM, EDIT & DELETE) ---
+  Widget _buildOverlayWidget(OverlayItem item) {
+    final isSelected = _selectedOverlayId == item.id;
+
+    Widget content;
+    if (item.type == OverlayType.emoji) {
+      content = Text(
+        item.text,
+        style: TextStyle(fontSize: item.fontSize),
+      );
+    } else if (item.type == OverlayType.location) {
+      content = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.black.withValues(alpha: 0.75),
+              const Color(0xFF1F2C34).withValues(alpha: 0.85),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.callRed.withValues(alpha: 0.8), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.location_on_rounded, color: AppColors.callRed, size: 18),
+            const SizedBox(width: 4),
+            Text(
+              item.text.replaceAll('📍', '').trim(),
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: item.fontSize,
+              ),
+            ),
+          ],
+        ),
+      );
+    } else {
+      // Text Overlay
+      content = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: item.backgroundColor,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          item.text,
+          style: TextStyle(
+            color: item.color,
+            fontSize: item.fontSize,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      );
+    }
+
+    final transformedContent = Transform(
+      alignment: Alignment.center,
+      transform: Matrix4.identity()
+        ..scale(item.scale, item.scale)
+        ..rotateZ(item.rotation),
+      child: content,
+    );
+
+    return Positioned(
+      left: item.position.dx,
+      top: item.position.dy,
+      child: GestureDetector(
+        onScaleStart: (details) {
+          _activeOverlayBaseScale = item.scale;
+          _activeOverlayBaseRotation = item.rotation;
+          setState(() {
+            _selectedOverlayId = item.id;
+          });
+        },
+        onScaleUpdate: (details) {
+          setState(() {
+            _selectedOverlayId = item.id;
+            item.position += details.focalPointDelta;
+            if (details.scale != 1.0) {
+              item.scale = (_activeOverlayBaseScale * details.scale).clamp(0.4, 4.0);
+            }
+            if (details.rotation != 0.0) {
+              item.rotation = _activeOverlayBaseRotation + details.rotation;
+            }
+          });
+        },
+        onTap: () {
+          setState(() {
+            _selectedOverlayId = (_selectedOverlayId == item.id) ? null : item.id;
+          });
+          if (item.type == OverlayType.text) {
+            _openTextDialog(existing: item);
+          }
+        },
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
+              decoration: isSelected
+                  ? BoxDecoration(
+                      border: Border.all(color: AppColors.accent, width: 1.5),
+                      borderRadius: BorderRadius.circular(8),
+                    )
+                  : null,
+              child: transformedContent,
+            ),
+            // Delete button (Top Right)
+            if (isSelected)
+              Positioned(
+                top: -12,
+                right: -12,
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _overlays.removeWhere((o) => o.id == item.id);
+                      _selectedOverlayId = null;
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: AppColors.callRed,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.close, color: Colors.white, size: 14),
                   ),
                 ),
               ),
-            ),
+            // Resize handle (Bottom Right)
+            if (isSelected)
+              Positioned(
+                bottom: -12,
+                right: -12,
+                child: GestureDetector(
+                  onPanUpdate: (details) {
+                    setState(() {
+                      final delta = (details.delta.dx + details.delta.dy) * 0.015;
+                      item.scale = (item.scale + delta).clamp(0.4, 4.0);
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: AppColors.accent,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.open_in_full_rounded, color: Colors.black, size: 14),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
