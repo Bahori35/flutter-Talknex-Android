@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:video_player/video_player.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../../constants/app_colors.dart';
 import '../../models/story_model.dart';
 import '../../models/user_model.dart';
@@ -33,6 +35,10 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
   final CustomChatService _chatService = CustomChatService();
   bool _isPaused = false;
 
+  VideoPlayerController? _videoController;
+  AudioPlayer? _audioPlayer;
+  bool _isVideoLoading = false;
+
   @override
   void initState() {
     super.initState();
@@ -53,19 +59,75 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
     _startCurrentStory();
   }
 
-  void _startCurrentStory() {
+  Future<void> _disposeMediaControllers() async {
+    try {
+      await _videoController?.pause();
+      await _videoController?.dispose();
+    } catch (_) {}
+    _videoController = null;
+
+    try {
+      await _audioPlayer?.stop();
+      await _audioPlayer?.dispose();
+    } catch (_) {}
+    _audioPlayer = null;
+  }
+
+  Future<void> _startCurrentStory() async {
     _animController.stop();
     _animController.reset();
+
+    await _disposeMediaControllers();
 
     final group = widget.storyGroups[_currentGroupIndex];
     if (_currentStoryIndex < group.stories.length) {
       final story = group.stories[_currentStoryIndex];
+
       // Mark as viewed
       final viewerId = int.tryParse(widget.currentUser.uid) ?? 0;
       if (viewerId > 0 && story.userId != viewerId) {
         _chatService.markStoryViewed(story.id, viewerId);
       }
-      _animController.forward();
+
+      final isVideo = story.mediaType == 'video' || story.mediaUrl.endsWith('.mp4');
+      final isAudio = story.mediaType == 'audio' || story.mediaUrl.endsWith('.m4a') || story.mediaUrl.endsWith('.mp3');
+
+      if (isVideo) {
+        setState(() => _isVideoLoading = true);
+        try {
+          final uri = Uri.parse(story.mediaUrl);
+          _videoController = VideoPlayerController.networkUrl(uri);
+          await _videoController!.initialize();
+          final duration = _videoController!.value.duration;
+          _animController.duration = duration > Duration.zero ? duration : const Duration(seconds: 10);
+          await _videoController!.play();
+          if (mounted) setState(() => _isVideoLoading = false);
+        } catch (e) {
+          debugPrint('Story video error: $e');
+          _animController.duration = const Duration(seconds: 5);
+          if (mounted) setState(() => _isVideoLoading = false);
+        }
+      } else if (isAudio) {
+        try {
+          _audioPlayer = AudioPlayer();
+          _animController.duration = const Duration(seconds: 15);
+          await _audioPlayer!.play(UrlSource(story.mediaUrl));
+          _audioPlayer!.onDurationChanged.listen((dur) {
+            if (mounted && dur > Duration.zero) {
+              _animController.duration = dur;
+            }
+          });
+        } catch (e) {
+          debugPrint('Story audio error: $e');
+          _animController.duration = const Duration(seconds: 5);
+        }
+      } else {
+        _animController.duration = const Duration(seconds: 5);
+      }
+
+      if (mounted) {
+        _animController.forward();
+      }
     }
   }
 
@@ -126,6 +188,8 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
       _isPaused = true;
     });
     _animController.stop();
+    _videoController?.pause();
+    _audioPlayer?.pause();
   }
 
   void _resumeStory() {
@@ -133,6 +197,8 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
       _isPaused = false;
     });
     _animController.forward();
+    _videoController?.play();
+    _audioPlayer?.resume();
   }
 
   void _deleteStory(StoryItem story) async {
@@ -177,6 +243,7 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
 
   @override
   void dispose() {
+    _disposeMediaControllers();
     _animController.dispose();
     _pageController.dispose();
     super.dispose();
@@ -191,6 +258,8 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
         : null;
 
     final isMyStory = currentGroup.userId.toString() == widget.currentUser.uid;
+    final isVideo = currentStory != null && (currentStory.mediaType == 'video' || currentStory.mediaUrl.endsWith('.mp4'));
+    final isAudio = currentStory != null && (currentStory.mediaType == 'audio' || currentStory.mediaUrl.endsWith('.m4a') || currentStory.mediaUrl.endsWith('.mp3'));
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -208,8 +277,70 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Story Media (Image)
-            if (currentStory != null)
+            // 1. VIDEO STORY
+            if (currentStory != null && isVideo) ...[
+              if (_videoController != null && _videoController!.value.isInitialized)
+                Center(
+                  child: AspectRatio(
+                    aspectRatio: _videoController!.value.aspectRatio,
+                    child: VideoPlayer(_videoController!),
+                  ),
+                )
+              else
+                const Center(child: CircularProgressIndicator(color: AppColors.primaryLight)),
+            ]
+            // 2. AUDIO / MUSIC / VOICE STORY
+            else if (currentStory != null && isAudio) ...[
+              Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF8A2387), Color(0xFFE94057), Color(0xFFF27121)],
+                  ),
+                ),
+                child: Center(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 32),
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.4),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.music_note_rounded, color: Colors.white, size: 54),
+                        const SizedBox(height: 16),
+                        Text(
+                          currentStory.caption.isNotEmpty ? currentStory.caption : 'Sesli Durum',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: List.generate(12, (idx) {
+                            return Container(
+                              width: 3.5,
+                              height: (12.0 + (idx % 3 == 0 ? 24 : 10)),
+                              margin: const EdgeInsets.symmetric(horizontal: 2.5),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            );
+                          }),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ]
+            // 3. IMAGE / TEXT / COLLAGE STORY
+            else if (currentStory != null) ...[
               Center(
                 child: CachedNetworkImage(
                   imageUrl: currentStory.mediaUrl,
@@ -222,6 +353,7 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
                   ),
                 ),
               ),
+            ],
 
             // Top Gradient Overlay for readability
             Positioned(
@@ -244,7 +376,7 @@ class _StoryViewScreenState extends State<StoryViewScreen> with SingleTickerProv
             ),
 
             // Bottom Gradient for Caption
-            if (currentStory != null && currentStory.caption.isNotEmpty)
+            if (currentStory != null && currentStory.caption.isNotEmpty && !isAudio)
               Positioned(
                 bottom: 0,
                 left: 0,
