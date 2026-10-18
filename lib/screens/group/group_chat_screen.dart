@@ -3,6 +3,7 @@ import 'dart:io';
 import '../../services/voice_record_service.dart';
 import '../chat/widgets/audio_message_bubble.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
