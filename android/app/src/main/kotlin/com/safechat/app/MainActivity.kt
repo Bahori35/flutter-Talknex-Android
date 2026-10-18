@@ -7,6 +7,7 @@ import android.media.MediaMetadataRetriever
 import android.media.MediaRecorder
 import android.os.Build
 import android.net.Uri
+import android.provider.MediaStore
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -239,6 +240,79 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.safechat.app/gallery")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "getGalleryMedia") {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val limit = call.argument<Int>("limit") ?: 150
+                            val mediaList = mutableListOf<Map<String, Any?>>()
+
+                            val projection = arrayOf(
+                                MediaStore.Files.FileColumns._ID,
+                                MediaStore.Files.FileColumns.DATA,
+                                MediaStore.Files.FileColumns.MEDIA_TYPE,
+                                MediaStore.Files.FileColumns.DATE_ADDED,
+                                MediaStore.Video.VideoColumns.DURATION
+                            )
+
+                            val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE} = ?"
+                            val selectionArgs = arrayOf(
+                                MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
+                                MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
+                            )
+                            val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
+
+                            val queryUri = MediaStore.Files.getContentUri("external")
+                            val cursor = applicationContext.contentResolver.query(
+                                queryUri,
+                                projection,
+                                selection,
+                                selectionArgs,
+                                sortOrder
+                            )
+
+                            cursor?.use { c ->
+                                val dataCol = c.getColumnIndex(MediaStore.Files.FileColumns.DATA)
+                                val typeCol = c.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE)
+                                val durCol = c.getColumnIndex(MediaStore.Video.VideoColumns.DURATION)
+
+                                var count = 0
+                                while (c.moveToNext() && count < limit) {
+                                    val path = if (dataCol != -1) c.getString(dataCol) else null
+                                    if (path != null) {
+                                        val f = File(path)
+                                        if (f.exists() && f.length() > 0) {
+                                            val mediaType = if (typeCol != -1) c.getInt(typeCol) else 1
+                                            val isVideo = mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
+                                            val durationMs = if (isVideo && durCol != -1) c.getLong(durCol) else 0L
+
+                                            mediaList.add(mapOf(
+                                                "path" to path,
+                                                "isVideo" to isVideo,
+                                                "durationMs" to durationMs
+                                            ))
+                                            count++
+                                        }
+                                    }
+                                }
+                            }
+
+                            withContext(Dispatchers.Main) {
+                                result.success(mediaList)
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "getGalleryMedia error", e)
+                            withContext(Dispatchers.Main) {
+                                result.success(emptyList<Map<String, Any?>>())
+                            }
+                        }
+                    }
+                } else {
+                    result.notImplemented()
                 }
             }
     }

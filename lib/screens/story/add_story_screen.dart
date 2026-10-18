@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import '../../constants/app_colors.dart';
 import '../../models/user_model.dart';
@@ -14,7 +16,17 @@ import 'widgets/voice_story_creator.dart';
 import 'widgets/layout_story_creator.dart';
 import 'widgets/music_story_creator.dart';
 
-enum MediaFilter { all, photos, videos }
+class GalleryMediaItem {
+  final String path;
+  final bool isVideo;
+  final int durationMs;
+
+  GalleryMediaItem({
+    required this.path,
+    required this.isVideo,
+    this.durationMs = 0,
+  });
+}
 
 class AddStoryScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -26,14 +38,97 @@ class AddStoryScreen extends StatefulWidget {
 }
 
 class _AddStoryScreenState extends State<AddStoryScreen> {
+  static const MethodChannel _galleryChannel = MethodChannel('com.safechat.app/gallery');
   final ImagePicker _picker = ImagePicker();
   final CustomChatService _chatService = CustomChatService();
 
-  MediaFilter _currentFilter = MediaFilter.all;
-  bool _isLoading = false;
-  String _loadingMessage = 'Durum paylaşılıyor...';
+  List<GalleryMediaItem> _galleryMedia = [];
+  bool _isLoadingGallery = true;
+  bool _isPublishing = false;
+  String _publishingMessage = 'Durum paylaşılıyor...';
 
-  // 1. OPEN CAMERA (Photo or Video)
+  @override
+  void initState() {
+    super.initState();
+    _loadDeviceGalleryMedia();
+  }
+
+  Future<void> _loadDeviceGalleryMedia() async {
+    setState(() => _isLoadingGallery = true);
+
+    try {
+      // 1. Request permissions
+      if (Platform.isAndroid) {
+        await [
+          Permission.photos,
+          Permission.videos,
+          Permission.storage,
+        ].request();
+      }
+
+      // 2. Fetch from native MediaStore via method channel
+      final List<dynamic>? rawList = await _galleryChannel.invokeListMethod('getGalleryMedia', {'limit': 150});
+      final List<GalleryMediaItem> items = [];
+
+      if (rawList != null && rawList.isNotEmpty) {
+        for (final entry in rawList) {
+          if (entry is Map) {
+            final p = entry['path']?.toString();
+            if (p != null && File(p).existsSync()) {
+              items.add(GalleryMediaItem(
+                path: p,
+                isVideo: entry['isVideo'] == true,
+                durationMs: (entry['durationMs'] as num?)?.toInt() ?? 0,
+              ));
+            }
+          }
+        }
+      }
+
+      // 3. Fallback: scan common storage paths if MediaStore returned empty
+      if (items.isEmpty && Platform.isAndroid) {
+        final commonPaths = [
+          '/storage/emulated/0/DCIM/Camera',
+          '/storage/emulated/0/Pictures',
+          '/storage/emulated/0/Movies',
+          '/storage/emulated/0/Download',
+        ];
+
+        for (final dirPath in commonPaths) {
+          final dir = Directory(dirPath);
+          if (dir.existsSync()) {
+            try {
+              final files = dir.listSync().whereType<File>().toList();
+              for (final f in files) {
+                final lower = f.path.toLowerCase();
+                if (lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png') || lower.endsWith('.webp')) {
+                  items.add(GalleryMediaItem(path: f.path, isVideo: false));
+                } else if (lower.endsWith('.mp4') || lower.endsWith('.mkv') || lower.endsWith('.mov')) {
+                  items.add(GalleryMediaItem(path: f.path, isVideo: true));
+                }
+                if (items.length >= 100) break;
+              }
+            } catch (_) {}
+          }
+          if (items.length >= 100) break;
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _galleryMedia = items;
+          _isLoadingGallery = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading gallery: $e');
+      if (mounted) {
+        setState(() => _isLoadingGallery = false);
+      }
+    }
+  }
+
+  // 1. OPEN CAMERA
   Future<void> _openCamera() async {
     final result = await Navigator.push<CameraCaptureResult>(
       context,
@@ -45,7 +140,6 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
     if (result == null || !mounted) return;
 
     if (result.isVideo) {
-      // Open video editor for captured video
       final editedVideo = await Navigator.push<VideoEditorResult>(
         context,
         MaterialPageRoute(
@@ -62,52 +156,35 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         await _publishMediaStory(result.file, result.caption, isVideo: true);
       }
     } else {
-      // Photo taken -> already processed in PhotoEditorScreen inside CameraScreen
       await _publishMediaStory(result.file, result.caption, isVideo: false);
     }
   }
 
-  // 2. OPEN GALLERY FOR PHOTO
-  Future<void> _pickPhotoFromGallery() async {
-    try {
-      final picked = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 90);
-      if (picked == null || !mounted) return;
+  // 2. TAP A GALLERY PHOTO ITEM
+  Future<void> _onTapPhotoItem(String filePath) async {
+    final editorResult = await Navigator.push<PhotoEditorResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PhotoEditorScreen(imageFile: File(filePath)),
+      ),
+    );
 
-      final editorResult = await Navigator.push<PhotoEditorResult>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PhotoEditorScreen(imageFile: File(picked.path)),
-        ),
-      );
-
-      if (editorResult != null && mounted) {
-        await _publishMediaStory(editorResult.file, editorResult.caption, isVideo: false);
-      }
-    } catch (e) {
-      debugPrint('Error picking photo: $e');
+    if (editorResult != null && mounted) {
+      await _publishMediaStory(editorResult.file, editorResult.caption, isVideo: false);
     }
   }
 
-  // 3. OPEN GALLERY FOR VIDEO
-  Future<void> _pickVideoFromGallery() async {
-    try {
-      final picked = await _picker.pickVideo(source: ImageSource.gallery);
-      if (picked == null || !mounted) return;
+  // 3. TAP A GALLERY VIDEO ITEM
+  Future<void> _onTapVideoItem(String filePath) async {
+    final editedVideo = await Navigator.push<VideoEditorResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoEditorScreen(initialVideoFile: File(filePath)),
+      ),
+    );
 
-      final editedVideo = await Navigator.push<VideoEditorResult>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => VideoEditorScreen(initialVideoFile: File(picked.path)),
-        ),
-      );
-
-      if (editedVideo != null && mounted) {
-        await _publishMediaStory(editedVideo.file, editedVideo.caption, isVideo: true);
-      } else if (mounted) {
-        await _publishMediaStory(File(picked.path), '', isVideo: true);
-      }
-    } catch (e) {
-      debugPrint('Error picking video: $e');
+    if (editedVideo != null && mounted) {
+      await _publishMediaStory(editedVideo.file, editedVideo.caption, isVideo: true);
     }
   }
 
@@ -128,8 +205,8 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
   // PUBLISH STORY TO SERVER
   Future<void> _publishMediaStory(File file, String caption, {required bool isVideo}) async {
     setState(() {
-      _isLoading = true;
-      _loadingMessage = isVideo ? 'Video durumu yükleniyor...' : 'Fotoğraf durumu yükleniyor...';
+      _isPublishing = true;
+      _publishingMessage = isVideo ? 'Video durumu yükleniyor...' : 'Fotoğraf durumu yükleniyor...';
     });
 
     try {
@@ -173,7 +250,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) setState(() => _isPublishing = false);
     }
   }
 
@@ -210,6 +287,13 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
     if (result == true && mounted) Navigator.pop(context, true);
   }
 
+  String _formatDuration(int ms) {
+    final sec = (ms / 1000).round();
+    final m = sec ~/ 60;
+    final s = (sec % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -220,7 +304,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Top Drag Handle & Title Bar (Matching WhatsApp Screenshot)
+                // Top Drag Handle & Title Bar (WhatsApp Style)
                 Center(
                   child: Container(
                     margin: const EdgeInsets.only(top: 8, bottom: 4),
@@ -252,9 +336,9 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
 
-                // Action Row (Metin, Müzik, Yerleşim, Ses) - Identical to WhatsApp
+                // Top Action Buttons (Metin, Müzik, Yerleşim, Ses) - Kept as requested
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
@@ -283,165 +367,117 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
 
-                // Dropdown Header: "Son kullanılanlar ▼"
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-                  child: PopupMenuButton<MediaFilter>(
-                    color: const Color(0xFF1E2128),
-                    offset: const Offset(0, 30),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    onSelected: (val) => setState(() => _currentFilter = val),
-                    itemBuilder: (ctx) => [
-                      const PopupMenuItem(
-                        value: MediaFilter.all,
-                        child: Text('Son kullanılanlar (Tümü)', style: TextStyle(color: Colors.white)),
-                      ),
-                      const PopupMenuItem(
-                        value: MediaFilter.photos,
-                        child: Text('Fotoğraflar', style: TextStyle(color: Colors.white)),
-                      ),
-                      const PopupMenuItem(
-                        value: MediaFilter.videos,
-                        child: Text('Videolar', style: TextStyle(color: Colors.white)),
-                      ),
-                    ],
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          _getFilterLabel(),
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        const Icon(Icons.arrow_drop_down_rounded, color: Colors.white70, size: 24),
-                      ],
-                    ),
-                  ),
-                ),
-
-                // Media Grid
+                // Direct Gallery Grid (Top Left: Camera, Remaining: Device Photos & Videos)
                 Expanded(
-                  child: GridView.count(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 3,
-                    mainAxisSpacing: 3,
-                    padding: const EdgeInsets.symmetric(horizontal: 2),
-                    children: [
-                      // 1. KAMERA TILE (Matching green camera icon in user screenshot)
-                      GestureDetector(
-                        onTap: _openCamera,
-                        child: Container(
-                          color: const Color(0xFF181B20),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: const [
-                              Icon(
-                                Icons.camera_alt_outlined,
-                                color: Color(0xFF00D757), // WhatsApp Camera Green
-                                size: 36,
-                              ),
-                              SizedBox(height: 8),
-                              Text(
-                                'Kamera',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
+                  child: _isLoadingGallery
+                      ? const Center(
+                          child: CircularProgressIndicator(color: AppColors.primaryLight),
+                        )
+                      : GridView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            crossAxisSpacing: 3,
+                            mainAxisSpacing: 3,
                           ),
-                        ),
-                      ),
-
-                      // 2. FOTOĞRAF GALERİSİ TILE
-                      if (_currentFilter != MediaFilter.videos)
-                        GestureDetector(
-                          onTap: _pickPhotoFromGallery,
-                          child: Container(
-                            color: const Color(0xFF181B20),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: const [
-                                Icon(
-                                  Icons.photo_library_outlined,
-                                  color: AppColors.accent,
-                                  size: 36,
-                                ),
-                                SizedBox(height: 8),
-                                Text(
-                                  'Fotoğraf',
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
+                          // 1st item is always Camera, rest are gallery media
+                          itemCount: 1 + _galleryMedia.length,
+                          itemBuilder: (context, index) {
+                            // 1. TOP-LEFT CAMERA TILE (index 0)
+                            if (index == 0) {
+                              return GestureDetector(
+                                onTap: _openCamera,
+                                child: Container(
+                                  color: const Color(0xFF181B20),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: const [
+                                      Icon(
+                                        Icons.camera_alt_outlined,
+                                        color: Color(0xFF00D757), // WhatsApp Camera Green
+                                        size: 38,
+                                      ),
+                                      SizedBox(height: 8),
+                                      Text(
+                                        'Kamera',
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                        ),
+                              );
+                            }
 
-                      // 3. VİDEO GALERİSİ TILE
-                      if (_currentFilter != MediaFilter.photos)
-                        GestureDetector(
-                          onTap: _pickVideoFromGallery,
-                          child: Container(
-                            color: const Color(0xFF181B20),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: const [
-                                Icon(
-                                  Icons.videocam_outlined,
-                                  color: Color(0xFFFF5252),
-                                  size: 38,
-                                ),
-                                SizedBox(height: 8),
-                                Text(
-                                  'Video',
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
+                            // 2. REAL DEVICE GALLERY MEDIA ITEMS (index 1 to N)
+                            final mediaItem = _galleryMedia[index - 1];
+                            return GestureDetector(
+                              onTap: () {
+                                if (mediaItem.isVideo) {
+                                  _onTapVideoItem(mediaItem.path);
+                                } else {
+                                  _onTapPhotoItem(mediaItem.path);
+                                }
+                              },
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  // Image / Video Thumbnail
+                                  Image.file(
+                                    File(mediaItem.path),
+                                    fit: BoxFit.cover,
+                                    cacheWidth: 320,
+                                    errorBuilder: (_, __, ___) => Container(
+                                      color: const Color(0xFF1E2128),
+                                      child: const Icon(Icons.broken_image, color: Colors.white24),
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
 
-                      // Quick Helper Tiles to pick specific types
-                      _buildQuickActionTile(
-                        icon: Icons.edit_note_rounded,
-                        title: 'Metin Yaz',
-                        color: Colors.purpleAccent,
-                        onTap: _openTextCreator,
-                      ),
-                      _buildQuickActionTile(
-                        icon: Icons.mic_external_on_rounded,
-                        title: 'Ses Kaydet',
-                        color: Colors.orangeAccent,
-                        onTap: _openVoiceCreator,
-                      ),
-                      _buildQuickActionTile(
-                        icon: Icons.auto_awesome_mosaic_rounded,
-                        title: 'Kolaj Yap',
-                        color: Colors.tealAccent,
-                        onTap: _openLayoutCreator,
-                      ),
-                    ],
-                  ),
+                                  // Video Badge (Duration & Icon)
+                                  if (mediaItem.isVideo)
+                                    Positioned(
+                                      bottom: 6,
+                                      left: 6,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withValues(alpha: 0.65),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.videocam_rounded, color: Colors.white, size: 14),
+                                            if (mediaItem.durationMs > 0) ...[
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                _formatDuration(mediaItem.durationMs),
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
                 ),
               ],
             ),
 
-            // Bottom Right Floating Multi-Select Button (WhatsApp style album icon)
+            // Bottom Right Floating Multi-Select Button (WhatsApp Album icon)
             Positioned(
               bottom: 24,
               right: 20,
@@ -471,8 +507,8 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
               ),
             ),
 
-            // Loading Overlay
-            if (_isLoading)
+            // Loading / Publishing Overlay
+            if (_isPublishing)
               Container(
                 color: Colors.black87,
                 child: Center(
@@ -482,7 +518,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                       const CircularProgressIndicator(color: AppColors.primaryLight),
                       const SizedBox(height: 16),
                       Text(
-                        _loadingMessage,
+                        _publishingMessage,
                         style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                       ),
                     ],
@@ -493,18 +529,6 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         ),
       ),
     );
-  }
-
-  String _getFilterLabel() {
-    switch (_currentFilter) {
-      case MediaFilter.photos:
-        return 'Fotoğraflar';
-      case MediaFilter.videos:
-        return 'Videolar';
-      case MediaFilter.all:
-      default:
-        return 'Son kullanılanlar';
-    }
   }
 
   Widget _buildActionCircle({
@@ -544,35 +568,6 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildQuickActionTile({
-    required IconData icon,
-    required String title,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        color: const Color(0xFF181B20),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: color, size: 34),
-            const SizedBox(height: 8),
-            Text(
-              title,
-              style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
