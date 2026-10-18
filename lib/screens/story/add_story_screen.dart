@@ -46,14 +46,18 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
 
     if (result.isVideo) {
       // Open video editor for captured video
-      final editedVideo = await Navigator.push<File>(
+      final editedVideo = await Navigator.push<VideoEditorResult>(
         context,
         MaterialPageRoute(
-          builder: (_) => VideoEditorScreen(videoFile: result.file),
+          builder: (_) => VideoEditorScreen(initialVideoFile: result.file),
         ),
       );
       if (editedVideo != null && mounted) {
-        await _publishMediaStory(editedVideo, result.caption, isVideo: true);
+        await _publishMediaStory(
+          editedVideo.file,
+          editedVideo.caption.isNotEmpty ? editedVideo.caption : result.caption,
+          isVideo: true,
+        );
       } else if (mounted) {
         await _publishMediaStory(result.file, result.caption, isVideo: true);
       }
@@ -90,15 +94,15 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
       final picked = await _picker.pickVideo(source: ImageSource.gallery);
       if (picked == null || !mounted) return;
 
-      final editedVideo = await Navigator.push<File>(
+      final editedVideo = await Navigator.push<VideoEditorResult>(
         context,
         MaterialPageRoute(
-          builder: (_) => VideoEditorScreen(videoFile: File(picked.path)),
+          builder: (_) => VideoEditorScreen(initialVideoFile: File(picked.path)),
         ),
       );
 
       if (editedVideo != null && mounted) {
-        await _publishMediaStory(editedVideo, '', isVideo: true);
+        await _publishMediaStory(editedVideo.file, editedVideo.caption, isVideo: true);
       } else if (mounted) {
         await _publishMediaStory(File(picked.path), '', isVideo: true);
       }
