@@ -40,6 +40,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.roundToInt
 
 @OptIn(UnstableApi::class)
@@ -245,78 +246,167 @@ class MainActivity : FlutterActivity() {
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.safechat.app/gallery")
             .setMethodCallHandler { call, result ->
-                if (call.method == "getGalleryMedia") {
-                    CoroutineScope(Dispatchers.IO).launch {
-                        try {
-                            val limit = call.argument<Int>("limit") ?: 400
-                            val mediaList = mutableListOf<Map<String, Any?>>()
+                when (call.method) {
+                    "getGalleryMedia" -> {
+                        CoroutineScope(Dispatchers.IO).launch {
+                            try {
+                                val limit = call.argument<Int>("limit") ?: 400
+                                val mediaList = mutableListOf<Map<String, Any?>>()
 
-                            val projection = arrayOf(
-                                MediaStore.Files.FileColumns._ID,
-                                MediaStore.Files.FileColumns.DATA,
-                                MediaStore.Files.FileColumns.MEDIA_TYPE,
-                                MediaStore.Files.FileColumns.DATE_ADDED,
-                                MediaStore.Video.VideoColumns.DURATION
-                            )
+                                val projection = arrayOf(
+                                    MediaStore.Files.FileColumns._ID,
+                                    MediaStore.Files.FileColumns.DATA,
+                                    MediaStore.Files.FileColumns.MEDIA_TYPE,
+                                    MediaStore.Files.FileColumns.DATE_ADDED,
+                                    MediaStore.Video.VideoColumns.DURATION
+                                )
 
-                            val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE} = ?"
-                            val selectionArgs = arrayOf(
-                                MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
-                                MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
-                            )
-                            val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
+                                val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE} = ?"
+                                val selectionArgs = arrayOf(
+                                    MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
+                                    MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
+                                )
+                                val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
 
-                            val queryUri = MediaStore.Files.getContentUri("external")
-                            val cursor = applicationContext.contentResolver.query(
-                                queryUri,
-                                projection,
-                                selection,
-                                selectionArgs,
-                                sortOrder
-                            )
+                                val queryUri = MediaStore.Files.getContentUri("external")
+                                val cursor = applicationContext.contentResolver.query(
+                                    queryUri,
+                                    projection,
+                                    selection,
+                                    selectionArgs,
+                                    sortOrder
+                                )
 
-                            cursor?.use { c ->
-                                val dataCol = c.getColumnIndex(MediaStore.Files.FileColumns.DATA)
-                                val typeCol = c.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE)
-                                val durCol = c.getColumnIndex(MediaStore.Video.VideoColumns.DURATION)
+                                val thumbDir = File(applicationContext.cacheDir, "video_thumbs").apply {
+                                    if (!exists()) mkdirs()
+                                }
 
-                                var count = 0
-                                while (c.moveToNext() && count < limit) {
-                                    val path = if (dataCol != -1) c.getString(dataCol) else null
-                                    if (path != null) {
-                                        val f = File(path)
-                                        if (f.exists() && f.length() > 0) {
-                                            val mediaType = if (typeCol != -1) c.getInt(typeCol) else 1
-                                            val isVideo = mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
-                                            val durationMs = if (isVideo && durCol != -1) c.getLong(durCol) else 0L
-                                            val parentFolder = f.parentFile?.name ?: "Diğer"
+                                cursor?.use { c ->
+                                    val dataCol = c.getColumnIndex(MediaStore.Files.FileColumns.DATA)
+                                    val typeCol = c.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE)
+                                    val durCol = c.getColumnIndex(MediaStore.Video.VideoColumns.DURATION)
 
-                                            mediaList.add(mapOf(
-                                                "path" to path,
-                                                "isVideo" to isVideo,
-                                                "durationMs" to durationMs,
-                                                "bucketName" to parentFolder
-                                            ))
-                                            count++
+                                    var count = 0
+                                    var videoThumbCount = 0
+                                    while (c.moveToNext() && count < limit) {
+                                        val path = if (dataCol != -1) c.getString(dataCol) else null
+                                        if (path != null) {
+                                            val f = File(path)
+                                            if (f.exists() && f.length() > 0) {
+                                                val mediaType = if (typeCol != -1) c.getInt(typeCol) else 1
+                                                val isVideo = mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
+                                                val durationMs = if (isVideo && durCol != -1) c.getLong(durCol) else 0L
+                                                val parentFolder = f.parentFile?.name ?: "Diğer"
+
+                                                var thumbnailPath: String? = null
+                                                if (isVideo) {
+                                                    val safeName = "thumb_" + (path.hashCode().toLong() and 0xFFFFFFFFL).toString(16) + ".jpg"
+                                                    val thumbFile = File(thumbDir, safeName)
+                                                    if (thumbFile.exists() && thumbFile.length() > 0) {
+                                                        thumbnailPath = thumbFile.absolutePath
+                                                    } else if (videoThumbCount < 25) {
+                                                        thumbnailPath = getVideoThumbnail(path, applicationContext)
+                                                        if (thumbnailPath != null) {
+                                                            videoThumbCount++
+                                                        }
+                                                    }
+                                                }
+
+                                                mediaList.add(mapOf(
+                                                    "path" to path,
+                                                    "isVideo" to isVideo,
+                                                    "durationMs" to durationMs,
+                                                    "bucketName" to parentFolder,
+                                                    "thumbnailPath" to thumbnailPath
+                                                ))
+                                                count++
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            withContext(Dispatchers.Main) {
-                                result.success(mediaList)
-                            }
-                        } catch (e: Exception) {
-                            android.util.Log.e("MainActivity", "getGalleryMedia error", e)
-                            withContext(Dispatchers.Main) {
-                                result.success(emptyList<Map<String, Any?>>())
+                                withContext(Dispatchers.Main) {
+                                    result.success(mediaList)
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("MainActivity", "getGalleryMedia error", e)
+                                withContext(Dispatchers.Main) {
+                                    result.success(emptyList<Map<String, Any?>>())
+                                }
                             }
                         }
                     }
-                } else {
-                    result.notImplemented()
+                    "getVideoThumbnail" -> {
+                        val path = call.argument<String>("path")
+                        if (path == null) {
+                            result.success(null)
+                            return@setMethodCallHandler
+                        }
+                        CoroutineScope(Dispatchers.IO).launch {
+                            val thumb = getVideoThumbnail(path, applicationContext)
+                            withContext(Dispatchers.Main) {
+                                result.success(thumb)
+                            }
+                        }
+                    }
+                    else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun getVideoThumbnail(videoPath: String, context: Context): String? {
+        return try {
+            val thumbDir = File(context.cacheDir, "video_thumbs")
+            if (!thumbDir.exists()) thumbDir.mkdirs()
+            val safeName = "thumb_" + (videoPath.hashCode().toLong() and 0xFFFFFFFFL).toString(16) + ".jpg"
+            val thumbFile = File(thumbDir, safeName)
+            if (thumbFile.exists() && thumbFile.length() > 0) {
+                return thumbFile.absolutePath
+            }
+
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(videoPath)
+                val rawBitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    retriever.getScaledFrameAtTime(
+                        1000000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                        360,
+                        360
+                    ) ?: retriever.frameAtTime
+                } else {
+                    retriever.frameAtTime
+                }
+
+                if (rawBitmap != null) {
+                    val finalBitmap = if (rawBitmap.width > 360 || rawBitmap.height > 360) {
+                        val maxDim = Math.max(rawBitmap.width, rawBitmap.height)
+                        val scale = 360f / maxDim
+                        val targetW = Math.max(1, (rawBitmap.width * scale).toInt())
+                        val targetH = Math.max(1, (rawBitmap.height * scale).toInt())
+                        val scaled = Bitmap.createScaledBitmap(rawBitmap, targetW, targetH, true)
+                        if (scaled != rawBitmap) rawBitmap.recycle()
+                        scaled
+                    } else {
+                        rawBitmap
+                    }
+
+                    FileOutputStream(thumbFile).use { out ->
+                        finalBitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+                    }
+                    finalBitmap.recycle()
+                    return thumbFile.absolutePath
+                }
+            } finally {
+                try {
+                    retriever.release()
+                } catch (_: Exception) {}
+            }
+            null
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "getVideoThumbnail error for $videoPath", e)
+            null
+        }
     }
 
     private suspend fun applyOverlayToVideoNative(

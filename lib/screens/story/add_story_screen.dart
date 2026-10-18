@@ -21,12 +21,14 @@ class GalleryMediaItem {
   final bool isVideo;
   final int durationMs;
   final String bucketName;
+  String? thumbnailPath;
 
   GalleryMediaItem({
     required this.path,
     required this.isVideo,
     this.durationMs = 0,
     this.bucketName = '',
+    this.thumbnailPath,
   });
 }
 
@@ -102,6 +104,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                 isVideo: entry['isVideo'] == true,
                 durationMs: (entry['durationMs'] as num?)?.toInt() ?? 0,
                 bucketName: entry['bucketName']?.toString() ?? '',
+                thumbnailPath: entry['thumbnailPath']?.toString(),
               ));
             }
           }
@@ -152,6 +155,15 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
     }
   }
 
+  String? _getCover(List<GalleryMediaItem> items) {
+    if (items.isEmpty) return null;
+    final preferred = items.firstWhere(
+      (m) => !m.isVideo || (m.thumbnailPath != null && File(m.thumbnailPath!).existsSync()),
+      orElse: () => items.first,
+    );
+    return preferred.isVideo ? (preferred.thumbnailPath ?? preferred.path) : preferred.path;
+  }
+
   List<AlbumCategory> _buildAlbumList() {
     final List<AlbumCategory> albums = [];
 
@@ -160,7 +172,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
       id: 'all',
       name: 'Son kullanılanlar',
       count: _allMedia.length,
-      coverPath: _allMedia.isNotEmpty ? _allMedia.first.path : null,
+      coverPath: _getCover(_allMedia),
       icon: Icons.history_rounded,
     ));
 
@@ -175,7 +187,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         id: 'camera',
         name: 'Kamera',
         count: cameraItems.length,
-        coverPath: cameraItems.first.path,
+        coverPath: _getCover(cameraItems),
         icon: Icons.photo_camera_rounded,
       ));
     }
@@ -191,7 +203,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         id: 'downloads',
         name: 'İndirilenler',
         count: downloadItems.length,
-        coverPath: downloadItems.first.path,
+        coverPath: _getCover(downloadItems),
         icon: Icons.download_rounded,
       ));
     }
@@ -203,7 +215,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         id: 'videos',
         name: 'Videolar',
         count: videoItems.length,
-        coverPath: videoItems.first.path,
+        coverPath: _getCover(videoItems),
         icon: Icons.videocam_rounded,
       ));
     }
@@ -219,7 +231,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         id: 'screenshots',
         name: 'Ekran Görüntüleri',
         count: screenshotItems.length,
-        coverPath: screenshotItems.first.path,
+        coverPath: _getCover(screenshotItems),
         icon: Icons.screenshot_rounded,
       ));
     }
@@ -235,7 +247,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         id: 'whatsapp',
         name: 'WhatsApp',
         count: waItems.length,
-        coverPath: waItems.first.path,
+        coverPath: _getCover(waItems),
         icon: Icons.chat_bubble_outline_rounded,
       ));
     }
@@ -255,7 +267,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
         id: 'bucket_$bucketName',
         name: bucketName,
         count: bItems.length,
-        coverPath: bItems.first.path,
+        coverPath: _getCover(bItems),
         icon: Icons.folder_outlined,
       ));
     });
@@ -734,15 +746,7 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
                                 fit: StackFit.expand,
                                 children: [
                                   // Image / Video Thumbnail
-                                  Image.file(
-                                    File(mediaItem.path),
-                                    fit: BoxFit.cover,
-                                    cacheWidth: 320,
-                                    errorBuilder: (_, __, ___) => Container(
-                                      color: const Color(0xFF1E2128),
-                                      child: const Icon(Icons.broken_image, color: Colors.white24),
-                                    ),
-                                  ),
+                                  _buildMediaThumbnail(mediaItem),
 
                                   // Video Badge (Duration & Icon)
                                   if (mediaItem.isVideo)
@@ -877,4 +881,107 @@ class _AddStoryScreenState extends State<AddStoryScreen> {
       ),
     );
   }
+
+  Widget _buildMediaThumbnail(GalleryMediaItem mediaItem) {
+    if (!mediaItem.isVideo) {
+      return Image.file(
+        File(mediaItem.path),
+        fit: BoxFit.cover,
+        cacheWidth: 320,
+        errorBuilder: (_, __, ___) => Container(
+          color: const Color(0xFF1E2128),
+          child: const Icon(Icons.broken_image, color: Colors.white24),
+        ),
+      );
+    }
+    return VideoThumbnailTile(item: mediaItem);
+  }
 }
+
+class VideoThumbnailTile extends StatefulWidget {
+  final GalleryMediaItem item;
+
+  const VideoThumbnailTile({super.key, required this.item});
+
+  @override
+  State<VideoThumbnailTile> createState() => _VideoThumbnailTileState();
+}
+
+class _VideoThumbnailTileState extends State<VideoThumbnailTile> {
+  static final Map<String, String> _globalThumbCache = {};
+  static const MethodChannel _galleryChannel = MethodChannel('com.safechat.app/gallery');
+  String? _resolvedThumb;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAndLoadThumbnail();
+  }
+
+  @override
+  void didUpdateWidget(covariant VideoThumbnailTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.path != widget.item.path) {
+      _checkAndLoadThumbnail();
+    }
+  }
+
+  void _checkAndLoadThumbnail() {
+    final cached = widget.item.thumbnailPath ?? _globalThumbCache[widget.item.path];
+    if (cached != null && File(cached).existsSync()) {
+      _resolvedThumb = cached;
+    } else {
+      _resolvedThumb = null;
+      _fetchThumbnail();
+    }
+  }
+
+  Future<void> _fetchThumbnail() async {
+    if (_isLoading) return;
+    _isLoading = true;
+    try {
+      final String? thumb = await _galleryChannel.invokeMethod<String>(
+        'getVideoThumbnail',
+        {'path': widget.item.path},
+      );
+      if (thumb != null && File(thumb).existsSync()) {
+        _globalThumbCache[widget.item.path] = thumb;
+        widget.item.thumbnailPath = thumb;
+        if (mounted) {
+          setState(() {
+            _resolvedThumb = thumb;
+            _isLoading = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_resolvedThumb != null && File(_resolvedThumb!).existsSync()) {
+      return Image.file(
+        File(_resolvedThumb!),
+        fit: BoxFit.cover,
+        cacheWidth: 320,
+        errorBuilder: (_, __, ___) => _buildFallback(),
+      );
+    }
+    return _buildFallback();
+  }
+
+  Widget _buildFallback() {
+    return Container(
+      color: const Color(0xFF1E2128),
+      child: const Center(
+        child: Icon(Icons.videocam_rounded, color: Colors.white24, size: 32),
+      ),
+    );
+  }
+}
+
