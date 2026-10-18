@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.media.MediaRecorder
+import android.os.Build
 import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -42,6 +44,12 @@ import kotlin.math.roundToInt
 @OptIn(UnstableApi::class)
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.safechat.app/video"
+    private val VOICE_CHANNEL = "com.safechat.app/voice"
+
+    private var mediaRecorder: MediaRecorder? = null
+    private var currentVoiceFile: File? = null
+    private var voiceStartTime = 0L
+    private var isRecordingVoice = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -111,6 +119,126 @@ class MainActivity : FlutterActivity() {
                     }
                 } else {
                     result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, VOICE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "startRecording" -> {
+                        try {
+                            if (isRecordingVoice) {
+                                try {
+                                    mediaRecorder?.stop()
+                                    mediaRecorder?.release()
+                                } catch (_: Exception) {}
+                                mediaRecorder = null
+                                isRecordingVoice = false
+                            }
+
+                            val cacheDir = applicationContext.cacheDir
+                            val voiceDir = File(cacheDir, "voice_notes").apply { mkdirs() }
+                            val outputFile = File(voiceDir, "voice_${System.currentTimeMillis()}.m4a")
+                            currentVoiceFile = outputFile
+
+                            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                MediaRecorder(applicationContext)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                MediaRecorder()
+                            }
+
+                            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+                            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                            recorder.setAudioEncodingBitRate(128000)
+                            recorder.setAudioSamplingRate(44100)
+                            recorder.setOutputFile(outputFile.absolutePath)
+                            recorder.prepare()
+                            recorder.start()
+
+                            mediaRecorder = recorder
+                            voiceStartTime = System.currentTimeMillis()
+                            isRecordingVoice = true
+
+                            result.success(outputFile.absolutePath)
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "startRecording error", e)
+                            mediaRecorder = null
+                            isRecordingVoice = false
+                            result.error("RECORD_START_ERROR", e.message ?: "Kayıt başlatılamadı", null)
+                        }
+                    }
+                    "stopRecording" -> {
+                        try {
+                            if (!isRecordingVoice || mediaRecorder == null || currentVoiceFile == null) {
+                                result.success(null)
+                                return@setMethodCallHandler
+                            }
+
+                            val durationMs = System.currentTimeMillis() - voiceStartTime
+                            try {
+                                mediaRecorder?.stop()
+                            } catch (stopErr: Exception) {
+                                android.util.Log.w("MainActivity", "MediaRecorder stop failed (short audio)", stopErr)
+                            } finally {
+                                mediaRecorder?.release()
+                                mediaRecorder = null
+                                isRecordingVoice = false
+                            }
+
+                            val file = currentVoiceFile
+                            if (file != null && file.exists() && file.length() > 0) {
+                                val resMap = mapOf(
+                                    "filePath" to file.absolutePath,
+                                    "durationMs" to durationMs
+                                )
+                                result.success(resMap)
+                            } else {
+                                result.success(null)
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "stopRecording error", e)
+                            mediaRecorder?.release()
+                            mediaRecorder = null
+                            isRecordingVoice = false
+                            result.error("RECORD_STOP_ERROR", e.message ?: "Kayıt durdurulamadı", null)
+                        }
+                    }
+                    "cancelRecording" -> {
+                        try {
+                            if (isRecordingVoice && mediaRecorder != null) {
+                                try {
+                                    mediaRecorder?.stop()
+                                } catch (_: Exception) {}
+                                mediaRecorder?.release()
+                                mediaRecorder = null
+                                isRecordingVoice = false
+                            }
+                            currentVoiceFile?.let {
+                                if (it.exists()) it.delete()
+                            }
+                            currentVoiceFile = null
+                            result.success(true)
+                        } catch (e: Exception) {
+                            mediaRecorder = null
+                            isRecordingVoice = false
+                            result.success(false)
+                        }
+                    }
+                    "getAmplitude" -> {
+                        try {
+                            val amp = if (isRecordingVoice && mediaRecorder != null) {
+                                mediaRecorder?.maxAmplitude ?: 0
+                            } else {
+                                0
+                            }
+                            result.success(amp)
+                        } catch (e: Exception) {
+                            result.success(0)
+                        }
+                    }
+                    else -> result.notImplemented()
                 }
             }
     }
@@ -561,5 +689,16 @@ class MainActivity : FlutterActivity() {
         } finally {
             try { retriever.release() } catch (_: Throwable) {}
         }
+    }
+
+    override fun onDestroy() {
+        try {
+            if (isRecordingVoice) {
+                mediaRecorder?.stop()
+                mediaRecorder?.release()
+                mediaRecorder = null
+            }
+        } catch (_: Exception) {}
+        super.onDestroy()
     }
 }

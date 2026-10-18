@@ -27,6 +27,8 @@ import 'photo_editor_screen.dart';
 import 'camera_screen.dart';
 import 'widgets/video_message_bubble.dart';
 import 'widgets/decrypted_image_widget.dart';
+import 'widgets/audio_message_bubble.dart';
+import '../../services/voice_record_service.dart';
 import '../../services/encryption_service.dart';
 import '../../widgets/emoji_gif_sticker_picker.dart';
 import '../../widgets/app_avatar.dart';
@@ -62,6 +64,12 @@ class _ChatScreenState extends State<ChatScreen> {
   StreamSubscription<Position>? _liveLocationSubscription;
   bool _isSharingLiveLocation = false;
   bool _showEmojiPicker = false;
+  bool _hasText = false;
+  bool _isRecordingVoice = false;
+  int _voiceRecordSeconds = 0;
+  Timer? _voiceRecordTimer;
+  double _voiceAmplitude = 0.0;
+  Timer? _voiceAmpTimer;
 
   void _toggleEmojiPicker() {
     if (_showEmojiPicker) {
@@ -81,6 +89,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _peer = widget.peerUser;
+    _messageController.addListener(_onMessageTextChanged);
     _scrollController.addListener(_onScroll);
     _loadMessages();
 
@@ -256,12 +265,195 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _messageController.removeListener(_onMessageTextChanged);
+    _voiceRecordTimer?.cancel();
+    _voiceAmpTimer?.cancel();
+    if (_isRecordingVoice) {
+      VoiceRecordService.cancelRecording();
+    }
     _scrollController.removeListener(_onScroll);
     _liveLocationSubscription?.cancel();
     _messageController.dispose();
     _focusNode.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onMessageTextChanged() {
+    final hasText = _messageController.text.trim().isNotEmpty;
+    if (hasText != _hasText) {
+      setState(() {
+        _hasText = hasText;
+      });
+    }
+  }
+
+  String _formatVoiceTimer(int seconds) {
+    final m = (seconds ~/ 60).toString().padLeft(2, '0');
+    final s = (seconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  Future<void> _startVoiceRecording() async {
+    final granted = await VoiceRecordService.requestPermission();
+    if (!granted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ses kaydı için mikrofon izni gereklidir.'),
+            backgroundColor: AppColors.callRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    final path = await VoiceRecordService.startRecording();
+    if (path == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ses kaydı başlatılamadı.'),
+            backgroundColor: AppColors.callRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _isRecordingVoice = true;
+      _voiceRecordSeconds = 0;
+      _showEmojiPicker = false;
+    });
+
+    _voiceRecordTimer?.cancel();
+    _voiceRecordTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _voiceRecordSeconds++;
+        });
+      }
+    });
+
+    _voiceAmpTimer?.cancel();
+    _voiceAmpTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) async {
+      final amp = await VoiceRecordService.getAmplitude();
+      if (mounted) {
+        setState(() {
+          _voiceAmplitude = (amp / 32767.0).clamp(0.1, 1.0);
+        });
+      }
+    });
+  }
+
+  Future<void> _cancelVoiceRecording() async {
+    _voiceRecordTimer?.cancel();
+    _voiceAmpTimer?.cancel();
+    await VoiceRecordService.cancelRecording();
+    if (mounted) {
+      setState(() {
+        _isRecordingVoice = false;
+        _voiceRecordSeconds = 0;
+      });
+    }
+  }
+
+  Future<void> _stopAndSendVoiceRecording() async {
+    _voiceRecordTimer?.cancel();
+    _voiceAmpTimer?.cancel();
+    final result = await VoiceRecordService.stopRecording();
+    if (mounted) {
+      setState(() {
+        _isRecordingVoice = false;
+      });
+    }
+
+    if (result == null) return;
+
+    if (result.durationMs < 1000) {
+      try {
+        File(result.filePath).deleteSync();
+      } catch (_) {}
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ses kaydı çok kısa.'),
+            duration: Duration(milliseconds: 1200),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    await _sendVoiceMessage(result.filePath, result.durationMs);
+  }
+
+  Future<void> _sendVoiceMessage(String localPath, int durationMs) async {
+    setState(() {
+      _isUploadingMedia = true;
+      _uploadingStatusText = 'Ses mesajı gönderiliyor...';
+    });
+
+    try {
+      File uploadTargetFile = File(localPath);
+      File? tempEncryptedFile;
+
+      try {
+        tempEncryptedFile = await EndToEndEncryptionService.encryptFile(
+          uploadTargetFile,
+          widget.currentUser.uid,
+          widget.peerUser.uid,
+        );
+        if (tempEncryptedFile.existsSync()) {
+          uploadTargetFile = tempEncryptedFile;
+        }
+      } catch (encErr) {
+        debugPrint('[VOICE ENCRYPT ERR] $encErr');
+      }
+
+      final authService = Provider.of<CustomAuthService>(context, listen: false);
+      final mediaUrl = await authService.uploadFile(uploadTargetFile.path);
+
+      try {
+        if (tempEncryptedFile != null && tempEncryptedFile.existsSync()) {
+          await tempEncryptedFile.delete();
+        }
+      } catch (_) {}
+
+      if (mediaUrl != null && mounted) {
+        final durationSec = (durationMs / 1000).round();
+        final mins = (durationSec ~/ 60).toString().padLeft(2, '0');
+        final secs = (durationSec % 60).toString().padLeft(2, '0');
+        final durationLabel = '$mins:$secs';
+
+        _sendMessage(
+          customContent: '🎤 Ses Mesajı ($durationLabel)',
+          type: MessageType.audio,
+          mediaUrl: mediaUrl,
+        );
+      }
+    } catch (e) {
+      debugPrint('[SEND VOICE ERR] $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ses mesajı gönderilemedi.'),
+            backgroundColor: AppColors.callRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUploadingMedia = false;
+        });
+      }
+    }
   }
 
   void _startLiveLocationSharing({String? messageId}) async {
@@ -1736,6 +1928,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final bool hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool isVideo = message.type == MessageType.video ||
         (hasMedia && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
+    final bool isAudio = message.type == MessageType.audio ||
+        (hasMedia && !isVideo && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.m4a') || message.mediaUrl!.endsWith('.aac') || message.mediaUrl!.endsWith('.mp3')));
 
     final bool isDeleted = message.isDeleted;
     final bool isEdited = message.isEdited;
@@ -1802,6 +1996,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   _buildLocationWidget(message),
                 ] else if (isDoc) ...[
                   _buildDocumentWidget(message),
+                ] else if (isAudio) ...[
+                  AudioMessageBubble(
+                    audioUrl: message.mediaUrl!,
+                    senderId: message.senderId,
+                    receiverId: widget.peerUser.uid,
+                    isMe: isMe,
+                  ),
                 ] else if (hasMedia) ...[
                   ClipRRect(
                     borderRadius: BorderRadius.circular(12),
@@ -1901,6 +2102,100 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildMessageInput() {
+    if (_isRecordingVoice) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        color: AppColors.surface,
+        child: SafeArea(
+          top: false,
+          child: Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.delete_outline_rounded, color: AppColors.callRed, size: 24),
+                tooltip: 'Kaydı İptal Et',
+                onPressed: _cancelVoiceRecording,
+              ),
+              const SizedBox(width: 4),
+              Container(
+                width: 10,
+                height: 10,
+                decoration: const BoxDecoration(
+                  color: AppColors.callRed,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.callRed,
+                      blurRadius: 6,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                _formatVoiceTimer(_voiceRecordSeconds),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Row(
+                  children: [
+                    ...List.generate(5, (idx) {
+                      final barH = (12.0 + (idx % 2 == 0 ? _voiceAmplitude * 16 : (1.0 - _voiceAmplitude) * 12)).clamp(6.0, 24.0);
+                      return Container(
+                        width: 3,
+                        height: barH,
+                        margin: const EdgeInsets.symmetric(horizontal: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.accent.withValues(alpha: 0.8),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      );
+                    }),
+                    const SizedBox(width: 8),
+                    const Flexible(
+                      child: Text(
+                        'Kaydediliyor...',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white60,
+                          fontSize: 12.5,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: _stopAndSendVoiceRecording,
+                child: Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    gradient: AppColors.primaryGradient,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.accent.withValues(alpha: 0.4),
+                        blurRadius: 10,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       color: AppColors.surface,
@@ -1957,24 +2252,50 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
             const SizedBox(width: 8),
-            GestureDetector(
-              onTap: () => _sendMessage(),
-              child: Container(
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  gradient: AppColors.primaryGradient,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.primary.withOpacity(0.4),
-                      blurRadius: 10,
-                      offset: const Offset(0, 3),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
+              child: _hasText
+                  ? GestureDetector(
+                      key: const ValueKey('send_btn'),
+                      onTap: () => _sendMessage(),
+                      child: Container(
+                        width: 46,
+                        height: 46,
+                        decoration: BoxDecoration(
+                          gradient: AppColors.primaryGradient,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.primary.withValues(alpha: 0.4),
+                              blurRadius: 10,
+                              offset: const Offset(0, 3),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                      ),
+                    )
+                  : GestureDetector(
+                      key: const ValueKey('mic_btn'),
+                      onTap: _startVoiceRecording,
+                      child: Container(
+                        width: 46,
+                        height: 46,
+                        decoration: BoxDecoration(
+                          gradient: AppColors.primaryGradient,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.accent.withValues(alpha: 0.4),
+                              blurRadius: 10,
+                              offset: const Offset(0, 3),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(Icons.mic_rounded, color: Colors.white, size: 22),
+                      ),
                     ),
-                  ],
-                ),
-                child: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-              ),
             ),
           ],
         ),
