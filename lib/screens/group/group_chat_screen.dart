@@ -3009,55 +3009,78 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         top: false,
         bottom: !_showEmojiPicker,
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            // WhatsApp-style Emoji, GIF, Sticker Tray Toggle
-            IconButton(
-              icon: Icon(
-                _showEmojiPicker ? Icons.keyboard_rounded : Icons.sentiment_satisfied_alt_rounded,
-                color: _showEmojiPicker ? AppColors.accent : AppColors.textSecondary,
-                size: 24,
-              ),
-              onPressed: _toggleEmojiPicker,
-            ),
-            IconButton(
-              icon: const Icon(Icons.attach_file_rounded, color: AppColors.textSecondary),
-              onPressed: _showMediaPickerSheet,
-            ),
-            IconButton(
-              icon: const Icon(Icons.camera_alt_rounded, color: AppColors.primaryLight),
-              onPressed: _openCameraScreen,
-            ),
             Expanded(
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: BoxDecoration(
                   color: AppColors.surfaceLight,
-                  borderRadius: BorderRadius.circular(24),
+                  borderRadius: BorderRadius.circular(25),
                   border: Border.all(color: AppColors.cardBorder),
                 ),
-                child: TextField(
-                  controller: _messageController,
-                  focusNode: _focusNode,
-                  onTap: () {
-                    if (_showEmojiPicker) {
-                      setState(() {
-                        _showEmojiPicker = false;
-                      });
-                    }
-                  },
-                  style: const TextStyle(color: AppColors.textPrimary, fontSize: 14.5),
-                  decoration: const InputDecoration(
-                    hintText: 'Mesaj yazın...',
-                    hintStyle: TextStyle(color: AppColors.textSecondary, fontSize: 14),
-                    border: InputBorder.none,
-                  ),
-                  maxLines: null,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _sendMessage(),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    // WhatsApp-style Emoji, GIF, Sticker Tray Toggle
+                    IconButton(
+                      icon: Icon(
+                        _showEmojiPicker ? Icons.keyboard_rounded : Icons.sentiment_satisfied_alt_rounded,
+                        color: _showEmojiPicker ? AppColors.accent : AppColors.textSecondary,
+                        size: 24,
+                      ),
+                      splashRadius: 20,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      constraints: const BoxConstraints(),
+                      onPressed: _toggleEmojiPicker,
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        focusNode: _focusNode,
+                        onTap: () {
+                          if (_showEmojiPicker) {
+                            setState(() {
+                              _showEmojiPicker = false;
+                            });
+                          }
+                        },
+                        style: const TextStyle(color: AppColors.textPrimary, fontSize: 15),
+                        decoration: const InputDecoration(
+                          hintText: 'Mesaj yazın...',
+                          hintStyle: TextStyle(color: AppColors.textSecondary, fontSize: 14.5),
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+                          isDense: true,
+                        ),
+                        maxLines: 5,
+                        minLines: 1,
+                        textInputAction: TextInputAction.newline,
+                        onSubmitted: (_) => _sendMessage(),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.attach_file_rounded, color: AppColors.textSecondary, size: 22),
+                      splashRadius: 20,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                      constraints: const BoxConstraints(),
+                      onPressed: _showMediaPickerSheet,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.camera_alt_rounded, color: AppColors.primaryLight, size: 22),
+                      splashRadius: 20,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                      constraints: const BoxConstraints(),
+                      onPressed: _openCameraScreen,
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 6),
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 200),
               transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
