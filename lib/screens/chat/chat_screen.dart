@@ -64,6 +64,8 @@ class _ChatScreenState extends State<ChatScreen> {
   String _uploadingStatusText = 'Dosya yükleniyor...';
   late UserModel _peer;
   StreamSubscription<bool>? _liveSharingStatusSub;
+  StreamSubscription<Map<String, dynamic>>? _peerLiveLocationSub;
+  StreamSubscription<Map<String, dynamic>>? _peerLiveStoppedSub;
   bool get _isSharingLiveLocation => _liveLocationService.isSharingWith(widget.peerUser.uid);
   bool _showEmojiPicker = false;
   bool _hasText = false;
@@ -95,6 +97,16 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.addListener(_onScroll);
     _liveSharingStatusSub = _liveLocationService.onSharingStatusChanged.listen((_) {
       if (mounted) setState(() {});
+    });
+    _peerLiveLocationSub = _socketService.liveLocationStream.listen((data) {
+      if (mounted && data['senderId']?.toString() == widget.peerUser.uid) {
+        setState(() {});
+      }
+    });
+    _peerLiveStoppedSub = _socketService.liveLocationStoppedStream.listen((data) {
+      if (mounted && data['senderId']?.toString() == widget.peerUser.uid) {
+        setState(() {});
+      }
     });
     _loadMessages();
 
@@ -202,6 +214,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Listen for server confirmation of sent message to replace temporary ID with DB ID
     _socketService.onMessageSent = (tempId, realId) {
+      _liveLocationService.updateActiveMessageId(tempId, realId);
       if (mounted) {
         setState(() {
           _messages = _messages.map((m) {
@@ -278,6 +291,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     _scrollController.removeListener(_onScroll);
     _liveSharingStatusSub?.cancel();
+    _peerLiveLocationSub?.cancel();
+    _peerLiveStoppedSub?.cancel();
     _messageController.dispose();
     _focusNode.dispose();
     _scrollController.dispose();
@@ -1400,55 +1415,150 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           // Live location sharing banner (WhatsApp style)
           if (_liveLocationService.isSharingWith(widget.peerUser.uid))
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                border: Border(
-                  bottom: BorderSide(color: AppColors.onlineGreen.withOpacity(0.35), width: 1),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: AppColors.onlineGreen.withOpacity(0.15),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.sensors_rounded, color: AppColors.onlineGreen, size: 18),
-                  ),
-                  const SizedBox(width: 10),
-                  const Expanded(
-                    child: Text(
-                      'Canlı konumunuzu paylaşıyorsunuz',
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+            Material(
+              color: AppColors.surface,
+              child: InkWell(
+                onTap: () {
+                  final activeMsgId = _liveLocationService.activeMessageId;
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => LiveLocationScreen(
+                        initialPosition: _liveLocationService.lastPosition ?? const LatLng(39.925533, 32.866287),
+                        peerUser: widget.peerUser,
+                        currentUser: widget.currentUser,
+                        isMyLiveLocation: true,
+                        isLiveActive: true,
+                        messageId: activeMsgId,
+                        onStopSharing: () => _stopLiveLocationSharing(messageId: activeMsgId),
                       ),
                     ),
+                  );
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      bottom: BorderSide(color: AppColors.onlineGreen.withOpacity(0.35), width: 1),
+                    ),
                   ),
-                  GestureDetector(
-                    onTap: () => _stopLiveLocationSharing(),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: AppColors.callRed.withOpacity(0.18),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppColors.callRed.withOpacity(0.4)),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: AppColors.onlineGreen.withOpacity(0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.sensors_rounded, color: AppColors.onlineGreen, size: 18),
                       ),
-                      child: const Text(
-                        'Durdur',
-                        style: TextStyle(
-                          color: AppColors.callRed,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'Canlı konumunuzu paylaşıyorsunuz',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
+                      GestureDetector(
+                        onTap: () => _stopLiveLocationSharing(messageId: _liveLocationService.activeMessageId),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: AppColors.callRed.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColors.callRed.withOpacity(0.4)),
+                          ),
+                          child: const Text(
+                            'Durdur',
+                            style: TextStyle(
+                              color: AppColors.callRed,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          // Peer live location sharing banner (WhatsApp style)
+          if (!_liveLocationService.isSharingWith(widget.peerUser.uid) && _socketService.lastLiveLocations.containsKey(widget.peerUser.uid))
+            Material(
+              color: AppColors.surface,
+              child: InkWell(
+                onTap: () {
+                  final peerLive = _socketService.lastLiveLocations[widget.peerUser.uid];
+                  final lat = (peerLive?['latitude'] as num?)?.toDouble() ?? 39.925533;
+                  final lon = (peerLive?['longitude'] as num?)?.toDouble() ?? 32.866287;
+                  final peerMsgId = peerLive?['messageId']?.toString();
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => LiveLocationScreen(
+                        initialPosition: LatLng(lat, lon),
+                        peerUser: widget.peerUser,
+                        currentUser: widget.currentUser,
+                        isMyLiveLocation: false,
+                        isLiveActive: true,
+                        messageId: peerMsgId,
+                      ),
+                    ),
+                  );
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      bottom: BorderSide(color: AppColors.onlineGreen.withOpacity(0.35), width: 1),
                     ),
                   ),
-                ],
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: AppColors.onlineGreen.withOpacity(0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.near_me_rounded, color: AppColors.onlineGreen, size: 18),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          '${widget.peerUser.displayName} canlı konumunu paylaşıyor',
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: AppColors.onlineGreen.withOpacity(0.18),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppColors.onlineGreen.withOpacity(0.4)),
+                        ),
+                        child: const Text(
+                          'Görüntüle',
+                          style: TextStyle(
+                            color: AppColors.onlineGreen,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
 
@@ -1645,12 +1755,29 @@ class _ChatScreenState extends State<ChatScreen> {
     // Live is active ONLY if:
     // 1) It is a live location message
     // 2) It has NOT been stopped
-    // 3) For sender (isMe): LiveLocationService is actively sharing AND activeMessageId matches this message!
-    // 4) For recipient (!isMe): Peer is actively broadcasting via socket AND peer messageId matches this message!
+    // 3) For sender (isMe): LiveLocationService is actively sharing with this peer
+    //    AND (activeMessageId matches message.id OR this is the newest unstopped live location message in this conversation)
+    // 4) For recipient (!isMe): Peer is actively broadcasting via socket AND peer messageId matches this message
     bool isLiveActive = false;
     if (isLiveType && !isStopped) {
       if (isMe) {
-        isLiveActive = _liveLocationService.isSharing && _liveLocationService.activeMessageId == message.id;
+        if (_liveLocationService.isSharingWith(widget.peerUser.uid)) {
+          if (_liveLocationService.activeMessageId == message.id) {
+            isLiveActive = true;
+          } else {
+            // Find newest live location message sent by me that isn't stopped
+            final latestMyLive = _messages.firstWhere(
+              (m) => m.senderId == widget.currentUser.uid &&
+                     m.content.contains('Canlı Konum') &&
+                     !_liveLocationService.isMessageStopped(m.id),
+              orElse: () => message,
+            );
+            if (latestMyLive.id == message.id) {
+              isLiveActive = true;
+              _liveLocationService.setActiveMessageId(message.id);
+            }
+          }
+        }
       } else {
         final peerLive = _socketService.lastLiveLocations[widget.peerUser.uid];
         final peerMsgId = peerLive?['messageId']?.toString();

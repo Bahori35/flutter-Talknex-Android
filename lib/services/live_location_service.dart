@@ -64,9 +64,31 @@ class LiveLocationService {
 
   /// Checks if a specific message ID is the currently active live location
   bool isMessageLive(String messageId) {
-    if (messageId.isEmpty) return false;
-    if (_stoppedMessageIds.contains(messageId)) return false;
-    return _isSharing && _activeMessageId == messageId;
+    if (!_isSharing) return false;
+    if (messageId.isNotEmpty && _stoppedMessageIds.contains(messageId)) return false;
+    if (_activeMessageId == null || _activeMessageId!.isEmpty) return true;
+    if (messageId.isEmpty) return true;
+    return _activeMessageId == messageId;
+  }
+
+  /// Updates active message ID when server confirms temporary client ID
+  void updateActiveMessageId(String oldId, String newId) {
+    if (_activeMessageId == oldId) {
+      _activeMessageId = newId;
+      _stoppedMessageIds.remove(newId);
+      _persistState();
+      _sharingStatusController.add(_isSharing);
+    }
+  }
+
+  /// Sets the active message ID
+  void setActiveMessageId(String messageId) {
+    if (messageId.isNotEmpty && _activeMessageId != messageId) {
+      _activeMessageId = messageId;
+      _stoppedMessageIds.remove(messageId);
+      _persistState();
+      _sharingStatusController.add(_isSharing);
+    }
   }
 
   /// Checks if a specific message ID has been stopped / ended
@@ -260,10 +282,47 @@ class LiveLocationService {
 
       return true;
     } catch (e) {
-      debugPrint('[LIVE SERVICE START EXCEPTION] $e');
-      _isSharing = false;
-      _sharingStatusController.add(false);
-      return false;
+      debugPrint('[LIVE SERVICE START EXCEPTION, ATTEMPTING FALLBACK] $e');
+      try {
+        _positionSubscription = Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+            distanceFilter: 2,
+          ),
+        ).listen(
+          (Position pos) {
+            if (!_isSharing) return;
+
+            _lastPosition = LatLng(pos.latitude, pos.longitude);
+            _lastHeading = pos.heading;
+            _lastSpeed = pos.speed;
+            _lastUpdateTime = DateTime.now();
+
+            _socketService.emitLiveLocationUpdate(
+              senderId: _activeSenderId!,
+              receiverId: _activeReceiverId!,
+              latitude: pos.latitude,
+              longitude: pos.longitude,
+              heading: pos.heading,
+              speed: pos.speed,
+              messageId: _activeMessageId,
+            );
+
+            if (!_positionStreamController.isClosed) {
+              _positionStreamController.add(pos);
+            }
+          },
+          onError: (error) {
+            debugPrint('[LIVE SERVICE FALLBACK STREAM ERROR] $error');
+          },
+        );
+        return true;
+      } catch (fErr) {
+        debugPrint('[LIVE SERVICE CRITICAL ERROR] $fErr');
+        _isSharing = false;
+        _sharingStatusController.add(false);
+        return false;
+      }
     }
   }
 

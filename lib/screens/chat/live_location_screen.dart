@@ -76,10 +76,11 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
   void _initMyLiveLocationTracking() {
     final msgId = widget.messageId ?? '';
     final isStopped = _liveLocationService.isMessageStopped(msgId);
-    final isThisMsgActive = _liveLocationService.isMessageLive(msgId);
+    final isSharingWithPeer = _liveLocationService.isSharingWith(widget.peerUser.uid);
+    final isThisMsgActive = isSharingWithPeer && !isStopped;
 
-    // Only active if this specific message is active live and not stopped!
-    _isLiveActive = widget.isLiveActive && !isStopped && isThisMsgActive;
+    // Only active if live sharing is ongoing with this peer and message has not been stopped!
+    _isLiveActive = widget.isLiveActive && isThisMsgActive;
 
     if (_isLiveActive && _liveLocationService.lastPosition != null) {
       _peerLocation = _liveLocationService.lastPosition!;
@@ -113,7 +114,8 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
 
       _sharingStatusSubscription = _liveLocationService.onSharingStatusChanged.listen((bool isSharing) {
         if (mounted) {
-          final stillActive = isSharing && _liveLocationService.isMessageLive(widget.messageId ?? '');
+          final isStoppedNow = _liveLocationService.isMessageStopped(widget.messageId ?? '');
+          final stillActive = isSharing && _liveLocationService.isSharingWith(widget.peerUser.uid) && !isStoppedNow;
           setState(() {
             _isLiveActive = stillActive;
           });
