@@ -503,9 +503,9 @@ func startEventReminderWorker() {
 }
 
 func initFirebase() {
-	keyFiles, _ := filepath.Glob("safechet-bildirim-firebase-adminsdk*.json")
+	keyFiles, _ := filepath.Glob("*firebase-adminsdk*.json")
 	if len(keyFiles) == 0 {
-		keyFiles, _ = filepath.Glob("../server_python/safechet-bildirim-firebase-adminsdk*.json")
+		keyFiles, _ = filepath.Glob("safechet-bildirim-firebase-adminsdk*.json")
 	}
 
 	if len(keyFiles) > 0 {
