@@ -22,6 +22,7 @@ import '../../services/socket_service.dart';
 import '../call/call_screen.dart';
 import 'location_picker_screen.dart';
 import 'live_location_screen.dart';
+import '../../services/live_location_service.dart';
 import 'video_editor_screen.dart';
 import 'photo_editor_screen.dart';
 import 'camera_screen.dart';
@@ -53,6 +54,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
   final CustomChatService _chatService = CustomChatService();
   final SocketService _socketService = SocketService();
+  final LiveLocationService _liveLocationService = LiveLocationService();
   final ImagePicker _picker = ImagePicker();
   List<MessageModel> _messages = [];
   bool _isLoading = true;
@@ -61,8 +63,8 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isUploadingMedia = false;
   String _uploadingStatusText = 'Dosya yükleniyor...';
   late UserModel _peer;
-  StreamSubscription<Position>? _liveLocationSubscription;
-  bool _isSharingLiveLocation = false;
+  StreamSubscription<bool>? _liveSharingStatusSub;
+  bool get _isSharingLiveLocation => _liveLocationService.isSharingWith(widget.peerUser.uid);
   bool _showEmojiPicker = false;
   bool _hasText = false;
   bool _isRecordingVoice = false;
@@ -91,6 +93,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _peer = widget.peerUser;
     _messageController.addListener(_onMessageTextChanged);
     _scrollController.addListener(_onScroll);
+    _liveSharingStatusSub = _liveLocationService.onSharingStatusChanged.listen((_) {
+      if (mounted) setState(() {});
+    });
     _loadMessages();
 
     // Mark all existing messages as read when opening chat
@@ -272,7 +277,7 @@ class _ChatScreenState extends State<ChatScreen> {
       VoiceRecordService.cancelRecording();
     }
     _scrollController.removeListener(_onScroll);
-    _liveLocationSubscription?.cancel();
+    _liveSharingStatusSub?.cancel();
     _messageController.dispose();
     _focusNode.dispose();
     _scrollController.dispose();
@@ -457,46 +462,21 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _startLiveLocationSharing({String? messageId}) async {
-    _liveLocationSubscription?.cancel();
-    setState(() {
-      _isSharingLiveLocation = true;
-    });
-
-    try {
-      _liveLocationSubscription = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.bestForNavigation,
-          distanceFilter: 2,
-        ),
-      ).listen((Position position) {
-        if (_isSharingLiveLocation) {
-          _socketService.emitLiveLocationUpdate(
-            senderId: widget.currentUser.uid,
-            receiverId: widget.peerUser.uid,
-            latitude: position.latitude,
-            longitude: position.longitude,
-            heading: position.heading,
-            speed: position.speed,
-            messageId: messageId,
-          );
-        }
-      });
-    } catch (e) {
-      debugPrint('[LIVE BROADCAST ERROR] $e');
-    }
-  }
-
-  void _stopLiveLocationSharing({String? messageId}) {
-    _liveLocationSubscription?.cancel();
-    _liveLocationSubscription = null;
-    setState(() {
-      _isSharingLiveLocation = false;
-    });
-    _socketService.emitStopLiveLocation(
+    await _liveLocationService.startSharing(
       senderId: widget.currentUser.uid,
       receiverId: widget.peerUser.uid,
       messageId: messageId,
     );
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _stopLiveLocationSharing({String? messageId}) async {
+    await _liveLocationService.stopSharing(messageId: messageId);
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   MessageModel? _sendMessage({String? customContent, MessageType type = MessageType.text, String? mediaUrl}) {
@@ -1418,6 +1398,60 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
+          // Live location sharing banner (WhatsApp style)
+          if (_liveLocationService.isSharingWith(widget.peerUser.uid))
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                border: Border(
+                  bottom: BorderSide(color: AppColors.onlineGreen.withOpacity(0.35), width: 1),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: AppColors.onlineGreen.withOpacity(0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.sensors_rounded, color: AppColors.onlineGreen, size: 18),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Canlı konumunuzu paylaşıyorsunuz',
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => _stopLiveLocationSharing(),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: AppColors.callRed.withOpacity(0.18),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppColors.callRed.withOpacity(0.4)),
+                      ),
+                      child: const Text(
+                        'Durdur',
+                        style: TextStyle(
+                          color: AppColors.callRed,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
           // Uploading banner
           if (_isUploadingMedia)
             Container(
@@ -1809,6 +1843,30 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ],
             ),
+            if (isLive && isMe && _liveLocationService.isSharingWith(widget.peerUser.uid)) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => _stopLiveLocationSharing(messageId: message.id),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.callRed.withOpacity(0.2),
+                    foregroundColor: AppColors.callRed,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      side: BorderSide(color: AppColors.callRed.withOpacity(0.4)),
+                    ),
+                  ),
+                  icon: const Icon(Icons.stop_circle_outlined, size: 16),
+                  label: const Text(
+                    'Paylaşımı Durdur',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

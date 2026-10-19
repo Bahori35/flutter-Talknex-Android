@@ -8,6 +8,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../../constants/app_colors.dart';
 import '../../models/user_model.dart';
 import '../../services/socket_service.dart';
+import '../../services/live_location_service.dart';
 
 class LiveLocationScreen extends StatefulWidget {
   final LatLng initialPosition;
@@ -34,6 +35,7 @@ class LiveLocationScreen extends StatefulWidget {
 class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
   final SocketService _socketService = SocketService();
+  final LiveLocationService _liveLocationService = LiveLocationService();
   
   late LatLng _peerLocation;
   LatLng? _myLocation;
@@ -43,7 +45,11 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
   bool _isFollowing = true;
   double _currentZoom = 16.5;
   DateTime _lastUpdate = DateTime.now();
-  StreamSubscription<Position>? _myGpsSubscription;
+  StreamSubscription<Position>? _myLiveLocationSubscription;
+  StreamSubscription<Map<String, dynamic>>? _peerLocationSubscription;
+  StreamSubscription<Map<String, dynamic>>? _peerStoppedSubscription;
+  StreamSubscription<bool>? _sharingStatusSubscription;
+  StreamSubscription<Position>? _recipientOwnGpsSubscription;
   AnimationController? _pulseController;
   Timer? _autoRecenterTimer;
   Timer? _countdownTimer;
@@ -58,9 +64,64 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
       duration: const Duration(seconds: 2),
     )..repeat();
 
-    // 1. Check if we already have newer cached live coordinates in SocketService
-    final trackedUid = widget.isMyLiveLocation ? widget.currentUser.uid : widget.peerUser.uid;
-    final cached = _socketService.lastLiveLocations[trackedUid];
+    if (widget.isMyLiveLocation) {
+      _initMyLiveLocationTracking();
+    } else {
+      _initPeerLiveLocationTracking();
+    }
+  }
+
+  void _initMyLiveLocationTracking() {
+    _isLiveActive = _liveLocationService.isSharing;
+
+    if (_liveLocationService.lastPosition != null) {
+      _peerLocation = _liveLocationService.lastPosition!;
+      _myLocation = _liveLocationService.lastPosition!;
+      _heading = _liveLocationService.lastHeading;
+      _speed = _liveLocationService.lastSpeed;
+    } else {
+      _peerLocation = widget.initialPosition;
+      _myLocation = widget.initialPosition;
+    }
+
+    // Ensure persistent background foreground service is started
+    if (!_liveLocationService.isSharing) {
+      _liveLocationService.startSharing(
+        senderId: widget.currentUser.uid,
+        receiverId: widget.peerUser.uid,
+        messageId: widget.messageId,
+      );
+    }
+
+    // Listen to updates from persistent LiveLocationService
+    _myLiveLocationSubscription = _liveLocationService.onPositionChanged.listen((Position pos) {
+      if (mounted) {
+        final newPos = LatLng(pos.latitude, pos.longitude);
+        setState(() {
+          _myLocation = newPos;
+          _peerLocation = newPos;
+          _heading = pos.heading;
+          _speed = pos.speed;
+          _lastUpdate = DateTime.now();
+          _isLiveActive = true;
+        });
+        if (_isFollowing) {
+          _mapController.move(newPos, _currentZoom);
+        }
+      }
+    });
+
+    _sharingStatusSubscription = _liveLocationService.onSharingStatusChanged.listen((bool isSharing) {
+      if (mounted) {
+        setState(() {
+          _isLiveActive = isSharing;
+        });
+      }
+    });
+  }
+
+  void _initPeerLiveLocationTracking() {
+    final cached = _socketService.lastLiveLocations[widget.peerUser.uid];
     if (cached != null) {
       final lat = (cached['latitude'] as num?)?.toDouble();
       final lon = (cached['longitude'] as num?)?.toDouble();
@@ -75,19 +136,15 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
       _peerLocation = widget.initialPosition;
     }
 
-    // 2. Track own GPS location (and if sender, actively update avatar position on map)
-    _trackMyGps();
-
-    // 3. Listen to real-time live location updates from Socket (for recipient)
-    _socketService.onLiveLocationUpdate = (data) {
+    _peerLocationSubscription = _socketService.liveLocationStream.listen((data) {
       final senderId = data['senderId']?.toString();
-      if (senderId == widget.peerUser.uid) {
+      if (senderId == widget.peerUser.uid && mounted) {
         final lat = (data['latitude'] as num?)?.toDouble();
         final lon = (data['longitude'] as num?)?.toDouble();
         final heading = (data['heading'] as num?)?.toDouble() ?? 0.0;
         final speed = (data['speed'] as num?)?.toDouble() ?? 0.0;
 
-        if (lat != null && lon != null && mounted) {
+        if (lat != null && lon != null) {
           final newPos = LatLng(lat, lon);
           setState(() {
             _peerLocation = newPos;
@@ -96,15 +153,14 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
             _lastUpdate = DateTime.now();
             _isLiveActive = true;
           });
-          // Auto-center recipient camera on moving sender
-          if (!widget.isMyLiveLocation && _isFollowing) {
+          if (_isFollowing) {
             _mapController.move(newPos, _currentZoom);
           }
         }
       }
-    };
+    });
 
-    _socketService.onLiveLocationStopped = (data) {
+    _peerStoppedSubscription = _socketService.liveLocationStoppedStream.listen((data) {
       final senderId = data['senderId']?.toString();
       if (senderId == widget.peerUser.uid && mounted) {
         setState(() {
@@ -118,71 +174,38 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
           ),
         );
       }
-    };
+    });
+
+    _trackRecipientLocalGps();
   }
 
-  void _trackMyGps() async {
+  void _trackRecipientLocalGps() async {
     try {
       final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 5),
+        timeLimit: const Duration(seconds: 4),
       ).catchError((_) => null as dynamic);
 
       if (pos != null && mounted) {
-        final newPos = LatLng(pos.latitude, pos.longitude);
         setState(() {
-          _myLocation = newPos;
-          if (widget.isMyLiveLocation) {
-            _peerLocation = newPos;
-            _heading = pos.heading;
-            _speed = pos.speed;
-            _lastUpdate = DateTime.now();
-          }
+          _myLocation = LatLng(pos.latitude, pos.longitude);
         });
-        if (widget.isMyLiveLocation && _isFollowing) {
-          _mapController.move(newPos, _currentZoom);
-        }
       }
 
-      _myGpsSubscription = Geolocator.getPositionStream(
+      _recipientOwnGpsSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.bestForNavigation,
-          distanceFilter: 2,
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 4,
         ),
       ).listen((Position position) {
         if (mounted) {
-          final newPos = LatLng(position.latitude, position.longitude);
           setState(() {
-            _myLocation = newPos;
-            if (widget.isMyLiveLocation) {
-              _peerLocation = newPos;
-              _heading = position.heading;
-              _speed = position.speed;
-              _lastUpdate = DateTime.now();
-            }
+            _myLocation = LatLng(position.latitude, position.longitude);
           });
-
-          if (widget.isMyLiveLocation) {
-            // Auto-center sender camera on own moving vehicle / position
-            if (_isFollowing) {
-              _mapController.move(newPos, _currentZoom);
-            }
-            if (_isLiveActive) {
-              _socketService.emitLiveLocationUpdate(
-                senderId: widget.currentUser.uid,
-                receiverId: widget.peerUser.uid,
-                latitude: position.latitude,
-                longitude: position.longitude,
-                heading: position.heading,
-                speed: position.speed,
-                messageId: widget.messageId,
-              );
-            }
-          }
         }
       });
     } catch (e) {
-      debugPrint('[LIVE GPS ERROR] $e');
+      debugPrint('[RECIPIENT GPS ERROR] $e');
     }
   }
 
@@ -250,16 +273,12 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
   void _stopSharingAction() {
     _autoRecenterTimer?.cancel();
     _countdownTimer?.cancel();
-    _myGpsSubscription?.cancel();
-    _myGpsSubscription = null;
+    _myLiveLocationSubscription?.cancel();
+    _myLiveLocationSubscription = null;
     setState(() {
       _isLiveActive = false;
     });
-    _socketService.emitStopLiveLocation(
-      senderId: widget.currentUser.uid,
-      receiverId: widget.peerUser.uid,
-      messageId: widget.messageId,
-    );
+    _liveLocationService.stopSharing(messageId: widget.messageId);
     widget.onStopSharing?.call();
     Navigator.pop(context);
   }
@@ -269,13 +288,11 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
     _autoRecenterTimer?.cancel();
     _countdownTimer?.cancel();
     _pulseController?.dispose();
-    _myGpsSubscription?.cancel();
-    if (_socketService.onLiveLocationUpdate != null) {
-      _socketService.onLiveLocationUpdate = null;
-    }
-    if (_socketService.onLiveLocationStopped != null) {
-      _socketService.onLiveLocationStopped = null;
-    }
+    _myLiveLocationSubscription?.cancel();
+    _peerLocationSubscription?.cancel();
+    _peerStoppedSubscription?.cancel();
+    _sharingStatusSubscription?.cancel();
+    _recipientOwnGpsSubscription?.cancel();
     super.dispose();
   }
 

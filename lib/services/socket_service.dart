@@ -50,6 +50,10 @@ class SocketService {
   OnUserStatusChange? onUserStatusChange;
   OnLiveLocationUpdate? onLiveLocationUpdate;
   OnLiveLocationStopped? onLiveLocationStopped;
+  final StreamController<Map<String, dynamic>> _liveLocationStreamController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get liveLocationStream => _liveLocationStreamController.stream;
+  final StreamController<Map<String, dynamic>> _liveLocationStoppedStreamController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get liveLocationStoppedStream => _liveLocationStoppedStreamController.stream;
   final Map<String, Map<String, dynamic>> lastLiveLocations = {};
   OnMessageDeleted? onMessageDeleted;
   OnMessageEdited? onMessageEdited;
@@ -249,11 +253,15 @@ class SocketService {
         case 'live_location_received':
           if (data is Map<String, dynamic>) {
             final sId = data['senderId']?.toString();
+            final mapData = Map<String, dynamic>.from(data);
             if (sId != null && sId.isNotEmpty) {
-              lastLiveLocations[sId] = Map<String, dynamic>.from(data);
+              lastLiveLocations[sId] = mapData;
+            }
+            if (!_liveLocationStreamController.isClosed) {
+              _liveLocationStreamController.add(mapData);
             }
             if (onLiveLocationUpdate != null) {
-              onLiveLocationUpdate!(Map<String, dynamic>.from(data));
+              onLiveLocationUpdate!(mapData);
             }
           }
           break;
@@ -261,11 +269,15 @@ class SocketService {
         case 'live_location_stopped':
           if (data is Map<String, dynamic>) {
             final sId = data['senderId']?.toString();
+            final mapData = Map<String, dynamic>.from(data);
             if (sId != null && sId.isNotEmpty) {
               lastLiveLocations.remove(sId);
             }
+            if (!_liveLocationStoppedStreamController.isClosed) {
+              _liveLocationStoppedStreamController.add(mapData);
+            }
             if (onLiveLocationStopped != null) {
-              onLiveLocationStopped!(Map<String, dynamic>.from(data));
+              onLiveLocationStopped!(mapData);
             }
           }
           break;
