@@ -232,7 +232,7 @@ class LiveLocationService {
         intervalDuration: const Duration(seconds: 2),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationTitle: "Canlı Konum Paylaşılıyor",
-          notificationText: "SafeChat canlı konumunuzu paylaşıyor...",
+          notificationText: "Talknex canlı konumunuzu paylaşıyor...",
           notificationChannelName: "Talknex Canlı Konum",
           notificationIcon: AndroidResource(
             name: 'launcher_icon',

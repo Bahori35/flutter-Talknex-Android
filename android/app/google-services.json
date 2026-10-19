@@ -7,9 +7,9 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:28685338042:android:bf787c8ce763158f42c983",
+        "mobilesdk_app_id": "1:28685338042:android:1444a38a3672ea2542c983",
         "android_client_info": {
-          "package_name": "com.safechat.app"
+          "package_name": "com.talknex.app"
         }
       },
       "oauth_client": [],

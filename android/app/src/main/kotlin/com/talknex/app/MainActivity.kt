@@ -1,4 +1,4 @@
-package com.safechat.app
+package com.talknex.app
 
 import android.content.Context
 import android.graphics.Bitmap
