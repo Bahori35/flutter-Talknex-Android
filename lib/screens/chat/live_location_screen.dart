@@ -15,6 +15,7 @@ class LiveLocationScreen extends StatefulWidget {
   final UserModel peerUser;
   final UserModel currentUser;
   final bool isMyLiveLocation;
+  final bool isLiveActive;
   final String? messageId;
   final VoidCallback? onStopSharing;
 
@@ -24,6 +25,7 @@ class LiveLocationScreen extends StatefulWidget {
     required this.peerUser,
     required this.currentUser,
     required this.isMyLiveLocation,
+    this.isLiveActive = true,
     this.messageId,
     this.onStopSharing,
   });
@@ -41,7 +43,7 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
   LatLng? _myLocation;
   double _heading = 0.0;
   double _speed = 0.0;
-  bool _isLiveActive = true;
+  bool _isLiveActive = false;
   bool _isFollowing = true;
   double _currentZoom = 16.5;
   DateTime _lastUpdate = DateTime.now();
@@ -72,9 +74,14 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
   }
 
   void _initMyLiveLocationTracking() {
-    _isLiveActive = _liveLocationService.isSharing;
+    final msgId = widget.messageId ?? '';
+    final isStopped = _liveLocationService.isMessageStopped(msgId);
+    final isThisMsgActive = _liveLocationService.isMessageLive(msgId);
 
-    if (_liveLocationService.lastPosition != null) {
+    // Only active if this specific message is active live and not stopped!
+    _isLiveActive = widget.isLiveActive && !isStopped && isThisMsgActive;
+
+    if (_isLiveActive && _liveLocationService.lastPosition != null) {
       _peerLocation = _liveLocationService.lastPosition!;
       _myLocation = _liveLocationService.lastPosition!;
       _heading = _liveLocationService.lastHeading;
@@ -84,44 +91,46 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
       _myLocation = widget.initialPosition;
     }
 
-    // Ensure persistent background foreground service is started
-    if (!_liveLocationService.isSharing) {
-      _liveLocationService.startSharing(
-        senderId: widget.currentUser.uid,
-        receiverId: widget.peerUser.uid,
-        messageId: widget.messageId,
-      );
-    }
+    // NOTE: We NEVER call startSharing here! Live location sharing is ONLY started when sending a message.
 
-    // Listen to updates from persistent LiveLocationService
-    _myLiveLocationSubscription = _liveLocationService.onPositionChanged.listen((Position pos) {
-      if (mounted) {
-        final newPos = LatLng(pos.latitude, pos.longitude);
-        setState(() {
-          _myLocation = newPos;
-          _peerLocation = newPos;
-          _heading = pos.heading;
-          _speed = pos.speed;
-          _lastUpdate = DateTime.now();
-          _isLiveActive = true;
-        });
-        if (_isFollowing) {
-          _mapController.move(newPos, _currentZoom);
+    if (_isLiveActive) {
+      // Listen to updates from persistent LiveLocationService
+      _myLiveLocationSubscription = _liveLocationService.onPositionChanged.listen((Position pos) {
+        if (mounted && _isLiveActive) {
+          final newPos = LatLng(pos.latitude, pos.longitude);
+          setState(() {
+            _myLocation = newPos;
+            _peerLocation = newPos;
+            _heading = pos.heading;
+            _speed = pos.speed;
+            _lastUpdate = DateTime.now();
+          });
+          if (_isFollowing) {
+            _mapController.move(newPos, _currentZoom);
+          }
         }
-      }
-    });
+      });
 
-    _sharingStatusSubscription = _liveLocationService.onSharingStatusChanged.listen((bool isSharing) {
-      if (mounted) {
-        setState(() {
-          _isLiveActive = isSharing;
-        });
-      }
-    });
+      _sharingStatusSubscription = _liveLocationService.onSharingStatusChanged.listen((bool isSharing) {
+        if (mounted) {
+          final stillActive = isSharing && _liveLocationService.isMessageLive(widget.messageId ?? '');
+          setState(() {
+            _isLiveActive = stillActive;
+          });
+        }
+      });
+    }
   }
 
   void _initPeerLiveLocationTracking() {
+    final msgId = widget.messageId ?? '';
+    final isStopped = _liveLocationService.isMessageStopped(msgId);
     final cached = _socketService.lastLiveLocations[widget.peerUser.uid];
+    final peerMsgId = cached?['messageId']?.toString();
+    final isPeerActiveForThis = cached != null && (peerMsgId == null || peerMsgId == msgId);
+
+    _isLiveActive = widget.isLiveActive && !isStopped && isPeerActiveForThis;
+
     if (cached != null) {
       final lat = (cached['latitude'] as num?)?.toDouble();
       final lon = (cached['longitude'] as num?)?.toDouble();
@@ -136,43 +145,51 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
       _peerLocation = widget.initialPosition;
     }
 
-    _peerLocationSubscription = _socketService.liveLocationStream.listen((data) {
-      final senderId = data['senderId']?.toString();
-      if (senderId == widget.peerUser.uid && mounted) {
-        final lat = (data['latitude'] as num?)?.toDouble();
-        final lon = (data['longitude'] as num?)?.toDouble();
-        final heading = (data['heading'] as num?)?.toDouble() ?? 0.0;
-        final speed = (data['speed'] as num?)?.toDouble() ?? 0.0;
+    if (_isLiveActive) {
+      _peerLocationSubscription = _socketService.liveLocationStream.listen((data) {
+        final senderId = data['senderId']?.toString();
+        final incomingMsgId = data['messageId']?.toString();
+        if (senderId == widget.peerUser.uid && mounted && _isLiveActive) {
+          if (incomingMsgId != null && msgId.isNotEmpty && incomingMsgId != msgId) {
+            return;
+          }
+          final lat = (data['latitude'] as num?)?.toDouble();
+          final lon = (data['longitude'] as num?)?.toDouble();
+          final heading = (data['heading'] as num?)?.toDouble() ?? 0.0;
+          final speed = (data['speed'] as num?)?.toDouble() ?? 0.0;
 
-        if (lat != null && lon != null) {
-          final newPos = LatLng(lat, lon);
-          setState(() {
-            _peerLocation = newPos;
-            _heading = heading;
-            _speed = speed;
-            _lastUpdate = DateTime.now();
-            _isLiveActive = true;
-          });
-          if (_isFollowing) {
-            _mapController.move(newPos, _currentZoom);
+          if (lat != null && lon != null) {
+            final newPos = LatLng(lat, lon);
+            setState(() {
+              _peerLocation = newPos;
+              _heading = heading;
+              _speed = speed;
+              _lastUpdate = DateTime.now();
+            });
+            if (_isFollowing) {
+              _mapController.move(newPos, _currentZoom);
+            }
           }
         }
-      }
-    });
+      });
+    }
 
     _peerStoppedSubscription = _socketService.liveLocationStoppedStream.listen((data) {
       final senderId = data['senderId']?.toString();
+      final stoppedMsgId = data['messageId']?.toString();
       if (senderId == widget.peerUser.uid && mounted) {
-        setState(() {
-          _isLiveActive = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${widget.peerUser.displayName} canlı konum paylaşımını durdurdu.'),
-            backgroundColor: AppColors.surfaceLight,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        if (stoppedMsgId == null || msgId.isEmpty || stoppedMsgId == msgId) {
+          setState(() {
+            _isLiveActive = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${widget.peerUser.displayName} canlı konum paylaşımını durdurdu.'),
+              backgroundColor: AppColors.surfaceLight,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
       }
     });
 
@@ -635,7 +652,7 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
           // Floating Action Buttons (Zoom Controls & Recenter Button)
           Positioned(
             right: 16,
-            bottom: widget.isMyLiveLocation ? 100 : 36,
+            bottom: (widget.isMyLiveLocation && _isLiveActive) ? 100 : 36,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [

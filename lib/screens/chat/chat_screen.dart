@@ -1638,8 +1638,25 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildLocationWidget(MessageModel message) {
-    final isLive = message.content.contains('Canlı Konum');
     final isMe = message.senderId == widget.currentUser.uid;
+    final isLiveType = message.content.contains('Canlı Konum');
+    final isStopped = _liveLocationService.isMessageStopped(message.id);
+
+    // Live is active ONLY if:
+    // 1) It is a live location message
+    // 2) It has NOT been stopped
+    // 3) For sender (isMe): LiveLocationService is actively sharing AND activeMessageId matches this message!
+    // 4) For recipient (!isMe): Peer is actively broadcasting via socket AND peer messageId matches this message!
+    bool isLiveActive = false;
+    if (isLiveType && !isStopped) {
+      if (isMe) {
+        isLiveActive = _liveLocationService.isSharing && _liveLocationService.activeMessageId == message.id;
+      } else {
+        final peerLive = _socketService.lastLiveLocations[widget.peerUser.uid];
+        final peerMsgId = peerLive?['messageId']?.toString();
+        isLiveActive = peerLive != null && (peerMsgId == null || peerMsgId == message.id);
+      }
+    }
 
     // Parse coordinates if available from mediaUrl (https://maps.google.com/?q=lat,lon)
     LatLng locationPos = const LatLng(39.925533, 32.866287);
@@ -1657,21 +1674,28 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    // Check if we have newer active real-time coordinates from SocketService
-    final trackedUid = isMe ? widget.currentUser.uid : widget.peerUser.uid;
-    final cachedLive = _socketService.lastLiveLocations[trackedUid];
-    if (isLive && cachedLive != null) {
-      final cLat = (cachedLive['latitude'] as num?)?.toDouble();
-      final cLon = (cachedLive['longitude'] as num?)?.toDouble();
-      if (cLat != null && cLon != null) {
-        locationPos = LatLng(cLat, cLon);
+    // If actively streaming, use the latest real-time GPS coordinates
+    if (isLiveActive) {
+      if (isMe) {
+        if (_liveLocationService.lastPosition != null) {
+          locationPos = _liveLocationService.lastPosition!;
+        }
+      } else {
+        final cachedLive = _socketService.lastLiveLocations[widget.peerUser.uid];
+        if (cachedLive != null) {
+          final cLat = (cachedLive['latitude'] as num?)?.toDouble();
+          final cLon = (cachedLive['longitude'] as num?)?.toDouble();
+          if (cLat != null && cLon != null) {
+            locationPos = LatLng(cLat, cLon);
+          }
+        }
       }
     }
 
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: () {
-        if (isLive) {
+        if (isLiveType) {
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -1680,6 +1704,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 peerUser: widget.peerUser,
                 currentUser: widget.currentUser,
                 isMyLiveLocation: isMe,
+                isLiveActive: isLiveActive,
                 messageId: message.id,
                 onStopSharing: () => _stopLiveLocationSharing(messageId: message.id),
               ),
@@ -1706,9 +1731,11 @@ class _ChatScreenState extends State<ChatScreen> {
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(10),
                 gradient: LinearGradient(
-                  colors: isLive
+                  colors: isLiveActive
                       ? [const Color(0xFF0F2027), const Color(0xFF203A43), const Color(0xFF2C5364)]
-                      : [const Color(0xFF1E3C72), const Color(0xFF2A5298)],
+                      : isLiveType
+                          ? [const Color(0xFF1E242B), const Color(0xFF232A32)]
+                          : [const Color(0xFF1E3C72), const Color(0xFF2A5298)],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
@@ -1735,8 +1762,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
 
-                  // Live pulsing rings
-                  if (isLive)
+                  // Live pulsing rings (ONLY for active live location)
+                  if (isLiveActive)
                     Container(
                       width: 72,
                       height: 72,
@@ -1755,25 +1782,39 @@ class _ChatScreenState extends State<ChatScreen> {
                       Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: isLive ? AppColors.onlineGreen : const Color(0xFFFF5722),
+                          color: isLiveActive
+                              ? AppColors.onlineGreen
+                              : isLiveType
+                                  ? Colors.white.withOpacity(0.12)
+                                  : const Color(0xFFFF5722),
                           shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: (isLive ? AppColors.onlineGreen : const Color(0xFFFF5722)).withOpacity(0.5),
-                              blurRadius: 10,
-                              spreadRadius: 2,
-                            ),
-                          ],
+                          boxShadow: isLiveActive
+                              ? [
+                                  BoxShadow(
+                                    color: AppColors.onlineGreen.withOpacity(0.5),
+                                    blurRadius: 10,
+                                    spreadRadius: 2,
+                                  ),
+                                ]
+                              : null,
                         ),
                         child: Icon(
-                          isLive ? Icons.sensors_rounded : Icons.location_on_rounded,
+                          isLiveActive
+                              ? Icons.sensors_rounded
+                              : isLiveType
+                                  ? Icons.location_off_rounded
+                                  : Icons.location_on_rounded,
                           color: Colors.white,
                           size: 26,
                         ),
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        isLive ? 'Canlı Takip Et' : 'Haritada Görüntüle',
+                        isLiveActive
+                            ? 'Canlı Takip Et'
+                            : isLiveType
+                                ? 'Konumu Görüntüle'
+                                : 'Haritada Görüntüle',
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 12,
@@ -1784,8 +1825,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
 
-                  // Top right live badge
-                  if (isLive)
+                  // Top right badge
+                  if (isLiveActive)
                     Positioned(
                       top: 8,
                       right: 8,
@@ -1807,6 +1848,23 @@ class _ChatScreenState extends State<ChatScreen> {
                           ],
                         ),
                       ),
+                    )
+                  else if (isLiveType)
+                    Positioned(
+                      top: 8,
+                      right: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.4),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white24, width: 0.8),
+                        ),
+                        child: const Text(
+                          'SONA ERDİ',
+                          style: TextStyle(color: Colors.white60, fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
+                      ),
                     ),
                 ],
               ),
@@ -1815,16 +1873,26 @@ class _ChatScreenState extends State<ChatScreen> {
             Row(
               children: [
                 Icon(
-                  isLive ? Icons.near_me_rounded : Icons.pin_drop_rounded,
-                  color: isLive ? AppColors.onlineGreen : const Color(0xFFFF5722),
+                  isLiveActive
+                      ? Icons.near_me_rounded
+                      : isLiveType
+                          ? Icons.location_off_rounded
+                          : Icons.pin_drop_rounded,
+                  color: isLiveActive
+                      ? AppColors.onlineGreen
+                      : isLiveType
+                          ? Colors.white54
+                          : const Color(0xFFFF5722),
                   size: 18,
                 ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    message.content.isNotEmpty ? message.content : 'Paylaşılan Konum',
-                    style: const TextStyle(
-                      color: Colors.white,
+                    isLiveType && !isLiveActive
+                        ? 'Canlı konum paylaşımı sona erdi'
+                        : (message.content.isNotEmpty ? message.content : 'Paylaşılan Konum'),
+                    style: TextStyle(
+                      color: isLiveType && !isLiveActive ? Colors.white60 : Colors.white,
                       fontSize: 12.5,
                       fontWeight: FontWeight.w600,
                     ),
@@ -1833,17 +1901,23 @@ class _ChatScreenState extends State<ChatScreen> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
+                    color: isLiveActive
+                        ? AppColors.onlineGreen.withOpacity(0.2)
+                        : Colors.white.withOpacity(0.12),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    isLive ? 'Canlı' : 'Harita',
-                    style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                    isLiveActive ? 'Canlı' : (isLiveType ? 'Sona Erdi' : 'Harita'),
+                    style: TextStyle(
+                      color: isLiveActive ? AppColors.onlineGreen : (isLiveType ? Colors.white60 : Colors.white),
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
             ),
-            if (isLive && isMe && _liveLocationService.isSharingWith(widget.peerUser.uid)) ...[
+            if (isLiveActive && isMe) ...[
               const SizedBox(height: 8),
               SizedBox(
                 width: double.infinity,
