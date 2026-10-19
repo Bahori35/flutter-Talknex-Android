@@ -41,9 +41,13 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
   double _speed = 0.0;
   bool _isLiveActive = true;
   bool _isFollowing = true;
+  double _currentZoom = 16.5;
   DateTime _lastUpdate = DateTime.now();
   StreamSubscription<Position>? _myGpsSubscription;
   AnimationController? _pulseController;
+  Timer? _autoRecenterTimer;
+  Timer? _countdownTimer;
+  int _autoRecenterSecondsLeft = 4;
 
   @override
   void initState() {
@@ -71,7 +75,7 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
       _peerLocation = widget.initialPosition;
     }
 
-    // 2. Track own GPS location (and if sender, also actively update avatar position on map)
+    // 2. Track own GPS location (and if sender, actively update avatar position on map)
     _trackMyGps();
 
     // 3. Listen to real-time live location updates from Socket (for recipient)
@@ -92,8 +96,9 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
             _lastUpdate = DateTime.now();
             _isLiveActive = true;
           });
+          // Auto-center recipient camera on moving sender
           if (!widget.isMyLiveLocation && _isFollowing) {
-            _mapController.move(newPos, _mapController.camera.zoom);
+            _mapController.move(newPos, _currentZoom);
           }
         }
       }
@@ -135,7 +140,7 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
           }
         });
         if (widget.isMyLiveLocation && _isFollowing) {
-          _mapController.move(newPos, 16.5);
+          _mapController.move(newPos, _currentZoom);
         }
       }
 
@@ -158,8 +163,9 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
           });
 
           if (widget.isMyLiveLocation) {
+            // Auto-center sender camera on own moving vehicle / position
             if (_isFollowing) {
-              _mapController.move(newPos, _mapController.camera.zoom);
+              _mapController.move(newPos, _currentZoom);
             }
             if (_isLiveActive) {
               _socketService.emitLiveLocationUpdate(
@@ -180,7 +186,70 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
     }
   }
 
+  void _onPositionChanged(MapCamera camera, bool hasGesture) {
+    _currentZoom = camera.zoom;
+    if (hasGesture) {
+      if (_isFollowing) {
+        setState(() {
+          _isFollowing = false;
+          _autoRecenterSecondsLeft = 4;
+        });
+      }
+      _startAutoRecenterTimer();
+    }
+  }
+
+  void _startAutoRecenterTimer() {
+    _autoRecenterTimer?.cancel();
+    _countdownTimer?.cancel();
+
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || _isFollowing) {
+        timer.cancel();
+        return;
+      }
+      if (_autoRecenterSecondsLeft > 1) {
+        setState(() {
+          _autoRecenterSecondsLeft--;
+        });
+      } else {
+        timer.cancel();
+      }
+    });
+
+    _autoRecenterTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && !_isFollowing) {
+        _resumeAutoFollow();
+      }
+    });
+  }
+
+  void _resumeAutoFollow() {
+    _autoRecenterTimer?.cancel();
+    _countdownTimer?.cancel();
+    _autoRecenterTimer = null;
+    _countdownTimer = null;
+    if (mounted) {
+      setState(() {
+        _isFollowing = true;
+      });
+      _mapController.move(_peerLocation, _currentZoom);
+    }
+  }
+
+  void _zoomIn() {
+    _currentZoom = (_currentZoom + 1).clamp(4.0, 19.0);
+    _mapController.move(_peerLocation, _currentZoom);
+  }
+
+  void _zoomOut() {
+    _currentZoom = (_currentZoom - 1).clamp(4.0, 19.0);
+    _mapController.move(_peerLocation, _currentZoom);
+  }
+
   void _stopSharingAction() {
+    _autoRecenterTimer?.cancel();
+    _countdownTimer?.cancel();
     _myGpsSubscription?.cancel();
     _myGpsSubscription = null;
     setState(() {
@@ -197,6 +266,8 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
 
   @override
   void dispose() {
+    _autoRecenterTimer?.cancel();
+    _countdownTimer?.cancel();
     _pulseController?.dispose();
     _myGpsSubscription?.cancel();
     if (_socketService.onLiveLocationUpdate != null) {
@@ -208,19 +279,13 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
     super.dispose();
   }
 
-  void _reCenterToPeer() {
-    setState(() {
-      _isFollowing = true;
-    });
-    _mapController.move(_peerLocation, 17.0);
-  }
-
   void _reCenterToMe() {
     if (_myLocation != null) {
       setState(() {
         _isFollowing = false;
       });
-      _mapController.move(_myLocation!, 17.0);
+      _mapController.move(_myLocation!, _currentZoom);
+      _startAutoRecenterTimer();
     }
   }
 
@@ -333,16 +398,10 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
             mapController: _mapController,
             options: MapOptions(
               initialCenter: _peerLocation,
-              initialZoom: 16.5,
+              initialZoom: _currentZoom,
               maxZoom: 19.0,
               minZoom: 4.0,
-              onPositionChanged: (camera, hasGesture) {
-                if (hasGesture && _isFollowing) {
-                  setState(() {
-                    _isFollowing = false;
-                  });
-                }
-              },
+              onPositionChanged: _onPositionChanged,
             ),
             children: [
               TileLayer(
@@ -469,30 +528,152 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProv
             ],
           ),
 
-          // Floating Action Buttons (Recenter buttons)
+          // Top Status Pill (Shows Auto-Tracking status or Recenter countdown)
+          Positioned(
+            top: 12,
+            left: 16,
+            right: 16,
+            child: Center(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 250),
+                child: _isFollowing
+                    ? Container(
+                        key: const ValueKey('following_badge'),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF16231D).withOpacity(0.92),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: AppColors.onlineGreen.withOpacity(0.6), width: 1.2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.35),
+                              blurRadius: 8,
+                              offset: const Offset(0, 3),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: const BoxDecoration(
+                                color: AppColors.onlineGreen,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              widget.isMyLiveLocation
+                                  ? 'Otomatik Takip: Konumunuz Merkezde'
+                                  : 'Otomatik Takip: ${widget.peerUser.displayName} Merkezde',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 12.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : GestureDetector(
+                        key: const ValueKey('recenter_badge'),
+                        onTap: _resumeAutoFollow,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF2E2214).withOpacity(0.95),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFFFF9800), width: 1.5),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.4),
+                                blurRadius: 8,
+                                offset: const Offset(0, 3),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.my_location_rounded, color: Color(0xFFFF9800), size: 16),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Yeniden Ortala ($_autoRecenterSecondsLeft sn)',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+              ),
+            ),
+          ),
+
+          // Floating Action Buttons (Zoom Controls & Recenter Button)
           Positioned(
             right: 16,
             bottom: widget.isMyLiveLocation ? 100 : 36,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Zoom In / Out Buttons (Perfect for in-car hands-free control)
+                Container(
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppColors.cardBorder),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.add_rounded, color: Colors.white, size: 22),
+                        onPressed: _zoomIn,
+                        tooltip: 'Yakınlaştır',
+                      ),
+                      Container(height: 1, width: 30, color: Colors.white12),
+                      IconButton(
+                        icon: const Icon(Icons.remove_rounded, color: Colors.white, size: 22),
+                        onPressed: _zoomOut,
+                        tooltip: 'Uzaklaştır',
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // My own location button for receiver
                 if (!widget.isMyLiveLocation && _myLocation != null) ...[
                   FloatingActionButton.small(
                     heroTag: 'my_loc_btn',
                     backgroundColor: AppColors.surface,
                     foregroundColor: Colors.blueAccent,
-                    tooltip: 'Konumuma Git',
+                    tooltip: 'Benim Konumum',
                     onPressed: _reCenterToMe,
-                    child: const Icon(Icons.my_location_rounded),
+                    child: const Icon(Icons.person_pin_circle_outlined),
                   ),
                   const SizedBox(height: 10),
                 ],
+
+                // Recenter / Follow FAB
                 FloatingActionButton(
                   heroTag: 'peer_loc_btn',
                   backgroundColor: _isFollowing ? AppColors.onlineGreen : AppColors.surface,
                   foregroundColor: _isFollowing ? Colors.white : AppColors.textPrimary,
-                  tooltip: widget.isMyLiveLocation ? 'Beni Takip Et' : '${widget.peerUser.displayName}\'i Takip Et',
-                  onPressed: _reCenterToPeer,
+                  tooltip: 'Ortala ve Takip Et',
+                  onPressed: _resumeAutoFollow,
                   child: Icon(
                     widget.isMyLiveLocation ? Icons.my_location_rounded : Icons.person_pin_circle_rounded,
                     size: 26,
