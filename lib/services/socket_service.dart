@@ -50,6 +50,7 @@ class SocketService {
   OnUserStatusChange? onUserStatusChange;
   OnLiveLocationUpdate? onLiveLocationUpdate;
   OnLiveLocationStopped? onLiveLocationStopped;
+  final Map<String, Map<String, dynamic>> lastLiveLocations = {};
   OnMessageDeleted? onMessageDeleted;
   OnMessageEdited? onMessageEdited;
   OnMessageSent? onMessageSent;
@@ -246,14 +247,26 @@ class SocketService {
           break;
 
         case 'live_location_received':
-          if (onLiveLocationUpdate != null && data is Map<String, dynamic>) {
-            onLiveLocationUpdate!(Map<String, dynamic>.from(data));
+          if (data is Map<String, dynamic>) {
+            final sId = data['senderId']?.toString();
+            if (sId != null && sId.isNotEmpty) {
+              lastLiveLocations[sId] = Map<String, dynamic>.from(data);
+            }
+            if (onLiveLocationUpdate != null) {
+              onLiveLocationUpdate!(Map<String, dynamic>.from(data));
+            }
           }
           break;
 
         case 'live_location_stopped':
-          if (onLiveLocationStopped != null && data is Map<String, dynamic>) {
-            onLiveLocationStopped!(Map<String, dynamic>.from(data));
+          if (data is Map<String, dynamic>) {
+            final sId = data['senderId']?.toString();
+            if (sId != null && sId.isNotEmpty) {
+              lastLiveLocations.remove(sId);
+            }
+            if (onLiveLocationStopped != null) {
+              onLiveLocationStopped!(Map<String, dynamic>.from(data));
+            }
           }
           break;
 
@@ -374,7 +387,7 @@ class SocketService {
     double? speed,
     String? messageId,
   }) {
-    _emit('live_location_update', {
+    final payload = {
       'senderId': senderId,
       'receiverId': receiverId,
       'latitude': latitude,
@@ -382,7 +395,9 @@ class SocketService {
       'heading': heading ?? 0.0,
       'speed': speed ?? 0.0,
       if (messageId != null) 'messageId': messageId,
-    });
+    };
+    lastLiveLocations[senderId] = payload;
+    _emit('live_location_update', payload);
   }
 
   // Stop Live Location
@@ -391,6 +406,7 @@ class SocketService {
     required String receiverId,
     String? messageId,
   }) {
+    lastLiveLocations.remove(senderId);
     _emit('stop_live_location', {
       'senderId': senderId,
       'receiverId': receiverId,

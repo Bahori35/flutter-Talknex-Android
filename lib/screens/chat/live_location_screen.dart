@@ -31,7 +31,7 @@ class LiveLocationScreen extends StatefulWidget {
   State<LiveLocationScreen> createState() => _LiveLocationScreenState();
 }
 
-class _LiveLocationScreenState extends State<LiveLocationScreen> {
+class _LiveLocationScreenState extends State<LiveLocationScreen> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
   final SocketService _socketService = SocketService();
   
@@ -40,18 +40,41 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
   double _heading = 0.0;
   double _speed = 0.0;
   bool _isLiveActive = true;
+  bool _isFollowing = true;
   DateTime _lastUpdate = DateTime.now();
   StreamSubscription<Position>? _myGpsSubscription;
+  AnimationController? _pulseController;
 
   @override
   void initState() {
     super.initState();
-    _peerLocation = widget.initialPosition;
 
-    // Track own GPS location
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat();
+
+    // 1. Check if we already have newer cached live coordinates in SocketService
+    final trackedUid = widget.isMyLiveLocation ? widget.currentUser.uid : widget.peerUser.uid;
+    final cached = _socketService.lastLiveLocations[trackedUid];
+    if (cached != null) {
+      final lat = (cached['latitude'] as num?)?.toDouble();
+      final lon = (cached['longitude'] as num?)?.toDouble();
+      if (lat != null && lon != null) {
+        _peerLocation = LatLng(lat, lon);
+        _heading = (cached['heading'] as num?)?.toDouble() ?? 0.0;
+        _speed = (cached['speed'] as num?)?.toDouble() ?? 0.0;
+      } else {
+        _peerLocation = widget.initialPosition;
+      }
+    } else {
+      _peerLocation = widget.initialPosition;
+    }
+
+    // 2. Track own GPS location (and if sender, also actively update avatar position on map)
     _trackMyGps();
 
-    // Listen to real-time live location updates from Socket
+    // 3. Listen to real-time live location updates from Socket (for recipient)
     _socketService.onLiveLocationUpdate = (data) {
       final senderId = data['senderId']?.toString();
       if (senderId == widget.peerUser.uid) {
@@ -61,13 +84,17 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
         final speed = (data['speed'] as num?)?.toDouble() ?? 0.0;
 
         if (lat != null && lon != null && mounted) {
+          final newPos = LatLng(lat, lon);
           setState(() {
-            _peerLocation = LatLng(lat, lon);
+            _peerLocation = newPos;
             _heading = heading;
             _speed = speed;
             _lastUpdate = DateTime.now();
             _isLiveActive = true;
           });
+          if (!widget.isMyLiveLocation && _isFollowing) {
+            _mapController.move(newPos, _mapController.camera.zoom);
+          }
         }
       }
     };
@@ -97,31 +124,54 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
       ).catchError((_) => null as dynamic);
 
       if (pos != null && mounted) {
+        final newPos = LatLng(pos.latitude, pos.longitude);
         setState(() {
-          _myLocation = LatLng(pos.latitude, pos.longitude);
+          _myLocation = newPos;
+          if (widget.isMyLiveLocation) {
+            _peerLocation = newPos;
+            _heading = pos.heading;
+            _speed = pos.speed;
+            _lastUpdate = DateTime.now();
+          }
         });
+        if (widget.isMyLiveLocation && _isFollowing) {
+          _mapController.move(newPos, 16.5);
+        }
       }
 
       _myGpsSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 3,
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 2,
         ),
       ).listen((Position position) {
         if (mounted) {
+          final newPos = LatLng(position.latitude, position.longitude);
           setState(() {
-            _myLocation = LatLng(position.latitude, position.longitude);
+            _myLocation = newPos;
+            if (widget.isMyLiveLocation) {
+              _peerLocation = newPos;
+              _heading = position.heading;
+              _speed = position.speed;
+              _lastUpdate = DateTime.now();
+            }
           });
-          if (widget.isMyLiveLocation && _isLiveActive) {
-            _socketService.emitLiveLocationUpdate(
-              senderId: widget.currentUser.uid,
-              receiverId: widget.peerUser.uid,
-              latitude: position.latitude,
-              longitude: position.longitude,
-              heading: position.heading,
-              speed: position.speed,
-              messageId: widget.messageId,
-            );
+
+          if (widget.isMyLiveLocation) {
+            if (_isFollowing) {
+              _mapController.move(newPos, _mapController.camera.zoom);
+            }
+            if (_isLiveActive) {
+              _socketService.emitLiveLocationUpdate(
+                senderId: widget.currentUser.uid,
+                receiverId: widget.peerUser.uid,
+                latitude: position.latitude,
+                longitude: position.longitude,
+                heading: position.heading,
+                speed: position.speed,
+                messageId: widget.messageId,
+              );
+            }
           }
         }
       });
@@ -147,16 +197,29 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
 
   @override
   void dispose() {
+    _pulseController?.dispose();
     _myGpsSubscription?.cancel();
+    if (_socketService.onLiveLocationUpdate != null) {
+      _socketService.onLiveLocationUpdate = null;
+    }
+    if (_socketService.onLiveLocationStopped != null) {
+      _socketService.onLiveLocationStopped = null;
+    }
     super.dispose();
   }
 
   void _reCenterToPeer() {
+    setState(() {
+      _isFollowing = true;
+    });
     _mapController.move(_peerLocation, 17.0);
   }
 
   void _reCenterToMe() {
     if (_myLocation != null) {
+      setState(() {
+        _isFollowing = false;
+      });
       _mapController.move(_myLocation!, 17.0);
     }
   }
@@ -165,6 +228,37 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
     final url = Uri.parse('https://maps.google.com/?q=${_peerLocation.latitude},${_peerLocation.longitude}');
     if (await canLaunchUrl(url)) {
       await launchUrl(url, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  String _buildStatusSubtitle() {
+    if (!_isLiveActive) {
+      return 'Paylaşım sona erdi';
+    }
+    if (widget.isMyLiveLocation) {
+      if (_speed > 0.8) {
+        final kmh = (_speed * 3.6).toStringAsFixed(0);
+        return 'Hareket halinde • $kmh km/s';
+      }
+      return 'Canlı yayında';
+    } else {
+      String distText = '';
+      if (_myLocation != null) {
+        final dMeters = Geolocator.distanceBetween(
+          _myLocation!.latitude,
+          _myLocation!.longitude,
+          _peerLocation.latitude,
+          _peerLocation.longitude,
+        );
+        distText = dMeters >= 1000
+            ? ' • ${(dMeters / 1000).toStringAsFixed(1)} km uzakta'
+            : ' • ${dMeters.round()} m uzakta';
+      }
+      if (_speed > 0.8) {
+        final kmh = (_speed * 3.6).toStringAsFixed(0);
+        return '$kmh km/s$distText';
+      }
+      return 'Canlı yayında$distText';
     }
   }
 
@@ -210,7 +304,7 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
                       ),
                       const SizedBox(width: 5),
                       Text(
-                        _isLiveActive ? 'Canlı yayında' : 'Paylaşım sona erdi',
+                        _buildStatusSubtitle(),
                         style: TextStyle(
                           fontSize: 11.5,
                           color: _isLiveActive ? AppColors.onlineGreen : AppColors.textSecondary,
@@ -242,6 +336,13 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
               initialZoom: 16.5,
               maxZoom: 19.0,
               minZoom: 4.0,
+              onPositionChanged: (camera, hasGesture) {
+                if (hasGesture && _isFollowing) {
+                  setState(() {
+                    _isFollowing = false;
+                  });
+                }
+              },
             ),
             children: [
               TileLayer(
@@ -292,41 +393,66 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
                       ),
                     ),
 
-                  // Live peer / tracked user moving pin
+                  // Live moving user avatar pin with pulse ring & pointer
                   Marker(
                     point: _peerLocation,
-                    width: 70,
-                    height: 80,
+                    width: 74,
+                    height: 84,
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         // Avatar Bubble Pin
-                        Container(
-                          width: 52,
-                          height: 52,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: _isLiveActive ? AppColors.onlineGreen : const Color(0xFFFF5722),
-                              width: 3.5,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: (_isLiveActive ? AppColors.onlineGreen : const Color(0xFFFF5722)).withOpacity(0.5),
-                                blurRadius: 14,
-                                spreadRadius: 2,
-                                offset: const Offset(0, 4),
+                        Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            // Pulsing radar ring around live avatar
+                            if (_isLiveActive && _pulseController != null)
+                              AnimatedBuilder(
+                                animation: _pulseController!,
+                                builder: (context, child) {
+                                  final val = _pulseController!.value;
+                                  return Container(
+                                    width: 52 + (val * 16),
+                                    height: 52 + (val * 16),
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: AppColors.onlineGreen.withOpacity(1.0 - val),
+                                        width: 2.0,
+                                      ),
+                                    ),
+                                  );
+                                },
                               ),
-                            ],
-                          ),
-                          child: ClipOval(
-                            child: CachedNetworkImage(
-                              imageUrl: activeUser.photoUrl,
-                              fit: BoxFit.cover,
-                              placeholder: (_, __) => Container(color: AppColors.surfaceLight),
-                              errorWidget: (_, __, ___) => const Icon(Icons.person, color: Colors.white),
+
+                            Container(
+                              width: 52,
+                              height: 52,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: _isLiveActive ? AppColors.onlineGreen : const Color(0xFFFF5722),
+                                  width: 3.5,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: (_isLiveActive ? AppColors.onlineGreen : const Color(0xFFFF5722)).withOpacity(0.5),
+                                    blurRadius: 14,
+                                    spreadRadius: 2,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                              ),
+                              child: ClipOval(
+                                child: CachedNetworkImage(
+                                  imageUrl: activeUser.photoUrl,
+                                  fit: BoxFit.cover,
+                                  placeholder: (_, __) => Container(color: AppColors.surfaceLight),
+                                  errorWidget: (_, __, ___) => const Icon(Icons.person, color: Colors.white),
+                                ),
+                              ),
                             ),
-                          ),
+                          ],
                         ),
                         // Pin downward arrow indicator
                         CustomPaint(
@@ -346,7 +472,7 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
           // Floating Action Buttons (Recenter buttons)
           Positioned(
             right: 16,
-            bottom: widget.isMyLiveLocation ? 95 : 30,
+            bottom: widget.isMyLiveLocation ? 100 : 36,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -355,6 +481,7 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
                     heroTag: 'my_loc_btn',
                     backgroundColor: AppColors.surface,
                     foregroundColor: Colors.blueAccent,
+                    tooltip: 'Konumuma Git',
                     onPressed: _reCenterToMe,
                     child: const Icon(Icons.my_location_rounded),
                   ),
@@ -362,10 +489,14 @@ class _LiveLocationScreenState extends State<LiveLocationScreen> {
                 ],
                 FloatingActionButton(
                   heroTag: 'peer_loc_btn',
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
+                  backgroundColor: _isFollowing ? AppColors.onlineGreen : AppColors.surface,
+                  foregroundColor: _isFollowing ? Colors.white : AppColors.textPrimary,
+                  tooltip: widget.isMyLiveLocation ? 'Beni Takip Et' : '${widget.peerUser.displayName}\'i Takip Et',
                   onPressed: _reCenterToPeer,
-                  child: const Icon(Icons.person_pin_circle_rounded, size: 28),
+                  child: Icon(
+                    widget.isMyLiveLocation ? Icons.my_location_rounded : Icons.person_pin_circle_rounded,
+                    size: 26,
+                  ),
                 ),
               ],
             ),

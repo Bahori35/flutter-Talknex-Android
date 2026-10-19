@@ -465,8 +465,8 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       _liveLocationSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 3,
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 2,
         ),
       ).listen((Position position) {
         if (_isSharingLiveLocation) {
@@ -499,9 +499,9 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _sendMessage({String? customContent, MessageType type = MessageType.text, String? mediaUrl}) {
+  MessageModel? _sendMessage({String? customContent, MessageType type = MessageType.text, String? mediaUrl}) {
     final text = (customContent ?? _messageController.text).trim();
-    if (text.isEmpty && mediaUrl == null) return;
+    if (text.isEmpty && mediaUrl == null) return null;
 
     final newMessage = MessageModel(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -539,6 +539,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (customContent == null) {
       _messageController.clear();
     }
+    return newMessage;
   }
 
   bool _isVideoFile(String filePath) {
@@ -930,14 +931,14 @@ class _ChatScreenState extends State<ChatScreen> {
         content = '📌 ${result.title}\n${result.address}';
       }
 
-      _sendMessage(
+      final sentMsg = _sendMessage(
         customContent: content,
         type: MessageType.location,
         mediaUrl: mapsUrl,
       );
 
       if (isLive) {
-        _startLiveLocationSharing();
+        _startLiveLocationSharing(messageId: sentMsg?.id);
       }
     }
   }
@@ -1619,6 +1620,17 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       } catch (e) {
         debugPrint('[PARSE COORDS ERR] $e');
+      }
+    }
+
+    // Check if we have newer active real-time coordinates from SocketService
+    final trackedUid = isMe ? widget.currentUser.uid : widget.peerUser.uid;
+    final cachedLive = _socketService.lastLiveLocations[trackedUid];
+    if (isLive && cachedLive != null) {
+      final cLat = (cachedLive['latitude'] as num?)?.toDouble();
+      final cLon = (cachedLive['longitude'] as num?)?.toDouble();
+      if (cLat != null && cLon != null) {
+        locationPos = LatLng(cLat, cLon);
       }
     }
 
