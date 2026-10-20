@@ -156,9 +156,43 @@ class EmergencyService extends ChangeNotifier {
         'phoneNumber': c.phoneNumber,
       })).toList();
       await prefs.setStringList('emergency_contacts_json', list);
+
+      // Save raw JSON string so Kotlin native service can read contacts instantly even when app is killed/closed
+      final rawList = _contacts.map((c) => {
+        'uid': c.uid,
+        'username': c.username,
+        'displayName': c.displayName,
+        'phoneNumber': c.phoneNumber,
+      }).toList();
+      await prefs.setString('emergency_contacts_raw_json', jsonEncode(rawList));
     } catch (e) {
       debugPrint('[EMERGENCY SAVE CONTACTS ERROR] $e');
     }
+  }
+
+  /// Checks whether Android Accessibility Service is enabled for background key interception
+  Future<bool> isAccessibilityEnabled() async {
+    try {
+      final res = await _nativeChannel.invokeMethod<bool>('isAccessibilityEnabled');
+      return res ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Opens Android Accessibility Settings page directly so user can turn on Talknex SOS service
+  Future<void> openAccessibilitySettings() async {
+    try {
+      await _nativeChannel.invokeMethod('openAccessibilitySettings');
+    } catch (_) {}
+  }
+
+  /// Sets current user id in SharedPreferences so Kotlin background service can read it
+  Future<void> syncEmergencyUserId(String uid) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('emergency_user_id', uid);
+    } catch (_) {}
   }
 
   /// Updates custom emergency message

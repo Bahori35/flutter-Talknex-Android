@@ -1,13 +1,19 @@
 package com.talknex.app
 
+import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Bundle
 import android.net.Uri
 import android.provider.MediaStore
+import android.provider.Settings
+import android.text.TextUtils
+import android.view.WindowManager
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -370,6 +376,21 @@ class MainActivity : FlutterActivity() {
                     assignedTriggerKey = key
                     emergencyEnabled = enabled
                     result.success(true)
+                }
+                "isAccessibilityEnabled" -> {
+                    val enabled = isAccessibilityServiceEnabled(applicationContext, EmergencyAccessibilityService::class.java)
+                    result.success(enabled)
+                }
+                "openAccessibilitySettings" -> {
+                    try {
+                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("OPEN_SETTINGS_FAILED", e.message, null)
+                    }
                 }
                 else -> result.notImplemented()
             }
@@ -944,6 +965,66 @@ class MainActivity : FlutterActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        wakeAndUnlockScreen()
+        checkEmergencyTrigger(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        wakeAndUnlockScreen()
+        checkEmergencyTrigger(intent)
+    }
+
+    private fun checkEmergencyTrigger(intent: Intent?) {
+        if (intent?.getBooleanExtra("trigger_emergency", false) == true) {
+            android.util.Log.i("MainActivity", "🚨 Launched with trigger_emergency=true! Broadcasting to Flutter...")
+            CoroutineScope(Dispatchers.Main).launch {
+                delay(600L) // Wait slightly for FlutterEngine/MethodChannel readiness
+                emergencyMethodChannel?.invokeMethod("triggerEmergency", null)
+            }
+        }
+    }
+
+    private fun wakeAndUnlockScreen() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun isAccessibilityServiceEnabled(context: Context, serviceClass: Class<out AccessibilityService>): Boolean {
+        return try {
+            val expectedServiceName = "${context.packageName}/${serviceClass.name}"
+            val enabledServices = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: return false
+            val colonSplitter = TextUtils.SimpleStringSplitter(':')
+            colonSplitter.setString(enabledServices)
+            while (colonSplitter.hasNext()) {
+                val componentName = colonSplitter.next()
+                if (componentName.equals(expectedServiceName, ignoreCase = true)) {
+                    return true
+                }
+            }
+            false
+        } catch (_: Exception) {
+            false
+        }
     }
 
     override fun onDestroy() {

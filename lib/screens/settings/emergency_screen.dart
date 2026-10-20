@@ -14,12 +14,14 @@ class EmergencyScreen extends StatefulWidget {
   State<EmergencyScreen> createState() => _EmergencyScreenState();
 }
 
-class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProviderStateMixin {
+class _EmergencyScreenState extends State<EmergencyScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final EmergencyService _emergencyService = EmergencyService();
   final CustomChatService _chatService = CustomChatService();
   late TextEditingController _messageController;
   late AnimationController _pulseController;
   bool _isSavingMessage = false;
+  bool _isAccessibilityActive = false;
 
   final List<String> _presetTemplates = [
     '🚨 Başım dertte ve yardıma ihtiyacım var! Canlı konumuma bakın!',
@@ -31,15 +33,43 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _messageController = TextEditingController(text: _emergencyService.customMessage);
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
+
+    _checkAccessibility();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final authService = Provider.of<CustomAuthService>(context, listen: false);
+      final user = authService.currentUser;
+      if (user != null) {
+        _emergencyService.syncEmergencyUserId(user.uid);
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkAccessibility();
+    }
+  }
+
+  Future<void> _checkAccessibility() async {
+    final enabled = await _emergencyService.isAccessibilityEnabled();
+    if (mounted) {
+      setState(() {
+        _isAccessibilityActive = enabled;
+      });
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _messageController.dispose();
     _pulseController.dispose();
     super.dispose();
@@ -304,6 +334,11 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
                     ],
                   ),
                 ),
+
+                const SizedBox(height: 18),
+
+                // Background / Closed-App Accessibility Protection Card
+                _buildAccessibilityCard(),
 
                 const SizedBox(height: 22),
 
@@ -588,6 +623,97 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
           ),
         );
       },
+    );
+  }
+
+  Widget _buildAccessibilityCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _isAccessibilityActive
+            ? const Color(0xFF142B1E)
+            : const Color(0xFF2E1C14),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _isAccessibilityActive
+              ? AppColors.onlineGreen.withOpacity(0.5)
+              : AppColors.accent.withOpacity(0.5),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: _isAccessibilityActive
+                      ? AppColors.onlineGreen.withOpacity(0.2)
+                      : AppColors.accent.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  _isAccessibilityActive
+                      ? Icons.verified_user_rounded
+                      : Icons.power_settings_new_rounded,
+                  color: _isAccessibilityActive
+                      ? AppColors.onlineGreen
+                      : AppColors.accent,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _isAccessibilityActive
+                          ? 'Kapalıyken Koruma: Aktif ✅'
+                          : 'Uygulama Kapalıyken Tuş Algılama',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      _isAccessibilityActive
+                          ? 'Uygulama kapalı veya ekran kilitli dahi olsa tuşa 3 sn basınca otomatik çalışır.'
+                          : 'Uygulama kapalıyken veya kilitliyken tuşun çalışması için bir defaya mahsus izin verilmelidir.',
+                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (!_isAccessibilityActive) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 40,
+              child: ElevatedButton.icon(
+                onPressed: () => _emergencyService.openAccessibilitySettings(),
+                icon: const Icon(Icons.touch_app_rounded, size: 16),
+                label: const Text(
+                  'Erişilebilirlik İznini Aç (1 Defaya Mahsus)',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.accent,
+                  foregroundColor: Colors.black,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="emergency_accessibility_service_name">Talknex Acil Durum Koruması</string>
+    <string name="emergency_accessibility_service_description">Uygulama kapalıyken veya ekran kilitliyken tanımlanan tuşa 3 saniye basıldığında acil durum SOS mesajını ve canlı konumu otomatik göndermek için kullanılır.</string>
+</resources>
