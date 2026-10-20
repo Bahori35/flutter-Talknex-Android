@@ -40,6 +40,8 @@ class LiveLocationService {
 
   // Set of message IDs that have been ended/stopped (persisted in SharedPreferences)
   final Set<String> _stoppedMessageIds = {};
+  // Multiple active receivers (e.g. for Emergency SOS broadcast to up to 10 contacts)
+  final Set<String> _activeReceiverIds = {};
 
   // Broadcast stream controller to notify active UI widgets (LiveLocationScreen, ChatScreen, etc.)
   final StreamController<Position> _positionStreamController = StreamController<Position>.broadcast();
@@ -49,6 +51,7 @@ class LiveLocationService {
   bool get isSharing => _isSharing;
   String? get activeSenderId => _activeSenderId;
   String? get activeReceiverId => _activeReceiverId;
+  Set<String> get activeReceiverIds => {..._activeReceiverIds, if (_activeReceiverId != null) _activeReceiverId!};
   String? get activeMessageId => _activeMessageId;
   LatLng? get lastPosition => _lastPosition;
   double get lastHeading => _lastHeading;
@@ -59,7 +62,23 @@ class LiveLocationService {
   Stream<bool> get onSharingStatusChanged => _sharingStatusController.stream;
 
   bool isSharingWith(String peerId) {
-    return _isSharing && _activeReceiverId == peerId;
+    return _isSharing && (_activeReceiverId == peerId || _activeReceiverIds.contains(peerId));
+  }
+
+  /// Starts live location streaming for multiple receivers simultaneously (e.g. Emergency SOS)
+  Future<bool> startMultiSharing({
+    required String senderId,
+    required List<String> receiverIds,
+    String? messageId,
+  }) async {
+    _activeReceiverIds.clear();
+    _activeReceiverIds.addAll(receiverIds);
+    final firstReceiver = receiverIds.isNotEmpty ? receiverIds.first : '';
+    return startSharing(
+      senderId: senderId,
+      receiverId: firstReceiver,
+      messageId: messageId,
+    );
   }
 
   /// Checks if a specific message ID is the currently active live location
@@ -201,15 +220,7 @@ class LiveLocationService {
         _lastSpeed = initialPos.speed;
         _lastUpdateTime = DateTime.now();
 
-        _socketService.emitLiveLocationUpdate(
-          senderId: _activeSenderId!,
-          receiverId: _activeReceiverId!,
-          latitude: initialPos.latitude,
-          longitude: initialPos.longitude,
-          heading: initialPos.heading,
-          speed: initialPos.speed,
-          messageId: _activeMessageId,
-        );
+        _emitLocationToAllReceivers(_lastPosition!, _lastHeading, _lastSpeed);
 
         if (!_positionStreamController.isClosed) {
           _positionStreamController.add(initialPos);
@@ -220,6 +231,27 @@ class LiveLocationService {
     }
 
     return _startGpsStream();
+  }
+
+  void _emitLocationToAllReceivers(LatLng pos, double heading, double speed) {
+    if (_activeSenderId == null) return;
+    final allReceivers = <String>{};
+    if (_activeReceiverId != null && _activeReceiverId!.isNotEmpty) {
+      allReceivers.add(_activeReceiverId!);
+    }
+    allReceivers.addAll(_activeReceiverIds);
+
+    for (final rId in allReceivers) {
+      _socketService.emitLiveLocationUpdate(
+        senderId: _activeSenderId!,
+        receiverId: rId,
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+        heading: heading,
+        speed: speed,
+        messageId: _activeMessageId,
+      );
+    }
   }
 
   Future<bool> _startGpsStream() async {
@@ -261,15 +293,7 @@ class LiveLocationService {
           _lastSpeed = pos.speed;
           _lastUpdateTime = DateTime.now();
 
-          _socketService.emitLiveLocationUpdate(
-            senderId: _activeSenderId!,
-            receiverId: _activeReceiverId!,
-            latitude: pos.latitude,
-            longitude: pos.longitude,
-            heading: pos.heading,
-            speed: pos.speed,
-            messageId: _activeMessageId,
-          );
+          _emitLocationToAllReceivers(_lastPosition!, _lastHeading, _lastSpeed);
 
           if (!_positionStreamController.isClosed) {
             _positionStreamController.add(pos);
@@ -298,15 +322,7 @@ class LiveLocationService {
             _lastSpeed = pos.speed;
             _lastUpdateTime = DateTime.now();
 
-            _socketService.emitLiveLocationUpdate(
-              senderId: _activeSenderId!,
-              receiverId: _activeReceiverId!,
-              latitude: pos.latitude,
-              longitude: pos.longitude,
-              heading: pos.heading,
-              speed: pos.speed,
-              messageId: _activeMessageId,
-            );
+            _emitLocationToAllReceivers(_lastPosition!, _lastHeading, _lastSpeed);
 
             if (!_positionStreamController.isClosed) {
               _positionStreamController.add(pos);
@@ -355,13 +371,20 @@ class LiveLocationService {
     await _persistState();
     _sharingStatusController.add(false);
 
-    if (notifyServer && sId != null && rId != null) {
-      _socketService.emitStopLiveLocation(
-        senderId: sId,
-        receiverId: rId,
-        messageId: mId,
-      );
+    final allReceivers = <String>{};
+    if (rId != null && rId.isNotEmpty) allReceivers.add(rId);
+    allReceivers.addAll(_activeReceiverIds);
+
+    if (notifyServer && sId != null) {
+      for (final rcv in allReceivers) {
+        _socketService.emitStopLiveLocation(
+          senderId: sId,
+          receiverId: rcv,
+          messageId: mId,
+        );
+      }
     }
+    _activeReceiverIds.clear();
 
     _activeSenderId = null;
     _activeReceiverId = null;

@@ -47,11 +47,18 @@ import kotlin.math.roundToInt
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.safechat.app/video"
     private val VOICE_CHANNEL = "com.safechat.app/voice"
+    private val EMERGENCY_CHANNEL = "com.talknex.app/emergency"
 
     private var mediaRecorder: MediaRecorder? = null
     private var currentVoiceFile: File? = null
     private var voiceStartTime = 0L
     private var isRecordingVoice = false
+
+    private var emergencyMethodChannel: MethodChannel? = null
+    private var assignedTriggerKey = "volume_up"
+    private var emergencyEnabled = true
+    private var volumeHoldJob: Job? = null
+    private var isEmergencyTriggered = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -352,6 +359,27 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        val emergencyChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, EMERGENCY_CHANNEL)
+        emergencyMethodChannel = emergencyChannel
+        emergencyChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "updateConfig" -> {
+                    val key = call.argument<String>("triggerKey") ?: "volume_up"
+                    val enabled = call.argument<Boolean>("isEnabled") ?: true
+                    assignedTriggerKey = key
+                    emergencyEnabled = enabled
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            assignedTriggerKey = prefs.getString("flutter.emergency_trigger_key", "volume_up") ?: "volume_up"
+            emergencyEnabled = prefs.getBoolean("flutter.emergency_enabled", true)
+        } catch (_: Exception) {}
     }
 
     private fun getVideoThumbnail(videoPath: String, context: Context): String? {
@@ -857,7 +885,70 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun vibrateDiscreetly() {
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
+                vibratorManager?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+            }
+
+            if (vibrator != null && vibrator.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val timings = longArrayOf(0, 120, 80, 120, 80, 180)
+                    val amplitudes = intArrayOf(0, 255, 0, 255, 0, 255)
+                    vibrator.vibrate(android.os.VibrationEffect.createWaveform(timings, amplitudes, -1))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(longArrayOf(0, 120, 80, 120, 80, 180), -1)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Emergency vibration failed", e)
+        }
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (emergencyEnabled) {
+            val isTargetKey = when (assignedTriggerKey) {
+                "volume_down" -> event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN
+                else -> event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP
+            }
+
+            if (isTargetKey) {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+                    if (event.repeatCount == 0) {
+                        volumeHoldJob?.cancel()
+                        isEmergencyTriggered = false
+                        volumeHoldJob = CoroutineScope(Dispatchers.Main).launch {
+                            kotlinx.coroutines.delay(3000L)
+                            isEmergencyTriggered = true
+                            android.util.Log.i("MainActivity", "🚨 Emergency hardware key held for 3 seconds! Triggering SOS...")
+                            vibrateDiscreetly()
+                            emergencyMethodChannel?.invokeMethod("triggerEmergency", null)
+                        }
+                    }
+                    if (isEmergencyTriggered) {
+                        return true
+                    }
+                } else if (event.action == android.view.KeyEvent.ACTION_UP) {
+                    volumeHoldJob?.cancel()
+                    volumeHoldJob = null
+                    if (isEmergencyTriggered) {
+                        isEmergencyTriggered = false
+                        return true
+                    }
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onDestroy() {
+        volumeHoldJob?.cancel()
+        volumeHoldJob = null
         try {
             if (isRecordingVoice) {
                 mediaRecorder?.stop()

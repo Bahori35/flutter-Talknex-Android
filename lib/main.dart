@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'constants/app_colors.dart';
 import 'services/custom_auth_service.dart';
 import 'services/live_location_service.dart';
+import 'services/emergency_service.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/home/home_screen.dart';
 
@@ -75,6 +76,12 @@ void main() async {
   }
 
   try {
+    await EmergencyService().init();
+  } catch (e) {
+    debugPrint('[EMERGENCY] Init error: $e');
+  }
+
+  try {
     await Firebase.initializeApp();
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   } catch (e) {
@@ -85,6 +92,7 @@ void main() async {
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => CustomAuthService()),
+        ChangeNotifierProvider.value(value: EmergencyService()),
       ],
       child: const TalknexApp(),
     ),

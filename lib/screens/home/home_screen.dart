@@ -23,6 +23,8 @@ import '../story/story_view_screen.dart';
 import '../story/add_story_screen.dart';
 import '../group/create_group_screen.dart';
 import '../group/group_chat_screen.dart';
+import '../settings/settings_screen.dart';
+import '../settings/emergency_screen.dart';
 import '../../services/encryption_service.dart';
 import '../../widgets/app_avatar.dart';
 
@@ -604,7 +606,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             color: AppColors.surfaceLight,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             onSelected: (val) {
-              if (val == 'profile') {
+              if (val == 'emergency') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const EmergencyScreen()),
+                );
+              } else if (val == 'settings') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                );
+              } else if (val == 'profile') {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const ProfileScreen()),
@@ -628,6 +640,26 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               }
             },
             itemBuilder: (ctx) => [
+              PopupMenuItem(
+                value: 'emergency',
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: AppColors.callRed.withOpacity(0.18),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.shield_rounded, color: AppColors.callRed, size: 16),
+                    ),
+                    const SizedBox(width: 10),
+                    const Text(
+                      'Acil Durum (SOS)',
+                      style: TextStyle(color: AppColors.callRed, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
               const PopupMenuItem(
                 value: 'new_group',
                 child: Row(
@@ -667,6 +699,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           ),
                         ],
                       ),
+                    ),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'settings',
+                child: Row(
+                  children: [
+                    Icon(Icons.settings_outlined, color: AppColors.textPrimary, size: 20),
+                    SizedBox(width: 12),
+                    Text(
+                      'Ayarlar',
+                      style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w600),
                     ),
                   ],
                 ),
