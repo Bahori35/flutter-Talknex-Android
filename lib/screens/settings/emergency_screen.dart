@@ -643,7 +643,7 @@ class _AddEmergencyContactModalState extends State<_AddEmergencyContactModal> {
   }
 
   void _loadUsers() async {
-    final users = await _chatService.getAllUsers(widget.currentUserId);
+    final users = await _chatService.getUsers(widget.currentUserId);
     if (mounted) {
       setState(() {
         _allUsers = users;
