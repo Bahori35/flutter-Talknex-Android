@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 import '../../services/voice_record_service.dart';
 import '../chat/widgets/audio_message_bubble.dart';
+import '../chat/widgets/contact_picker_sheet.dart';
+import '../chat/widgets/contact_message_bubble.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -2700,6 +2703,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Widget _buildGroupMessageBubble(GroupMessageModel message, bool isMe) {
     final timeStr = DateFormat('HH:mm').format(message.timestamp);
     final isLocation = message.type == 'location';
+    final isContact = message.type == 'contact';
     final isDoc = message.type == 'doc';
     final isSticker = message.type == 'sticker' && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final isGif = message.type == 'gif' && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
@@ -2708,9 +2712,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final isSpecialCard = isPoll || isEvent;
     final hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final isVideo = message.type == 'video' ||
-        (hasMedia && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
+        (hasMedia && !isDoc && !isLocation && !isContact && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
     final isAudio = message.type == 'audio' ||
-        (hasMedia && !isVideo && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.m4a') || message.mediaUrl!.endsWith('.aac') || message.mediaUrl!.endsWith('.mp3')));
+        (hasMedia && !isVideo && !isDoc && !isLocation && !isContact && !isSticker && !isGif && (message.mediaUrl!.endsWith('.m4a') || message.mediaUrl!.endsWith('.aac') || message.mediaUrl!.endsWith('.mp3')));
 
     final senderPhoto = _getSenderPhoto(message);
     final senderColor = _getSenderColor(message.senderId, message.senderName);
@@ -2719,7 +2723,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       onLongPress: () => _showMessageOptions(message),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 3),
-        padding: EdgeInsets.all(isSticker ? 0 : (isSpecialCard ? 2 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
+        padding: EdgeInsets.all(isSticker ? 0 : (isSpecialCard ? 2 : (isContact ? 4 : (hasMedia && !isDoc && !isLocation ? 4 : 10)))),
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * (isSpecialCard ? (isMe ? 0.88 : 0.80) : (isMe ? 0.78 : 0.72)),
         ),
@@ -2782,6 +2786,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 _buildEventWidget(message),
               ] else if (isLocation) ...[
                 _buildLocationWidget(message),
+              ] else if (isContact) ...[
+                ContactMessageBubble(
+                  content: message.content,
+                  isMe: isMe,
+                  currentUser: widget.currentUser,
+                ),
               ] else if (isDoc) ...[
                 _buildDocumentWidget(message),
               ] else if (isAudio) ...[
@@ -3902,6 +3912,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  Future<void> _openContactPicker() async {
+    final contactData = await ContactPickerSheet.show(context);
+    if (contactData != null && mounted) {
+      final jsonStr = jsonEncode(contactData.toJson());
+      _sendMessage(
+        type: 'contact',
+        caption: jsonStr,
+      );
+    }
+  }
+
   void _showMediaPickerSheet() {
     showModalBottomSheet(
       context: context,
@@ -4014,7 +4035,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         }
                       },
                     ),
-                    const SizedBox(width: 80),
+                    _buildMediaOption(
+                      icon: Icons.person_rounded,
+                      label: 'Kişi',
+                      color: const Color(0xFF00BFA5),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _openContactPicker();
+                      },
+                    ),
                     const SizedBox(width: 80),
                   ],
                 ),

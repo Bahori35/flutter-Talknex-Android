@@ -63,6 +63,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   List<GroupModel> _groups = [];
   bool _isLoadingGroups = true;
 
+  String _formatLastMessage(String msg) {
+    if (msg.contains('"name"') && msg.contains('"phone"')) {
+      try {
+        final decoded = jsonDecode(msg);
+        if (decoded is Map && decoded.containsKey('name')) {
+          return '👤 Kişi: ${decoded['name']}';
+        }
+      } catch (_) {}
+    }
+    return msg;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1460,6 +1472,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                           senderKey,
                                           'group_${group.id}',
                                         );
+                                        displayMsg = _formatLastMessage(displayMsg);
                                       }
                                       return Text(
                                         displayMsg.isNotEmpty
@@ -1561,6 +1574,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                     currentUser.uid,
                                     user.uid,
                                   );
+                                  displayMsg = _formatLastMessage(displayMsg);
                                 }
                                 return Text(
                                   displayMsg.isNotEmpty ? displayMsg : user.status,

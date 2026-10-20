@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
@@ -29,6 +30,8 @@ import 'camera_screen.dart';
 import 'widgets/video_message_bubble.dart';
 import 'widgets/decrypted_image_widget.dart';
 import 'widgets/audio_message_bubble.dart';
+import 'widgets/contact_picker_sheet.dart';
+import 'widgets/contact_message_bubble.dart';
 import '../../services/voice_record_service.dart';
 import '../../services/encryption_service.dart';
 import '../../widgets/emoji_gif_sticker_picker.dart';
@@ -960,6 +963,17 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Future<void> _openContactPicker() async {
+    final contactData = await ContactPickerSheet.show(context);
+    if (contactData != null && mounted) {
+      final jsonStr = jsonEncode(contactData.toJson());
+      _sendMessage(
+        customContent: jsonStr,
+        type: MessageType.contact,
+      );
+    }
+  }
+
   void _showMediaPickerSheet() {
     showModalBottomSheet(
       context: context,
@@ -1028,7 +1042,15 @@ class _ChatScreenState extends State<ChatScreen> {
                         _openLocationPicker();
                       },
                     ),
-                    const SizedBox(width: 60),
+                    _buildMediaOption(
+                      icon: Icons.person_rounded,
+                      label: 'Kişi',
+                      color: const Color(0xFF00BFA5),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _openContactPicker();
+                      },
+                    ),
                   ],
                 ),
               ],
@@ -2194,13 +2216,14 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildMessageBubble(MessageModel message, bool isMe) {
     final bool isLocation = message.type == MessageType.location;
     final bool isDoc = message.type == MessageType.doc;
+    final bool isContact = message.type == MessageType.contact;
     final bool isSticker = message.type == MessageType.sticker && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool isGif = message.type == MessageType.gif && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool isVideo = message.type == MessageType.video ||
-        (hasMedia && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
+        (hasMedia && !isDoc && !isLocation && !isContact && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
     final bool isAudio = message.type == MessageType.audio ||
-        (hasMedia && !isVideo && !isDoc && !isLocation && !isSticker && !isGif && (message.mediaUrl!.endsWith('.m4a') || message.mediaUrl!.endsWith('.aac') || message.mediaUrl!.endsWith('.mp3')));
+        (hasMedia && !isVideo && !isDoc && !isLocation && !isContact && !isSticker && !isGif && (message.mediaUrl!.endsWith('.m4a') || message.mediaUrl!.endsWith('.aac') || message.mediaUrl!.endsWith('.mp3')));
 
     final bool isDeleted = message.isDeleted;
     final bool isEdited = message.isEdited;
@@ -2211,7 +2234,7 @@ class _ChatScreenState extends State<ChatScreen> {
         onLongPress: () => _showMessageActionDialog(message, isMe),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 3.5),
-          padding: EdgeInsets.all(isSticker ? 0 : (hasMedia && !isDoc && !isLocation ? 4 : 10)),
+          padding: EdgeInsets.all(isSticker ? 0 : (isContact ? 4 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
           constraints: BoxConstraints(
             maxWidth: MediaQuery.of(context).size.width * 0.78,
           ),
@@ -2265,6 +2288,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   _buildGifMessageWidget(message, isMe),
                 ] else if (isLocation) ...[
                   _buildLocationWidget(message),
+                ] else if (isContact) ...[
+                  ContactMessageBubble(
+                    message: message,
+                    isMe: isMe,
+                    currentUser: widget.currentUser,
+                  ),
                 ] else if (isDoc) ...[
                   _buildDocumentWidget(message),
                 ] else if (isAudio) ...[

@@ -754,6 +754,8 @@ func main() {
 						pushBody = "👾 GIF"
 					case "sticker":
 						pushBody = "🏷️ Çıkartma"
+					case "contact":
+						pushBody = "👤 Kişi Kartı"
 					}
 					sendFCMPush(receiverID, senderName, pushBody, map[string]string{
 						"type":        "chat",
@@ -1070,6 +1072,8 @@ func main() {
 									pushText = senderName + ": 👾 GIF"
 								} else if msgType == "sticker" {
 									pushText = senderName + ": 🏷️ Çıkartma"
+								} else if msgType == "contact" {
+									pushText = senderName + ": 👤 Kişi Kartı"
 								}
 								sendFCMPush(targetID, groupName, pushText, map[string]string{
 									"type":      "group_chat",

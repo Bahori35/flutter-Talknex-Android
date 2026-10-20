@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../utils/media_url_helper.dart';
 
-enum MessageType { text, image, video, doc, audio, call, location, gif, sticker }
+enum MessageType { text, image, video, doc, audio, call, location, gif, sticker, contact }
 
 class MessageModel {
   final String id;
