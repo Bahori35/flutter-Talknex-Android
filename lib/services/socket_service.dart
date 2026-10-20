@@ -39,6 +39,7 @@ class SocketService {
   Timer? _pingTimer;
 
   bool get isConnected => _socket != null && _socket!.readyState == WebSocket.open;
+  String? get currentUserId => _currentUserId;
 
   OnMessageReceived? onMessageReceived;
   OnMessageDelivered? onMessageDelivered;

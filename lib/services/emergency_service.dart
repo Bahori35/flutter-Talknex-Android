@@ -234,7 +234,17 @@ class EmergencyService extends ChangeNotifier {
       final mapsUrl = 'https://maps.google.com/?q=$lat,$lon';
 
       // 3. Start Multi-contact Live Location Streaming
-      final senderId = currentUserId ?? SocketService().currentUserId ?? '0';
+      String senderId = currentUserId ?? SocketService().currentUserId ?? '0';
+      if (senderId == '0') {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final savedUserJson = prefs.getString('saved_user');
+          if (savedUserJson != null) {
+            final userMap = jsonDecode(savedUserJson);
+            senderId = userMap['uid']?.toString() ?? '0';
+          }
+        } catch (_) {}
+      }
       final receiverIds = _contacts.map((c) => c.uid).toList();
 
       await LiveLocationService().startMultiSharing(
