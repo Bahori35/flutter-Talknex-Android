@@ -6,6 +6,7 @@ import '../chat/widgets/audio_message_bubble.dart';
 import '../chat/widgets/contact_picker_sheet.dart';
 import '../chat/widgets/contact_message_bubble.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
@@ -116,6 +117,39 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       mediaUrl: message.mediaUrl,
       contacts: widget.contacts,
     );
+  }
+
+  void _copyMessage(GroupMessageModel message) {
+    String textToCopy = MessageEnvelope.unpack(message.content).text;
+    if (textToCopy.isEmpty) {
+      if (message.mediaUrl != null && message.mediaUrl!.isNotEmpty) {
+        textToCopy = message.mediaUrl!;
+      } else {
+        textToCopy = message.content;
+      }
+    }
+    if (textToCopy.trim().isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: textToCopy));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Mesaj panoya kopyalandı'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Kopyalanacak metin bulunamadı'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   void _toggleStar(GroupMessageModel message) async {
@@ -1285,6 +1319,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               onTap: () {
                 Navigator.pop(ctx);
                 _setReplyMessage(message);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy_rounded, color: Colors.white70),
+              title: const Text('Kopyala', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _copyMessage(message);
               },
             ),
             ListTile(

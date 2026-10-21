@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -554,6 +555,39 @@ class _ChatScreenState extends State<ChatScreen> {
           behavior: SnackBarBehavior.floating,
         ),
       );
+    }
+  }
+
+  void _copyMessage(MessageModel message) {
+    String textToCopy = MessageEnvelope.unpack(message.content).text;
+    if (textToCopy.isEmpty) {
+      if (message.mediaUrl != null && message.mediaUrl!.isNotEmpty) {
+        textToCopy = message.mediaUrl!;
+      } else {
+        textToCopy = message.content;
+      }
+    }
+    if (textToCopy.trim().isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: textToCopy));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Mesaj panoya kopyalandı'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Kopyalanacak metin bulunamadı'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 
@@ -1240,7 +1274,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   _setReplyMessage(message);
                 },
               ),
-              // 2. İlet (Forward)
+              // 2. Kopyala (Copy)
+              ListTile(
+                leading: const Icon(Icons.copy_rounded, color: Colors.white70),
+                title: const Text('Kopyala', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _copyMessage(message);
+                },
+              ),
+              // 3. İlet (Forward)
               ListTile(
                 leading: const Icon(Icons.shortcut_rounded, color: AppColors.accent),
                 title: const Text('İlet', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),

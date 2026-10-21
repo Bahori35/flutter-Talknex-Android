@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import '../../constants/app_colors.dart';
 import '../../services/starred_messages_service.dart';
@@ -207,6 +208,27 @@ class StarredMessagesScreen extends StatelessWidget {
                           style: const TextStyle(color: Colors.white38, fontSize: 11),
                         ),
                         const SizedBox(width: 6),
+                        GestureDetector(
+                          onTap: () {
+                            final text = item.content.isNotEmpty ? item.content : (item.mediaUrl ?? '');
+                            if (text.isNotEmpty) {
+                              Clipboard.setData(ClipboardData(text: text));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Mesaj panoya kopyalandı'),
+                                  behavior: SnackBarBehavior.floating,
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            }
+                          },
+                          child: const Icon(
+                            Icons.copy_rounded,
+                            color: Colors.white54,
+                            size: 18,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
                         GestureDetector(
                           onTap: () {
                             StarredMessagesService.removeStar(item.messageId);
