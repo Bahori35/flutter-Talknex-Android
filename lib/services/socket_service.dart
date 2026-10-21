@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../models/message_model.dart';
 import '../models/user_model.dart';
 import 'encryption_service.dart';
+import '../models/message_envelope.dart';
+import 'starred_messages_service.dart';
 
 typedef OnMessageReceived = void Function(MessageModel message);
 typedef OnMessageDelivered = void Function(Map<String, dynamic> data);
@@ -182,16 +184,23 @@ class SocketService {
               data['receiverId'].toString(),
             );
 
+            final unpacked = MessageEnvelope.unpack(decryptedContent);
+            final msgId = data['id'].toString();
+            final isStarred = StarredMessagesService.isStarred(msgId);
+
             final message = MessageModel(
-              id: data['id'].toString(),
+              id: msgId,
               senderId: data['senderId'].toString(),
               receiverId: data['receiverId'].toString(),
-              content: decryptedContent,
+              content: unpacked.text,
               type: msgType,
               timestamp: DateTime.tryParse(data['timestamp'] ?? '') ?? DateTime.now(),
               isDelivered: true,
               isRead: data['isRead'] == 1 || data['isRead'] == true,
               mediaUrl: data['mediaUrl'],
+              replyTo: unpacked.replyTo,
+              isForwarded: unpacked.isForwarded,
+              isStarred: isStarred,
             );
 
             // Acknowledge delivery

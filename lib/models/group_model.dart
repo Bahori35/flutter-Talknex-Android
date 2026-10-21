@@ -426,15 +426,58 @@ class GroupMessageModel {
   String? get replyToId => replyTo?.id;
   String? get replyToType => replyTo?.type;
 
-  GroupMessageModel({
+  factory GroupMessageModel({
+    required String id,
+    required int groupId,
+    required String senderId,
+    required String senderName,
+    String senderPhoto = '',
+    required String content,
+    String type = 'text',
+    String? mediaUrl,
+    GroupPollModel? poll,
+    GroupEventModel? event,
+    bool isDeleted = false,
+    bool isEdited = false,
+    required DateTime timestamp,
+    ReplyMetadata? replyTo,
+    bool isForwarded = false,
+    bool isStarred = false,
+  }) {
+    final unpacked = MessageEnvelope.unpack(content);
+    final effectiveReply = replyTo ?? unpacked.replyTo;
+    final effectiveForwarded = isForwarded || unpacked.isForwarded;
+    final effectiveStarred = isStarred || StarredMessagesService.isStarred(id);
+
+    return GroupMessageModel._(
+      id: id,
+      groupId: groupId,
+      senderId: senderId,
+      senderName: senderName,
+      senderPhoto: formatMediaUrl(senderPhoto),
+      content: unpacked.text,
+      type: type,
+      mediaUrl: formatMediaUrl(mediaUrl),
+      poll: poll,
+      event: event,
+      isDeleted: isDeleted,
+      isEdited: isEdited,
+      timestamp: timestamp,
+      replyTo: effectiveReply,
+      isForwarded: effectiveForwarded,
+      isStarred: effectiveStarred,
+    );
+  }
+
+  const GroupMessageModel._({
     required this.id,
     required this.groupId,
     required this.senderId,
     required this.senderName,
-    String senderPhoto = '',
+    this.senderPhoto = '',
     required this.content,
     this.type = 'text',
-    String? mediaUrl,
+    this.mediaUrl,
     this.poll,
     this.event,
     this.isDeleted = false,
@@ -443,8 +486,7 @@ class GroupMessageModel {
     this.replyTo,
     this.isForwarded = false,
     this.isStarred = false,
-  })  : senderPhoto = formatMediaUrl(senderPhoto),
-        mediaUrl = formatMediaUrl(mediaUrl);
+  });
 
   factory GroupMessageModel.fromJson(Map<String, dynamic> json) {
     DateTime t = DateTime.now();

@@ -521,7 +521,7 @@ class _ChatScreenState extends State<ChatScreen> {
       case MessageType.sticker:
         return '🏷️ Çıkartma';
       default:
-        return msg.content;
+        return MessageEnvelope.unpack(msg.content).text;
     }
   }
 
@@ -542,7 +542,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final sent = await ForwardMessageSheet.show(
       context,
       currentUser: widget.currentUser,
-      content: message.content,
+      content: MessageEnvelope.unpack(message.content).text,
       messageType: message.type.name,
       mediaUrl: message.mediaUrl,
     );
@@ -567,7 +567,7 @@ class _ChatScreenState extends State<ChatScreen> {
       chatTitle: widget.peerUser.displayName,
       senderId: message.senderId,
       senderName: senderName,
-      content: message.content,
+      content: MessageEnvelope.unpack(message.content).text,
       type: message.type.name,
       mediaUrl: message.mediaUrl,
       timestamp: message.timestamp,
@@ -2415,6 +2415,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final bool isDeleted = message.isDeleted;
     final bool isEdited = message.isEdited;
 
+    final unpacked = MessageEnvelope.unpack(message.content);
+    final displayContent = unpacked.text;
+    final effectiveReply = message.replyTo ?? unpacked.replyTo;
+    final effectiveForwarded = message.isForwarded || unpacked.isForwarded;
+
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Dismissible(
@@ -2488,8 +2493,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
                 ] else ...[
-                  if (message.isForwarded) _buildForwardedHeader(),
-                  if (message.replyTo != null) _buildQuotedBox(message.replyTo!, isMe),
+                  if (effectiveForwarded) _buildForwardedHeader(),
+                  if (effectiveReply != null) _buildQuotedBox(effectiveReply, isMe),
                   if (isSticker) ...[
                     _buildStickerMessageWidget(message, isMe),
                   ] else if (isGif) ...[
@@ -2517,8 +2522,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: isVideo
                           ? VideoMessageBubble(
                               videoUrl: message.mediaUrl!,
-                              title: message.content.isNotEmpty && message.content != '🎥 Video'
-                                  ? message.content
+                              title: displayContent.isNotEmpty && displayContent != '🎥 Video'
+                                  ? displayContent
                                   : 'Video Mesajı',
                               senderId: message.senderId,
                               receiverId: message.receiverId,
@@ -2535,17 +2540,17 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                             ),
                     ),
-                    if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')
+                    if (displayContent.isNotEmpty && displayContent != '📷 Fotoğraf' && displayContent != '🎥 Video')
                       Padding(
                         padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
                         child: Text(
-                          message.content,
+                          displayContent,
                           style: const TextStyle(color: Colors.white, fontSize: 14.5),
                         ),
                       ),
                   ] else ...[
                     Text(
-                      message.content,
+                      displayContent,
                       style: TextStyle(
                         color: isMe ? Colors.white : AppColors.textPrimary,
                         fontSize: 14.5,

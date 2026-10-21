@@ -104,14 +104,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (msg.type == 'gif') return '👾 GIF';
     if (msg.type == 'poll') return '📊 Anket';
     if (msg.type == 'event') return '📅 Etkinlik';
-    return msg.content;
+    return MessageEnvelope.unpack(msg.content).text;
   }
 
   void _openForwardSheet(GroupMessageModel message) {
     ForwardMessageSheet.show(
       context,
       currentUser: widget.currentUser,
-      content: message.content,
+      content: MessageEnvelope.unpack(message.content).text,
       messageType: message.type,
       mediaUrl: message.mediaUrl,
     );
@@ -125,7 +125,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         chatTitle: _group.name,
         senderId: message.senderId,
         senderName: message.senderName,
-        content: message.content,
+        content: MessageEnvelope.unpack(message.content).text,
         type: message.type,
         mediaUrl: message.mediaUrl,
         timestamp: message.timestamp,
@@ -3020,6 +3020,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final senderPhoto = _getSenderPhoto(message);
     final senderColor = _getSenderColor(message.senderId, message.senderName);
 
+    final unpacked = MessageEnvelope.unpack(message.content);
+    final displayContent = unpacked.text;
+    final effectiveReply = message.replyTo ?? unpacked.replyTo;
+    final effectiveForwarded = message.isForwarded || unpacked.isForwarded;
+
     final bubbleWidget = GestureDetector(
       onLongPress: () => _showMessageOptions(message),
       child: Container(
@@ -3064,12 +3069,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               ),
 
             // Forwarded Tag
-            if (message.isForwarded)
+            if (effectiveForwarded)
               _buildForwardedHeader(),
 
             // Quoted Reply Box
-            if (message.replyTo != null)
-              _buildQuotedBox(message.replyTo!),
+            if (effectiveReply != null)
+              _buildQuotedBox(effectiveReply),
 
             // Deleted message text
             if (message.isDeleted)
@@ -3116,8 +3121,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   child: isVideo
                       ? VideoMessageBubble(
                           videoUrl: message.mediaUrl!,
-                          title: message.content.isNotEmpty && message.content != '🎥 Video'
-                              ? message.content
+                          title: displayContent.isNotEmpty && displayContent != '🎥 Video'
+                              ? displayContent
                               : 'Video Mesajı',
                           senderId: message.senderId,
                           receiverId: 'group_${_group.id}',
@@ -3134,17 +3139,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                           ),
                         ),
                 ),
-                if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')
+                if (displayContent.isNotEmpty && displayContent != '📷 Fotoğraf' && displayContent != '🎥 Video')
                   Padding(
                     padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
                     child: Text(
-                      message.content,
+                      displayContent,
                       style: const TextStyle(color: Colors.white, fontSize: 14.5),
                     ),
                   ),
               ] else ...[
                 Text(
-                  message.content,
+                  displayContent,
                   style: const TextStyle(color: Colors.white, fontSize: 14.5),
                 ),
               ],

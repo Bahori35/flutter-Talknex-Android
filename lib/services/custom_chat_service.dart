@@ -8,6 +8,8 @@ import '../models/call_model.dart';
 import '../models/group_model.dart';
 import 'custom_auth_service.dart';
 import 'encryption_service.dart';
+import '../models/message_envelope.dart';
+import 'starred_messages_service.dart';
 
 class CustomChatService {
   static const String baseUrl = CustomAuthService.baseUrl;
@@ -72,11 +74,15 @@ class CustomChatService {
             json['receiverId'].toString(),
           );
 
+          final unpacked = MessageEnvelope.unpack(decryptedContent);
+          final msgId = json['id'].toString();
+          final isStarred = StarredMessagesService.isStarred(msgId);
+
           return MessageModel(
-            id: json['id'].toString(),
+            id: msgId,
             senderId: json['senderId'].toString(),
             receiverId: json['receiverId'].toString(),
-            content: decryptedContent,
+            content: unpacked.text,
             type: msgType,
             timestamp: DateTime.tryParse(json['timestamp'] ?? '') ?? DateTime.now(),
             isDelivered: json['isDelivered'] == 1 || json['isDelivered'] == true || json['isRead'] == 1 || json['isRead'] == true,
@@ -84,6 +90,9 @@ class CustomChatService {
             mediaUrl: json['mediaUrl'],
             isDeleted: json['isDeleted'] == 1 || json['isDeleted'] == true || json['is_deleted'] == 1 || json['is_deleted'] == true,
             isEdited: json['isEdited'] == 1 || json['isEdited'] == true || json['is_edited'] == 1 || json['is_edited'] == true,
+            replyTo: unpacked.replyTo,
+            isForwarded: unpacked.isForwarded,
+            isStarred: isStarred,
           );
         }).toList();
       }

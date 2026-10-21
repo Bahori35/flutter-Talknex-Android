@@ -28,7 +28,50 @@ class MessageModel {
   String? get replyToId => replyTo?.id;
   String? get replyToType => replyTo?.type;
 
-  MessageModel({
+  factory MessageModel({
+    required String id,
+    required String senderId,
+    String? senderName,
+    required String receiverId,
+    required String content,
+    MessageType type = MessageType.text,
+    required DateTime timestamp,
+    bool isDelivered = false,
+    bool isRead = false,
+    String? mediaUrl,
+    bool isDeleted = false,
+    bool isEdited = false,
+    String? originalContent,
+    ReplyMetadata? replyTo,
+    bool isForwarded = false,
+    bool isStarred = false,
+  }) {
+    final unpacked = MessageEnvelope.unpack(content);
+    final effectiveReply = replyTo ?? unpacked.replyTo;
+    final effectiveForwarded = isForwarded || unpacked.isForwarded;
+    final effectiveStarred = isStarred || StarredMessagesService.isStarred(id);
+
+    return MessageModel._(
+      id: id,
+      senderId: senderId,
+      senderName: senderName,
+      receiverId: receiverId,
+      content: unpacked.text,
+      type: type,
+      timestamp: timestamp,
+      isDelivered: isDelivered,
+      isRead: isRead,
+      mediaUrl: formatMediaUrl(mediaUrl),
+      isDeleted: isDeleted,
+      isEdited: isEdited,
+      originalContent: originalContent,
+      replyTo: effectiveReply,
+      isForwarded: effectiveForwarded,
+      isStarred: effectiveStarred,
+    );
+  }
+
+  const MessageModel._({
     required this.id,
     required this.senderId,
     this.senderName,
@@ -38,14 +81,14 @@ class MessageModel {
     required this.timestamp,
     this.isDelivered = false,
     this.isRead = false,
-    String? mediaUrl,
+    this.mediaUrl,
     this.isDeleted = false,
     this.isEdited = false,
     this.originalContent,
     this.replyTo,
     this.isForwarded = false,
     this.isStarred = false,
-  }) : mediaUrl = formatMediaUrl(mediaUrl);
+  });
 
   Map<String, dynamic> toMap() {
     return {
