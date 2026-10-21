@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../constants/app_colors.dart';
 import '../../../services/translation_service.dart';
-import 'chat_translation_sheet.dart';
 
 class TranslatedTextWidget extends StatefulWidget {
   final String messageId;
@@ -44,7 +43,6 @@ class _TranslatedTextWidgetState extends State<TranslatedTextWidget> {
           chatId: widget.chatId,
         );
         final targetLang = TranslationService.getChatTargetLanguage(widget.chatId);
-        final targetLangName = TranslationService.getLanguageName(targetLang);
         final translated = TranslationService.getMessageTranslation(widget.messageId, targetLang);
 
         // If should translate but not yet cached or fetched for targetLang, trigger fetch
@@ -58,7 +56,6 @@ class _TranslatedTextWidgetState extends State<TranslatedTextWidget> {
         }
 
         final isShowingTranslated = shouldTranslate && translated != null;
-        final hasCachedTranslation = translated != null;
         final displayText = isShowingTranslated ? translated : widget.text;
 
         final defaultStyle = TextStyle(
@@ -67,113 +64,9 @@ class _TranslatedTextWidgetState extends State<TranslatedTextWidget> {
           height: 1.35,
         );
 
-        return Column(
-          crossAxisAlignment: widget.isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              displayText,
-              style: widget.style ?? defaultStyle,
-            ),
-            if (isShowingTranslated) ...[
-              const SizedBox(height: 4),
-              Padding(
-                padding: const EdgeInsets.only(top: 2, bottom: 2),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.g_translate_rounded,
-                      size: 13,
-                      color: widget.isMe ? Colors.white70 : AppColors.accent,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Çevrildi ($targetLangName)',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: widget.isMe ? Colors.white70 : AppColors.accent,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    GestureDetector(
-                      onTap: () => ChatTranslationSheet.show(
-                        context,
-                        chatId: widget.chatId,
-                        chatTitle: 'Çeviri Dili',
-                      ),
-                      child: Text(
-                        '• Değiştir',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: widget.isMe ? Colors.white70 : AppColors.accent,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    GestureDetector(
-                      onTap: () => TranslationService.toggleOriginalMessage(widget.messageId),
-                      child: Text(
-                        '• Orijinali Göster',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: widget.isMe ? Colors.white60 : Colors.white70,
-                          fontWeight: FontWeight.w500,
-                          decoration: TextDecoration.underline,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ] else if (hasCachedTranslation) ...[
-              const SizedBox(height: 4),
-              Padding(
-                padding: const EdgeInsets.only(top: 2, bottom: 2),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.g_translate_rounded,
-                      size: 13,
-                      color: widget.isMe ? Colors.white54 : AppColors.accent.withOpacity(0.8),
-                    ),
-                    const SizedBox(width: 4),
-                    GestureDetector(
-                      onTap: () => TranslationService.toggleOriginalMessage(widget.messageId),
-                      child: Text(
-                        'Çeviriyi Göster ($targetLangName)',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: widget.isMe ? Colors.white54 : AppColors.accent.withOpacity(0.8),
-                          fontWeight: FontWeight.w600,
-                          decoration: TextDecoration.underline,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    GestureDetector(
-                      onTap: () => ChatTranslationSheet.show(
-                        context,
-                        chatId: widget.chatId,
-                        chatTitle: 'Çeviri Dili',
-                      ),
-                      child: Text(
-                        '• Değiştir',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: widget.isMe ? Colors.white54 : AppColors.accent.withOpacity(0.8),
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ],
+        return Text(
+          displayText,
+          style: widget.style ?? defaultStyle,
         );
       },
     );
