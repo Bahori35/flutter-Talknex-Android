@@ -123,16 +123,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   void _toggleStar(GroupMessageModel message) async {
     final nowStarred = await StarredMessagesService.toggleStar(
-      messageId: message.id,
-      chatId: 'group_${_group.id}',
-      chatTitle: _group.name,
-      senderId: message.senderId,
-      senderName: message.senderName,
-      content: message.content,
-      type: message.type,
-      mediaUrl: message.mediaUrl,
-      timestamp: message.timestamp,
-      isGroup: true,
+      StarredMessage(
+        messageId: message.id,
+        chatId: 'group_${_group.id}',
+        chatTitle: _group.name,
+        senderId: message.senderId,
+        senderName: message.senderName,
+        content: message.content,
+        type: message.type,
+        mediaUrl: message.mediaUrl,
+        timestamp: message.timestamp,
+        isGroup: true,
+      ),
     );
 
     setState(() {
