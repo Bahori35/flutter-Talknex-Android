@@ -1357,27 +1357,49 @@ class _ChatScreenState extends State<ChatScreen> {
                     final targetLang = TranslationService.getChatTargetLanguage(widget.peerUser.uid);
                     final targetLangName = TranslationService.getLanguageName(targetLang);
 
-                    return ListTile(
-                      leading: const Icon(Icons.g_translate_rounded, color: AppColors.accent),
-                      title: Text(
-                        isShowingTranslated ? 'Orijinali Göster' : 'Mesajı Çevir',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                      ),
-                      subtitle: Text(
-                        isShowingTranslated
-                            ? 'Orijinal dildeki mesajı görüntüler'
-                            : '$targetLangName diline çevirir',
-                        style: const TextStyle(color: Colors.white38, fontSize: 11),
-                      ),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        final unpacked = MessageEnvelope.unpack(message.content);
-                        TranslationService.toggleManualTranslate(
-                          messageId: message.id,
-                          text: unpacked.text,
-                          chatId: widget.peerUser.uid,
-                        );
-                      },
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ListTile(
+                          leading: const Icon(Icons.g_translate_rounded, color: AppColors.accent),
+                          title: Text(
+                            isShowingTranslated ? 'Orijinali Göster' : 'Mesajı Çevir ($targetLangName)',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            isShowingTranslated
+                                ? 'Orijinal dildeki mesajı görüntüler'
+                                : '$targetLangName diline çevirir',
+                            style: const TextStyle(color: Colors.white38, fontSize: 11),
+                          ),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            final unpacked = MessageEnvelope.unpack(message.content);
+                            TranslationService.toggleManualTranslate(
+                              messageId: message.id,
+                              text: unpacked.text,
+                              chatId: widget.peerUser.uid,
+                            );
+                          },
+                        ),
+                        if (!isShowingTranslated)
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.language_rounded, color: Colors.white54, size: 20),
+                            title: Text(
+                              'Çeviri Dilini Değiştir ($targetLangName)',
+                              style: const TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              ChatTranslationSheet.show(
+                                context,
+                                chatId: widget.peerUser.uid,
+                                chatTitle: widget.peerUser.displayName,
+                              );
+                            },
+                          ),
+                      ],
                     );
                   },
                 ),

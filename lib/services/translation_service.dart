@@ -9,7 +9,7 @@ class TranslationService {
   // In-memory cache for translations: "text_targetLang" -> translatedText
   static final Map<String, String> _textCache = {};
 
-  // Per-message translated text: messageId -> translatedText
+  // Per-message translated text: "messageId_targetLang" -> translatedText
   static final Map<String, String> _messageTranslations = {};
 
   // Per-message override: messageId -> true if user tapped "Orijinali Göster"
@@ -26,6 +26,9 @@ class TranslationService {
 
   // Target language per chat: chatId -> langCode (e.g., 'tr')
   static final Map<String, String> _chatTargetLanguage = {};
+
+  // Global default target language across chats
+  static String _globalTargetLanguage = 'tr';
 
   static bool _isInitialized = false;
 
@@ -58,6 +61,8 @@ class TranslationService {
     if (_isInitialized) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      _globalTargetLanguage = prefs.getString('talknex_global_target_lang') ?? 'tr';
+
       final keys = prefs.getKeys();
       for (final key in keys) {
         if (key.startsWith('autotranslate_enabled_')) {
@@ -65,7 +70,7 @@ class TranslationService {
           _chatAutoTranslate[chatId] = prefs.getBool(key) ?? false;
         } else if (key.startsWith('autotranslate_target_')) {
           final chatId = key.substring('autotranslate_target_'.length);
-          _chatTargetLanguage[chatId] = prefs.getString(key) ?? 'tr';
+          _chatTargetLanguage[chatId] = prefs.getString(key) ?? _globalTargetLanguage;
         }
       }
       _isInitialized = true;
@@ -79,13 +84,14 @@ class TranslationService {
   }
 
   static String getChatTargetLanguage(String chatId) {
-    return _chatTargetLanguage[chatId] ?? 'tr';
+    return _chatTargetLanguage[chatId] ?? _globalTargetLanguage;
   }
 
   static Future<void> setChatAutoTranslate(String chatId, bool enabled, {String? targetLang}) async {
     _chatAutoTranslate[chatId] = enabled;
     if (targetLang != null && targetLang.isNotEmpty) {
       _chatTargetLanguage[chatId] = targetLang;
+      _globalTargetLanguage = targetLang;
     }
     notifier.value++;
 
@@ -94,6 +100,7 @@ class TranslationService {
       await prefs.setBool('autotranslate_enabled_$chatId', enabled);
       if (targetLang != null && targetLang.isNotEmpty) {
         await prefs.setString('autotranslate_target_$chatId', targetLang);
+        await prefs.setString('talknex_global_target_lang', targetLang);
       }
     } catch (e) {
       debugPrint('[TRANSLATION] Persist error: $e');
@@ -119,14 +126,14 @@ class TranslationService {
     return false;
   }
 
-  /// Check if translation has already been retrieved and cached for this message
-  static bool hasTranslationForMessage(String messageId) {
-    return _messageTranslations.containsKey(messageId);
+  /// Check if translation has already been retrieved and cached for this message and language
+  static bool hasTranslationForMessage(String messageId, String targetLang) {
+    return _messageTranslations.containsKey('${messageId}_$targetLang');
   }
 
-  /// Get the translated string for a message
-  static String? getMessageTranslation(String messageId) {
-    return _messageTranslations[messageId];
+  /// Get the translated string for a message in a specific target language
+  static String? getMessageTranslation(String messageId, String targetLang) {
+    return _messageTranslations['${messageId}_$targetLang'];
   }
 
   /// Toggle between showing original and showing translation for a specific message
@@ -161,11 +168,11 @@ class TranslationService {
     _manuallyTranslatedMessages.add(messageId);
     notifier.value++;
 
-    // Fetch translation if not already in cache
+    // Fetch translation if not already in cache for effectiveLang
     await translateForMessage(messageId: messageId, text: text, targetLang: effectiveLang);
   }
 
-  /// Fetch and store translation for a specific message
+  /// Fetch and store translation for a specific message and target language
   static Future<String?> translateForMessage({
     required String messageId,
     required String text,
@@ -174,17 +181,19 @@ class TranslationService {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return null;
 
-    final cacheKey = '${trimmed}_$targetLang';
-    if (_textCache.containsKey(cacheKey)) {
-      final translated = _textCache[cacheKey]!;
-      _messageTranslations[messageId] = translated;
+    final msgLangKey = '${messageId}_$targetLang';
+    final textCacheKey = '${trimmed}_$targetLang';
+
+    if (_textCache.containsKey(textCacheKey)) {
+      final translated = _textCache[textCacheKey]!;
+      _messageTranslations[msgLangKey] = translated;
       notifier.value++;
       return translated;
     }
 
     final translated = await translateText(trimmed, targetLang: targetLang);
     if (translated != null) {
-      _messageTranslations[messageId] = translated;
+      _messageTranslations[msgLangKey] = translated;
       notifier.value++;
     }
     return translated;
@@ -246,7 +255,7 @@ class TranslationService {
         }
       }
     } catch (e) {
-      debugPrint('[TRANSLATE] Error translating "$text": $e');
+      debugPrint('[TRANSLATE] Error translating "$text" to $targetLang: $e');
     } finally {
       client.close();
     }
