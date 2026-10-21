@@ -19,9 +19,44 @@ class AiReminderModel {
     required this.createdAt,
   });
 
-  String get formattedEventTime => DateFormat('d MMMM yyyy, HH:mm', 'tr').format(eventTime);
-  String get formattedEventTimeSimple => DateFormat('d MMM HH:mm').format(eventTime);
-  String get formattedReminderTime => DateFormat('HH:mm').format(reminderTime);
+  static const List<String> _turkishMonths = [
+    'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+    'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'
+  ];
+
+  String get formattedEventTime {
+    try {
+      final mIndex = (eventTime.month - 1).clamp(0, 11);
+      final m = _turkishMonths[mIndex];
+      final hh = eventTime.hour.toString().padLeft(2, '0');
+      final mm = eventTime.minute.toString().padLeft(2, '0');
+      return '${eventTime.day} $m ${eventTime.year}, $hh:$mm';
+    } catch (_) {
+      return '${eventTime.day}.${eventTime.month}.${eventTime.year} ${eventTime.hour.toString().padLeft(2, '0')}:${eventTime.minute.toString().padLeft(2, '0')}';
+    }
+  }
+
+  String get formattedEventTimeSimple {
+    try {
+      final mIndex = (eventTime.month - 1).clamp(0, 11);
+      final m = _turkishMonths[mIndex];
+      final hh = eventTime.hour.toString().padLeft(2, '0');
+      final mm = eventTime.minute.toString().padLeft(2, '0');
+      return '${eventTime.day} $m $hh:$mm';
+    } catch (_) {
+      return '${eventTime.day}.${eventTime.month} ${eventTime.hour.toString().padLeft(2, '0')}:${eventTime.minute.toString().padLeft(2, '0')}';
+    }
+  }
+
+  String get formattedReminderTime {
+    try {
+      final hh = reminderTime.hour.toString().padLeft(2, '0');
+      final mm = reminderTime.minute.toString().padLeft(2, '0');
+      return '$hh:$mm';
+    } catch (_) {
+      return '${reminderTime.hour}:${reminderTime.minute}';
+    }
+  }
 
   String get leadTimeText {
     if (leadMinutes <= 0) return 'Tam vaktinde';

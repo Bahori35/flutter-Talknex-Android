@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/ai_message_model.dart';
@@ -34,6 +35,10 @@ class AiAssistantService {
   static Future<void> init() async {
     if (_isInitialized) return;
     try {
+      try {
+        await initializeDateFormatting('tr_TR', null);
+        await initializeDateFormatting('tr', null);
+      } catch (_) {}
       final prefs = await SharedPreferences.getInstance();
 
       // Load Reminders
@@ -148,7 +153,7 @@ class AiAssistantService {
         sender: 'ai',
         text: '⏰ **HATIRLATICI BİLDİRİMİ!**\n\n'
             '📌 **${reminder.title}** planınızın vakti yaklaştı!\n'
-            '📅 Plan Saati: ${DateFormat('HH:mm').format(reminder.eventTime)} ($leadText)\n\n'
+            '📅 Plan Saati: ${reminder.formattedEventTimeSimple} ($leadText)\n\n'
             'Hazırlanmayı unutmayın! 🎯',
         timestamp: DateTime.now(),
         actionType: 'reminder_alert',
@@ -258,9 +263,9 @@ class AiAssistantService {
         await _persistReminders();
         _scheduleTimer(reminder);
 
-        final eventTimeStr = DateFormat('d MMMM yyyy, HH:mm', 'tr').format(reminder.eventTime);
+        final eventTimeStr = reminder.formattedEventTime;
         final leadStr = reminder.leadMinutes > 0 ? '${reminder.leadMinutes} dakika önce' : 'tam vaktinde';
-        final alertTimeStr = DateFormat('HH:mm').format(reminder.reminderTime);
+        final alertTimeStr = reminder.formattedReminderTime;
 
         final responseText = 'Harika! Planını başarıyla kaydettim ve hatırlatıcını kurdum ⏰\n\n'
             '📌 **Plan:** ${reminder.title}\n'
@@ -640,7 +645,7 @@ class AiAssistantService {
 
     for (int i = 0; i < active.length; i++) {
       final r = active[i];
-      final eventStr = DateFormat('d MMMM HH:mm', 'tr').format(r.eventTime);
+      final eventStr = r.formattedEventTimeSimple;
       final leadStr = r.leadMinutes > 0 ? '(${r.leadMinutes} dk önce)' : '';
       sb.writeln('${i + 1}. **${r.title}**');
       sb.writeln('   📅 $eventStr $leadStr');
@@ -970,11 +975,17 @@ class AiAssistantService {
 
     // 7. Time & Date
     if (lower.contains('saat kaç') || lower.contains('saat kac')) {
-      final timeStr = DateFormat('HH:mm:ss').format(DateTime.now());
+      final now = DateTime.now();
+      final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
       return 'Şu anda saat tam olarak **$timeStr** ⏰';
     }
     if (lower.contains('bugün ayın kaçı') || lower.contains('hangi gündeyiz') || lower.contains('tarih')) {
-      final dateStr = DateFormat('d MMMM yyyy, EEEE', 'tr').format(DateTime.now());
+      final now = DateTime.now();
+      const months = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+      const days = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
+      final m = months[(now.month - 1).clamp(0, 11)];
+      final d = days[(now.weekday - 1).clamp(0, 6)];
+      final dateStr = '${now.day} $m ${now.year}, $d';
       return 'Bugün **$dateStr** 📅';
     }
 

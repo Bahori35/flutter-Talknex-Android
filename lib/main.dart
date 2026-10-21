@@ -10,6 +10,7 @@ import 'services/translation_service.dart';
 import 'services/ai_assistant_service.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/home/home_screen.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'services/notification_service.dart';
@@ -70,6 +71,13 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    await initializeDateFormatting('tr_TR', null);
+    await initializeDateFormatting('tr', null);
+  } catch (e) {
+    debugPrint('[INTL] Date formatting init error: $e');
+  }
 
   try {
     await LiveLocationService().init();

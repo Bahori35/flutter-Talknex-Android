@@ -85,111 +85,132 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   void _showRemindersSheet() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppColors.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withAlpha(160),
       builder: (ctx) {
-        return ValueListenableBuilder<int>(
-          valueListenable: AiAssistantService.notifier,
-          builder: (context, _, __) {
-            final active = AiAssistantService.activeReminders;
+        return Container(
+          decoration: const BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: ValueListenableBuilder<int>(
+              valueListenable: AiAssistantService.notifier,
+              builder: (context, _, __) {
+                final active = AiAssistantService.activeReminders;
 
-            return SafeArea(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        const Icon(Icons.alarm_on_rounded, color: AppColors.accent, size: 24),
-                        const SizedBox(width: 10),
-                        const Expanded(
-                          child: Text(
-                            'Aktif Hatırlatıcılar & Planlar',
-                            style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
-                          ),
+                return Padding(
+                  padding: EdgeInsets.only(
+                    left: 20,
+                    right: 20,
+                    top: 14,
+                    bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
                         ),
-                        if (active.isNotEmpty)
-                          TextButton(
-                            onPressed: () async {
-                              await AiAssistantService.cancelReminder('all');
-                              if (context.mounted) Navigator.pop(context);
-                            },
-                            child: const Text('Tümünü Sil', style: TextStyle(color: AppColors.callRed, fontSize: 13)),
-                          ),
-                      ],
-                    ),
-                    const Divider(color: Colors.white12, height: 20),
-                    if (active.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 36),
-                        child: Column(
-                          children: [
-                            Icon(Icons.event_available_rounded, color: Colors.white24, size: 48),
-                            SizedBox(height: 12),
-                            Text(
-                              'Henüz kayıtlı bir planınız yok.',
-                              style: TextStyle(color: Colors.white54, fontSize: 14),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: AppColors.accent.withAlpha(30),
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                          ],
-                        ),
-                      )
-                    else
-                      ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxHeight: MediaQuery.of(context).size.height * 0.45,
-                        ),
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          itemCount: active.length,
-                          separatorBuilder: (_, __) => const Divider(color: Colors.white10, height: 1),
-                          itemBuilder: (context, i) {
-                            final r = active[i];
-                            return ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              leading: Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: AppColors.accent.withAlpha(40),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(Icons.event_note_rounded, color: AppColors.accent, size: 20),
-                              ),
-                              title: Text(
-                                r.title,
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-                              ),
-                              subtitle: Text(
-                                '${r.formattedEventTime} (${r.leadTimeText})\n⏳ ${r.remainingTimeText}',
-                                style: const TextStyle(color: Colors.white60, fontSize: 12),
-                              ),
-                              isThreeLine: true,
-                              trailing: IconButton(
-                                icon: const Icon(Icons.delete_outline_rounded, color: AppColors.callRed, size: 22),
-                                onPressed: () async {
-                                  await AiAssistantService.cancelReminder(r.id);
-                                },
-                              ),
-                            );
-                          },
-                        ),
+                            child: const Icon(Icons.alarm_on_rounded, color: AppColors.accent, size: 22),
+                          ),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              'Aktif Hatırlatıcılar & Planlar',
+                              style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          if (active.isNotEmpty)
+                            TextButton(
+                              onPressed: () async {
+                                await AiAssistantService.cancelReminder('all');
+                                if (ctx.mounted) Navigator.pop(ctx);
+                              },
+                              child: const Text('Tümünü Sil', style: TextStyle(color: AppColors.callRed, fontSize: 13, fontWeight: FontWeight.bold)),
+                            ),
+                        ],
                       ),
-                  ],
-                ),
-              ),
-            );
-          },
+                      const Divider(color: Colors.white12, height: 20),
+                      if (active.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 36),
+                          child: Column(
+                            children: [
+                              Icon(Icons.event_available_rounded, color: Colors.white24, size: 48),
+                              SizedBox(height: 12),
+                              Text(
+                                'Henüz kayıtlı bir planınız yok.',
+                                style: TextStyle(color: Colors.white54, fontSize: 14),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxHeight: MediaQuery.of(context).size.height * 0.55,
+                          ),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: active.length,
+                            separatorBuilder: (_, __) => const Divider(color: Colors.white10, height: 1),
+                            itemBuilder: (context, i) {
+                              final r = active[i];
+                              return ListTile(
+                                contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                                leading: Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.accent.withAlpha(35),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.event_note_rounded, color: AppColors.accent, size: 22),
+                                ),
+                                title: Text(
+                                  r.title,
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                                ),
+                                subtitle: Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    '${r.formattedEventTime} (${r.leadTimeText})\n⏳ ${r.remainingTimeText}',
+                                    style: const TextStyle(color: Colors.white70, fontSize: 12.5, height: 1.3),
+                                  ),
+                                ),
+                                isThreeLine: true,
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.delete_outline_rounded, color: AppColors.callRed, size: 22),
+                                  onPressed: () async {
+                                    await AiAssistantService.cancelReminder(r.id);
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
         );
       },
     );
