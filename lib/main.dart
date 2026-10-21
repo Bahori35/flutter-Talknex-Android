@@ -6,6 +6,7 @@ import 'constants/app_colors.dart';
 import 'services/custom_auth_service.dart';
 import 'services/live_location_service.dart';
 import 'services/emergency_service.dart';
+import 'services/translation_service.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/home/home_screen.dart';
 
@@ -79,6 +80,12 @@ void main() async {
     await EmergencyService().init();
   } catch (e) {
     debugPrint('[EMERGENCY] Init error: $e');
+  }
+
+  try {
+    await TranslationService.init();
+  } catch (e) {
+    debugPrint('[TRANSLATION] Init error: $e');
   }
 
   try {

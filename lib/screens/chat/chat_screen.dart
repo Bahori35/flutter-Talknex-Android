@@ -43,6 +43,9 @@ import 'widgets/forward_message_sheet.dart';
 import 'starred_messages_screen.dart';
 import '../../services/message_reactions_service.dart';
 import '../../widgets/reaction_widgets.dart';
+import '../../services/translation_service.dart';
+import 'widgets/chat_translation_sheet.dart';
+import 'widgets/translated_text_widget.dart';
 
 class ChatScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -1343,6 +1346,41 @@ class _ChatScreenState extends State<ChatScreen> {
                   );
                 },
               ),
+              // Mesaj Çevirisi (WhatsApp style individual message translate)
+              if (message.type == MessageType.text && !message.isDeleted)
+                Builder(
+                  builder: (context) {
+                    final isShowingTranslated = TranslationService.shouldShowTranslated(
+                      messageId: message.id,
+                      chatId: widget.peerUser.uid,
+                    );
+                    final targetLang = TranslationService.getChatTargetLanguage(widget.peerUser.uid);
+                    final targetLangName = TranslationService.getLanguageName(targetLang);
+
+                    return ListTile(
+                      leading: const Icon(Icons.g_translate_rounded, color: AppColors.accent),
+                      title: Text(
+                        isShowingTranslated ? 'Orijinali Göster' : 'Mesajı Çevir',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(
+                        isShowingTranslated
+                            ? 'Orijinal dildeki mesajı görüntüler'
+                            : '$targetLangName diline çevirir',
+                        style: const TextStyle(color: Colors.white38, fontSize: 11),
+                      ),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        final unpacked = MessageEnvelope.unpack(message.content);
+                        TranslationService.toggleManualTranslate(
+                          messageId: message.id,
+                          text: unpacked.text,
+                          chatId: widget.peerUser.uid,
+                        );
+                      },
+                    );
+                  },
+                ),
               if (isMe && message.type == MessageType.text)
                 Builder(
                   builder: (context) {
@@ -1697,6 +1735,32 @@ class _ChatScreenState extends State<ChatScreen> {
             tooltip: 'Sesli Arama',
             onPressed: () => _startCall(CallType.audio),
           ),
+          ValueListenableBuilder<int>(
+            valueListenable: TranslationService.notifier,
+            builder: (context, _, __) {
+              final isAuto = TranslationService.isChatAutoTranslateEnabled(widget.peerUser.uid);
+              return IconButton(
+                icon: Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: isAuto ? AppColors.accent.withOpacity(0.25) : Colors.white10,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.g_translate_rounded,
+                    color: isAuto ? AppColors.accent : Colors.white70,
+                    size: 18,
+                  ),
+                ),
+                tooltip: 'Sohbeti Çevir',
+                onPressed: () => ChatTranslationSheet.show(
+                  context,
+                  chatId: widget.peerUser.uid,
+                  chatTitle: widget.peerUser.displayName,
+                ),
+              );
+            },
+          ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert_rounded, color: Colors.white70),
             color: AppColors.surfaceLight,
@@ -1712,6 +1776,12 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                 );
+              } else if (val == 'translate') {
+                ChatTranslationSheet.show(
+                  context,
+                  chatId: widget.peerUser.uid,
+                  chatTitle: widget.peerUser.displayName,
+                );
               }
             },
             itemBuilder: (ctx) => [
@@ -1725,6 +1795,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   ],
                 ),
               ),
+              const PopupMenuItem(
+                value: 'translate',
+                child: Row(
+                  children: [
+                    Icon(Icons.g_translate_rounded, color: AppColors.accent, size: 20),
+                    SizedBox(width: 10),
+                    Text('Sohbeti Çevir', style: TextStyle(color: Colors.white, fontSize: 14)),
+                  ],
+                ),
+              ),
             ],
           ),
           const SizedBox(width: 4),
@@ -1732,6 +1812,63 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
+          // WhatsApp / Telegram style auto-translate banner
+          ValueListenableBuilder<int>(
+            valueListenable: TranslationService.notifier,
+            builder: (context, _, __) {
+              final isAuto = TranslationService.isChatAutoTranslateEnabled(widget.peerUser.uid);
+              if (!isAuto) return const SizedBox.shrink();
+
+              final targetCode = TranslationService.getChatTargetLanguage(widget.peerUser.uid);
+              final targetName = TranslationService.getLanguageName(targetCode);
+
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  border: Border(bottom: BorderSide(color: AppColors.accent.withOpacity(0.3), width: 1)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.g_translate_rounded, color: AppColors.accent, size: 17),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Bu sohbet $targetName diline çevriliyor',
+                        style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w500),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () => ChatTranslationSheet.show(
+                        context,
+                        chatId: widget.peerUser.uid,
+                        chatTitle: widget.peerUser.displayName,
+                      ),
+                      borderRadius: BorderRadius.circular(6),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Text(
+                          'Değiştir',
+                          style: TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    InkWell(
+                      onTap: () => TranslationService.disableAutoTranslate(widget.peerUser.uid),
+                      borderRadius: BorderRadius.circular(12),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.close_rounded, color: Colors.white60, size: 17),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
           // Live location sharing banner (WhatsApp style)
           if (_liveLocationService.isSharingWith(widget.peerUser.uid))
             Material(
@@ -2663,14 +2800,20 @@ class _ChatScreenState extends State<ChatScreen> {
                     if (displayContent.isNotEmpty && displayContent != '📷 Fotoğraf' && displayContent != '🎥 Video')
                       Padding(
                         padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
-                        child: Text(
-                          displayContent,
+                        child: TranslatedTextWidget(
+                          messageId: message.id,
+                          chatId: widget.peerUser.uid,
+                          text: displayContent,
+                          isMe: isMe,
                           style: const TextStyle(color: Colors.white, fontSize: 14.5),
                         ),
                       ),
                   ] else ...[
-                    Text(
-                      displayContent,
+                    TranslatedTextWidget(
+                      messageId: message.id,
+                      chatId: widget.peerUser.uid,
+                      text: displayContent,
+                      isMe: isMe,
                       style: TextStyle(
                         color: isMe ? Colors.white : AppColors.textPrimary,
                         fontSize: 14.5,

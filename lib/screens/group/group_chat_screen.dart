@@ -43,6 +43,9 @@ import '../chat/widgets/forward_message_sheet.dart';
 import '../chat/starred_messages_screen.dart';
 import '../../services/message_reactions_service.dart';
 import '../../widgets/reaction_widgets.dart';
+import '../../services/translation_service.dart';
+import '../chat/widgets/chat_translation_sheet.dart';
+import '../chat/widgets/translated_text_widget.dart';
 
 class GroupChatScreen extends StatefulWidget {
   final GroupModel group;
@@ -1380,6 +1383,42 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 _toggleStar(message);
               },
             ),
+            // Mesaj Çevirisi (WhatsApp style individual message translate)
+            if (message.type == 'text' && !message.isDeleted)
+              Builder(
+                builder: (context) {
+                  final groupChatId = 'group_${_group.id}';
+                  final isShowingTranslated = TranslationService.shouldShowTranslated(
+                    messageId: message.id,
+                    chatId: groupChatId,
+                  );
+                  final targetLang = TranslationService.getChatTargetLanguage(groupChatId);
+                  final targetLangName = TranslationService.getLanguageName(targetLang);
+
+                  return ListTile(
+                    leading: const Icon(Icons.g_translate_rounded, color: AppColors.accent),
+                    title: Text(
+                      isShowingTranslated ? 'Orijinali Göster' : 'Mesajı Çevir',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      isShowingTranslated
+                          ? 'Orijinal dildeki mesajı görüntüler'
+                          : '$targetLangName diline çevirir',
+                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      final unpacked = MessageEnvelope.unpack(message.content);
+                      TranslationService.toggleManualTranslate(
+                        messageId: message.id,
+                        text: unpacked.text,
+                        chatId: groupChatId,
+                      );
+                    },
+                  );
+                },
+              ),
             if (isMe && message.type == 'text' && isWithin15Minutes)
               ListTile(
                 leading: const Icon(Icons.edit_rounded, color: AppColors.accent),
@@ -1606,6 +1645,32 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             icon: const Icon(Icons.info_outline_rounded, color: AppColors.textPrimary),
             onPressed: _openGroupInfo,
           ),
+          ValueListenableBuilder<int>(
+            valueListenable: TranslationService.notifier,
+            builder: (context, _, __) {
+              final isAuto = TranslationService.isChatAutoTranslateEnabled('group_${_group.id}');
+              return IconButton(
+                icon: Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: isAuto ? AppColors.accent.withOpacity(0.25) : Colors.white10,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.g_translate_rounded,
+                    color: isAuto ? AppColors.accent : Colors.white70,
+                    size: 18,
+                  ),
+                ),
+                tooltip: 'Sohbeti Çevir',
+                onPressed: () => ChatTranslationSheet.show(
+                  context,
+                  chatId: 'group_${_group.id}',
+                  chatTitle: _group.name,
+                ),
+              );
+            },
+          ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert_rounded, color: AppColors.textPrimary),
             color: AppColors.surface,
@@ -1621,6 +1686,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     ),
                   ),
                 );
+              } else if (value == 'translate') {
+                ChatTranslationSheet.show(
+                  context,
+                  chatId: 'group_${_group.id}',
+                  chatTitle: _group.name,
+                );
               } else if (value == 'info') {
                 _openGroupInfo();
               }
@@ -1633,6 +1704,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     Icon(Icons.star_rounded, color: Colors.amber, size: 20),
                     SizedBox(width: 10),
                     Text('Yıldızlı Mesajlar', style: TextStyle(color: Colors.white, fontSize: 14)),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'translate',
+                child: Row(
+                  children: [
+                    Icon(Icons.g_translate_rounded, color: AppColors.accent, size: 20),
+                    SizedBox(width: 10),
+                    Text('Sohbeti Çevir', style: TextStyle(color: Colors.white, fontSize: 14)),
                   ],
                 ),
               ),
@@ -1652,6 +1733,64 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ),
       body: Column(
         children: [
+          // WhatsApp / Telegram style auto-translate banner for group
+          ValueListenableBuilder<int>(
+            valueListenable: TranslationService.notifier,
+            builder: (context, _, __) {
+              final groupChatId = 'group_${_group.id}';
+              final isAuto = TranslationService.isChatAutoTranslateEnabled(groupChatId);
+              if (!isAuto) return const SizedBox.shrink();
+
+              final targetCode = TranslationService.getChatTargetLanguage(groupChatId);
+              final targetName = TranslationService.getLanguageName(targetCode);
+
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  border: Border(bottom: BorderSide(color: AppColors.accent.withOpacity(0.3), width: 1)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.g_translate_rounded, color: AppColors.accent, size: 17),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Bu grup $targetName diline çevriliyor',
+                        style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w500),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () => ChatTranslationSheet.show(
+                        context,
+                        chatId: groupChatId,
+                        chatTitle: _group.name,
+                      ),
+                      borderRadius: BorderRadius.circular(6),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Text(
+                          'Değiştir',
+                          style: TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    InkWell(
+                      onTap: () => TranslationService.disableAutoTranslate(groupChatId),
+                      borderRadius: BorderRadius.circular(12),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.close_rounded, color: Colors.white60, size: 17),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
           if (_isUploadingMedia)
             Container(
               padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
@@ -3260,14 +3399,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 if (displayContent.isNotEmpty && displayContent != '📷 Fotoğraf' && displayContent != '🎥 Video')
                   Padding(
                     padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
-                    child: Text(
-                      displayContent,
+                    child: TranslatedTextWidget(
+                      messageId: message.id,
+                      chatId: 'group_${_group.id}',
+                      text: displayContent,
+                      isMe: isMe,
                       style: const TextStyle(color: Colors.white, fontSize: 14.5),
                     ),
                   ),
               ] else ...[
-                Text(
-                  displayContent,
+                TranslatedTextWidget(
+                  messageId: message.id,
+                  chatId: 'group_${_group.id}',
+                  text: displayContent,
+                  isMe: isMe,
                   style: const TextStyle(color: Colors.white, fontSize: 14.5),
                 ),
               ],
