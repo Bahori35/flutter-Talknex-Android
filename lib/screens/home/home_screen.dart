@@ -27,6 +27,8 @@ import '../settings/settings_screen.dart';
 import '../settings/emergency_screen.dart';
 import '../../services/encryption_service.dart';
 import '../../widgets/app_avatar.dart';
+import '../../models/message_envelope.dart';
+import '../chat/starred_messages_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -64,6 +66,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   bool _isLoadingGroups = true;
 
   String _formatLastMessage(String msg) {
+    if (msg.startsWith('{"_k":"talknex_msg"')) {
+      final unpacked = MessageEnvelope.unpack(msg);
+      msg = unpacked.text;
+    }
     if (msg.contains('"name"') && msg.contains('"phone"')) {
       try {
         final decoded = jsonDecode(msg);
@@ -623,6 +629,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   context,
                   MaterialPageRoute(builder: (_) => const EmergencyScreen()),
                 );
+              } else if (val == 'starred') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const StarredMessagesScreen()),
+                );
               } else if (val == 'settings') {
                 Navigator.push(
                   context,
@@ -668,6 +679,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     const Text(
                       'Acil Durum (SOS)',
                       style: TextStyle(color: AppColors.callRed, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'starred',
+                child: Row(
+                  children: [
+                    Icon(Icons.star_rounded, color: Colors.amber, size: 20),
+                    SizedBox(width: 12),
+                    Text(
+                      'Yıldızlı Mesajlar',
+                      style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w600),
                     ),
                   ],
                 ),

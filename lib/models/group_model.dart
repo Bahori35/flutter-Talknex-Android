@@ -1,4 +1,6 @@
 import '../utils/media_url_helper.dart';
+import 'message_envelope.dart';
+import '../services/starred_messages_service.dart';
 
 class GroupModel {
   final int id;
@@ -415,6 +417,14 @@ class GroupMessageModel {
   final bool isDeleted;
   final bool isEdited;
   final DateTime timestamp;
+  final ReplyMetadata? replyTo;
+  final bool isForwarded;
+  final bool isStarred;
+
+  String? get replyToText => replyTo?.text;
+  String? get replyToSender => replyTo?.sender;
+  String? get replyToId => replyTo?.id;
+  String? get replyToType => replyTo?.type;
 
   GroupMessageModel({
     required this.id,
@@ -430,6 +440,9 @@ class GroupMessageModel {
     this.isDeleted = false,
     this.isEdited = false,
     required this.timestamp,
+    this.replyTo,
+    this.isForwarded = false,
+    this.isStarred = false,
   })  : senderPhoto = formatMediaUrl(senderPhoto),
         mediaUrl = formatMediaUrl(mediaUrl);
 
@@ -457,13 +470,25 @@ class GroupMessageModel {
       }
     }
 
+    final rawContent = json['content']?.toString() ?? '';
+    final unpacked = MessageEnvelope.unpack(rawContent);
+
+    ReplyMetadata? reply = unpacked.replyTo;
+    if (reply == null && json['replyTo'] is Map) {
+      reply = ReplyMetadata.fromJson(Map<String, dynamic>.from(json['replyTo']));
+    }
+
+    final isFwd = unpacked.isForwarded || json['isForwarded'] == 1 || json['isForwarded'] == true;
+    final msgId = json['id']?.toString() ?? '';
+    final starred = json['isStarred'] == true || StarredMessagesService.isStarred(msgId);
+
     return GroupMessageModel(
-      id: json['id']?.toString() ?? '',
+      id: msgId,
       groupId: json['groupId'] is int ? json['groupId'] : int.tryParse(json['groupId']?.toString() ?? '0') ?? 0,
       senderId: json['senderId']?.toString() ?? '',
       senderName: json['senderName']?.toString() ?? 'Üye',
       senderPhoto: json['senderPhoto']?.toString() ?? '',
-      content: json['content']?.toString() ?? '',
+      content: unpacked.text,
       type: json['type']?.toString() ?? 'text',
       mediaUrl: json['mediaUrl']?.toString(),
       poll: pModel,
@@ -471,6 +496,9 @@ class GroupMessageModel {
       isDeleted: json['isDeleted'] == 1 || json['isDeleted'] == true,
       isEdited: json['isEdited'] == 1 || json['isEdited'] == true,
       timestamp: t,
+      replyTo: reply,
+      isForwarded: isFwd,
+      isStarred: starred,
     );
   }
 
@@ -488,6 +516,9 @@ class GroupMessageModel {
     bool? isDeleted,
     bool? isEdited,
     DateTime? timestamp,
+    ReplyMetadata? replyTo,
+    bool? isForwarded,
+    bool? isStarred,
   }) {
     return GroupMessageModel(
       id: id ?? this.id,
@@ -503,6 +534,9 @@ class GroupMessageModel {
       isDeleted: isDeleted ?? this.isDeleted,
       isEdited: isEdited ?? this.isEdited,
       timestamp: timestamp ?? this.timestamp,
+      replyTo: replyTo ?? this.replyTo,
+      isForwarded: isForwarded ?? this.isForwarded,
+      isStarred: isStarred ?? this.isStarred,
     );
   }
 }

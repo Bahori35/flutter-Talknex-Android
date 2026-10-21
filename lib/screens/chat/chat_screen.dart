@@ -36,6 +36,10 @@ import '../../services/voice_record_service.dart';
 import '../../services/encryption_service.dart';
 import '../../widgets/emoji_gif_sticker_picker.dart';
 import '../../widgets/app_avatar.dart';
+import '../../models/message_envelope.dart';
+import '../../services/starred_messages_service.dart';
+import 'widgets/forward_message_sheet.dart';
+import 'starred_messages_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -60,6 +64,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final LiveLocationService _liveLocationService = LiveLocationService();
   final ImagePicker _picker = ImagePicker();
   List<MessageModel> _messages = [];
+  MessageModel? _replyingToMessage;
   bool _isLoading = true;
   bool _isLoadingMore = false;
   bool _hasMore = true;
@@ -497,9 +502,120 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  MessageModel? _sendMessage({String? customContent, MessageType type = MessageType.text, String? mediaUrl}) {
+  String _getMessageSnippet(MessageModel msg) {
+    switch (msg.type) {
+      case MessageType.image:
+        return msg.content.isNotEmpty && msg.content != '📷 Fotoğraf' ? msg.content : '📷 Fotoğraf';
+      case MessageType.video:
+        return msg.content.isNotEmpty && msg.content != '🎥 Video' ? msg.content : '🎥 Video';
+      case MessageType.audio:
+        return '🎤 Sesli Mesaj';
+      case MessageType.doc:
+        return '📄 ${msg.content.isNotEmpty ? msg.content : "Belge"}';
+      case MessageType.location:
+        return '📍 Konum';
+      case MessageType.contact:
+        return '👤 Kişi Kartı';
+      case MessageType.gif:
+        return '👾 GIF';
+      case MessageType.sticker:
+        return '🏷️ Çıkartma';
+      default:
+        return msg.content;
+    }
+  }
+
+  void _setReplyMessage(MessageModel message) {
+    setState(() {
+      _replyingToMessage = message;
+    });
+    _focusNode.requestFocus();
+  }
+
+  void _cancelReply() {
+    setState(() {
+      _replyingToMessage = null;
+    });
+  }
+
+  void _openForwardSheet(MessageModel message) async {
+    final sent = await ForwardMessageSheet.show(
+      context,
+      currentUser: widget.currentUser,
+      content: message.content,
+      messageType: message.type.name,
+      mediaUrl: message.mediaUrl,
+    );
+    if (sent == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Mesaj iletildi'),
+          backgroundColor: AppColors.primary,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _toggleStar(MessageModel message) async {
+    final isMe = message.senderId == widget.currentUser.uid;
+    final senderName = isMe ? 'Siz' : widget.peerUser.displayName;
+
+    final starredItem = StarredMessage(
+      messageId: message.id,
+      chatId: widget.peerUser.uid,
+      chatTitle: widget.peerUser.displayName,
+      senderId: message.senderId,
+      senderName: senderName,
+      content: message.content,
+      type: message.type.name,
+      mediaUrl: message.mediaUrl,
+      timestamp: message.timestamp,
+      isGroup: false,
+    );
+
+    final isStarredNow = await StarredMessagesService.toggleStar(starredItem);
+
+    if (mounted) {
+      setState(() {
+        final idx = _messages.indexWhere((m) => m.id == message.id);
+        if (idx != -1) {
+          _messages[idx] = _messages[idx].copyWith(isStarred: isStarredNow);
+        }
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isStarredNow ? 'Yıldızlandı' : 'Yıldız kaldırıldı'),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  MessageModel? _sendMessage({String? customContent, MessageType type = MessageType.text, String? mediaUrl, bool isForwarded = false}) {
     final text = (customContent ?? _messageController.text).trim();
     if (text.isEmpty && mediaUrl == null) return null;
+
+    ReplyMetadata? replyMeta;
+    if (_replyingToMessage != null) {
+      final isMe = _replyingToMessage!.senderId == widget.currentUser.uid;
+      final senderName = isMe ? 'Siz' : widget.peerUser.displayName;
+      final snippet = _getMessageSnippet(_replyingToMessage!);
+      replyMeta = ReplyMetadata(
+        id: _replyingToMessage!.id,
+        sender: senderName,
+        text: snippet,
+        type: _replyingToMessage!.type.name,
+      );
+    }
+
+    final packedContent = MessageEnvelope.pack(
+      text: text,
+      replyTo: replyMeta,
+      isForwarded: isForwarded,
+    );
 
     final newMessage = MessageModel(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -510,11 +626,13 @@ class _ChatScreenState extends State<ChatScreen> {
       mediaUrl: mediaUrl,
       timestamp: DateTime.now(),
       isRead: false,
+      replyTo: replyMeta,
+      isForwarded: isForwarded,
     );
 
-    // Encrypt the message text for transmission & server storage
+    // Encrypt the packed message text for transmission & server storage
     final encryptedContent = EndToEndEncryptionService.encryptText(
-      text,
+      packedContent,
       widget.currentUser.uid,
       widget.peerUser.uid,
     );
@@ -532,6 +650,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // 2. Add unencrypted plaintext message to sender's local list so UI is immediate and smooth
     setState(() {
       _messages.insert(0, newMessage);
+      _replyingToMessage = null;
     });
 
     if (customContent == null) {
@@ -1112,6 +1231,44 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
               ),
+              // 1. Cevapla (Reply)
+              ListTile(
+                leading: const Icon(Icons.reply_rounded, color: AppColors.primaryLight),
+                title: const Text('Cevapla', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _setReplyMessage(message);
+                },
+              ),
+              // 2. İlet (Forward)
+              ListTile(
+                leading: const Icon(Icons.shortcut_rounded, color: AppColors.accent),
+                title: const Text('İlet', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openForwardSheet(message);
+                },
+              ),
+              // 3. Yıldız Ekle / Kaldır (Star / Unstar)
+              Builder(
+                builder: (context) {
+                  final isStarred = message.isStarred || StarredMessagesService.isStarred(message.id);
+                  return ListTile(
+                    leading: Icon(
+                      isStarred ? Icons.star_rounded : Icons.star_outline_rounded,
+                      color: Colors.amber,
+                    ),
+                    title: Text(
+                      isStarred ? 'Yıldızı Kaldır' : 'Yıldız Ekle',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _toggleStar(message);
+                    },
+                  );
+                },
+              ),
               if (isMe && message.type == MessageType.text)
                 Builder(
                   builder: (context) {
@@ -1429,6 +1586,36 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             tooltip: 'Sesli Arama',
             onPressed: () => _startCall(CallType.audio),
+          ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert_rounded, color: Colors.white70),
+            color: AppColors.surfaceLight,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            onSelected: (val) {
+              if (val == 'starred') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => StarredMessagesScreen(
+                      chatId: widget.peerUser.uid,
+                      chatTitle: widget.peerUser.displayName,
+                    ),
+                  ),
+                );
+              }
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'starred',
+                child: Row(
+                  children: [
+                    Icon(Icons.star_rounded, color: Colors.amber, size: 20),
+                    SizedBox(width: 10),
+                    Text('Yıldızlı Mesajlar', style: TextStyle(color: Colors.white, fontSize: 14)),
+                  ],
+                ),
+              ),
+            ],
           ),
           const SizedBox(width: 4),
         ],
@@ -2221,7 +2408,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final bool isGif = message.type == MessageType.gif && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool isVideo = message.type == MessageType.video ||
-        (hasMedia && !isDoc && !isLocation && !isContact && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
     final bool isAudio = message.type == MessageType.audio ||
         (hasMedia && !isVideo && !isDoc && !isLocation && !isContact && !isSticker && !isGif && (message.mediaUrl!.endsWith('.m4a') || message.mediaUrl!.endsWith('.aac') || message.mediaUrl!.endsWith('.mp3')));
 
@@ -2230,173 +2416,323 @@ class _ChatScreenState extends State<ChatScreen> {
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: GestureDetector(
-        onLongPress: () => _showMessageActionDialog(message, isMe),
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 3.5),
-          padding: EdgeInsets.all(isSticker ? 0 : (isContact ? 4 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.78,
+      child: Dismissible(
+        key: Key('reply_${message.id}'),
+        direction: DismissDirection.startToEnd,
+        confirmDismiss: (_) async {
+          _setReplyMessage(message);
+          return false;
+        },
+        background: Container(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.only(left: 16),
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: AppColors.accent.withOpacity(0.2),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.reply_rounded, color: AppColors.accent, size: 20),
           ),
-          decoration: isSticker
-              ? null
-              : BoxDecoration(
-                  gradient: isMe ? (isDeleted ? null : AppColors.bubbleGradient) : null,
-                  color: isDeleted 
-                      ? (isMe ? Colors.white10 : Colors.white12) 
-                      : (isMe ? null : AppColors.peerMessageBubble),
-                  border: Border.all(
-                    color: isDeleted ? Colors.white24 : (isMe ? Colors.transparent : AppColors.cardBorder),
-                  ),
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(16),
-                    topRight: const Radius.circular(16),
-                    bottomLeft: Radius.circular(isMe ? 16 : 3),
-                    bottomRight: Radius.circular(isMe ? 3 : 16),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
+        ),
+        child: GestureDetector(
+          onLongPress: () => _showMessageActionDialog(message, isMe),
+          child: Container(
+            margin: const EdgeInsets.symmetric(vertical: 3.5),
+            padding: EdgeInsets.all(isSticker ? 0 : (isContact ? 4 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.of(context).size.width * 0.78,
+            ),
+            decoration: isSticker
+                ? null
+                : BoxDecoration(
+                    gradient: isMe ? (isDeleted ? null : AppColors.bubbleGradient) : null,
+                    color: isDeleted 
+                        ? (isMe ? Colors.white10 : Colors.white12) 
+                        : (isMe ? null : AppColors.peerMessageBubble),
+                    border: Border.all(
+                      color: isDeleted ? Colors.white24 : (isMe ? Colors.transparent : AppColors.cardBorder),
                     ),
-                  ],
-                ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              if (isDeleted) ...[
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.block_rounded, color: Colors.white54, size: 16),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Bu mesaj silindi',
-                      style: TextStyle(
-                        color: Colors.white60,
-                        fontSize: 13.5,
-                        fontStyle: FontStyle.italic,
+                    borderRadius: BorderRadius.only(
+                      topLeft: const Radius.circular(16),
+                      topRight: const Radius.circular(16),
+                      bottomLeft: Radius.circular(isMe ? 16 : 3),
+                      bottomRight: Radius.circular(isMe ? 3 : 16),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 4,
+                        offset: const Offset(0, 2),
                       ),
+                    ],
+                  ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (isDeleted) ...[
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.block_rounded, color: Colors.white54, size: 16),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Bu mesaj silindi',
+                        style: TextStyle(
+                          color: Colors.white60,
+                          fontSize: 13.5,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  if (message.isForwarded) _buildForwardedHeader(),
+                  if (message.replyTo != null) _buildQuotedBox(message.replyTo!, isMe),
+                  if (isSticker) ...[
+                    _buildStickerMessageWidget(message, isMe),
+                  ] else if (isGif) ...[
+                    _buildGifMessageWidget(message, isMe),
+                  ] else if (isLocation) ...[
+                    _buildLocationWidget(message),
+                  ] else if (isContact) ...[
+                    ContactMessageBubble(
+                      message: message,
+                      isMe: isMe,
+                      currentUser: widget.currentUser,
                     ),
-                  ],
-                ),
-              ] else ...[
-                if (isSticker) ...[
-                  _buildStickerMessageWidget(message, isMe),
-                ] else if (isGif) ...[
-                  _buildGifMessageWidget(message, isMe),
-                ] else if (isLocation) ...[
-                  _buildLocationWidget(message),
-                ] else if (isContact) ...[
-                  ContactMessageBubble(
-                    message: message,
-                    isMe: isMe,
-                    currentUser: widget.currentUser,
-                  ),
-                ] else if (isDoc) ...[
-                  _buildDocumentWidget(message),
-                ] else if (isAudio) ...[
-                  AudioMessageBubble(
-                    audioUrl: message.mediaUrl!,
-                    senderId: message.senderId,
-                    receiverId: widget.peerUser.uid,
-                    isMe: isMe,
-                  ),
-                ] else if (hasMedia) ...[
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: isVideo
-                        ? VideoMessageBubble(
-                            videoUrl: message.mediaUrl!,
-                            title: message.content.isNotEmpty && message.content != '🎥 Video'
-                                ? message.content
-                                : 'Video Mesajı',
-                            senderId: message.senderId,
-                            receiverId: message.receiverId,
-                          )
-                        : GestureDetector(
-                            onTap: () => _openFullScreenImage(message.mediaUrl!, senderId: message.senderId, receiverId: message.receiverId),
-                            child: DecryptedImageWidget(
-                              imageUrl: message.mediaUrl!,
+                  ] else if (isDoc) ...[
+                    _buildDocumentWidget(message),
+                  ] else if (isAudio) ...[
+                    AudioMessageBubble(
+                      audioUrl: message.mediaUrl!,
+                      senderId: message.senderId,
+                      receiverId: widget.peerUser.uid,
+                      isMe: isMe,
+                    ),
+                  ] else if (hasMedia) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: isVideo
+                          ? VideoMessageBubble(
+                              videoUrl: message.mediaUrl!,
+                              title: message.content.isNotEmpty && message.content != '🎥 Video'
+                                  ? message.content
+                                  : 'Video Mesajı',
                               senderId: message.senderId,
                               receiverId: message.receiverId,
-                              width: double.infinity,
-                              height: 200,
-                              fit: BoxFit.cover,
+                            )
+                          : GestureDetector(
+                              onTap: () => _openFullScreenImage(message.mediaUrl!, senderId: message.senderId, receiverId: message.receiverId),
+                              child: DecryptedImageWidget(
+                                imageUrl: message.mediaUrl!,
+                                senderId: message.senderId,
+                                receiverId: message.receiverId,
+                                width: double.infinity,
+                                height: 200,
+                                fit: BoxFit.cover,
+                              ),
                             ),
-                          ),
-                  ),
-                  if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
-                      child: Text(
-                        message.content,
-                        style: const TextStyle(color: Colors.white, fontSize: 14.5),
+                    ),
+                    if (message.content.isNotEmpty && message.content != '📷 Fotoğraf' && message.content != '🎥 Video')
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
+                        child: Text(
+                          message.content,
+                          style: const TextStyle(color: Colors.white, fontSize: 14.5),
+                        ),
+                      ),
+                  ] else ...[
+                    Text(
+                      message.content,
+                      style: TextStyle(
+                        color: isMe ? Colors.white : AppColors.textPrimary,
+                        fontSize: 14.5,
+                        height: 1.35,
                       ),
                     ),
-                ] else ...[
-                  Text(
-                    message.content,
-                    style: TextStyle(
-                      color: isMe ? Colors.white : AppColors.textPrimary,
-                      fontSize: 14.5,
-                      height: 1.35,
+                  ],
+                ],
+                if (!isSticker) ...[
+                  const SizedBox(height: 4),
+                  Padding(
+                    padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (isEdited && !isDeleted) ...[
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.edit_rounded,
+                                size: 11,
+                                color: isMe ? Colors.white70 : AppColors.accent,
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                'düzenlendi • ',
+                                style: TextStyle(
+                                  color: isMe ? Colors.white70 : AppColors.accent,
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w600,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        Text(
+                          DateFormat('HH:mm').format(message.timestamp),
+                          style: TextStyle(
+                            color: isMe ? Colors.white70 : AppColors.textSecondary,
+                            fontSize: 11,
+                          ),
+                        ),
+                        if (message.isStarred || StarredMessagesService.isStarred(message.id)) ...[
+                          const SizedBox(width: 3),
+                          const Icon(
+                            Icons.star_rounded,
+                            size: 13,
+                            color: Colors.amberAccent,
+                          ),
+                        ],
+                        if (isMe && !isDeleted) ...[
+                          const SizedBox(width: 4),
+                          Icon(
+                            (message.isRead || message.isDelivered) ? Icons.done_all_rounded : Icons.done_rounded,
+                            size: 15,
+                            color: message.isRead ? AppColors.accent : Colors.white70,
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ],
               ],
-              if (!isSticker) ...[
-                const SizedBox(height: 4),
-                Padding(
-                  padding: EdgeInsets.symmetric(horizontal: hasMedia ? 4 : 0),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (isEdited && !isDeleted) ...[
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.edit_rounded,
-                              size: 11,
-                              color: isMe ? Colors.white70 : AppColors.accent,
-                            ),
-                            const SizedBox(width: 3),
-                            Text(
-                              'düzenlendi • ',
-                              style: TextStyle(
-                                color: isMe ? Colors.white70 : AppColors.accent,
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w600,
-                                fontStyle: FontStyle.italic,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                      Text(
-                        DateFormat('HH:mm').format(message.timestamp),
-                        style: TextStyle(
-                          color: isMe ? Colors.white70 : AppColors.textSecondary,
-                          fontSize: 11,
-                        ),
-                      ),
-                      if (isMe && !isDeleted) ...[
-                        const SizedBox(width: 4),
-                        Icon(
-                          (message.isRead || message.isDelivered) ? Icons.done_all_rounded : Icons.done_rounded,
-                          size: 15,
-                          color: message.isRead ? AppColors.accent : Colors.white70,
-                        ),
-                      ],
-                    ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildForwardedHeader() {
+    return const Padding(
+      padding: EdgeInsets.only(bottom: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.shortcut_rounded, size: 13, color: Colors.white60),
+          SizedBox(width: 4),
+          Text(
+            'İletildi',
+            style: TextStyle(
+              color: Colors.white60,
+              fontSize: 11,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuotedBox(ReplyMetadata reply, bool isMe) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.22),
+        borderRadius: BorderRadius.circular(8),
+        border: Border(
+          left: BorderSide(
+            color: isMe ? AppColors.accent : const Color(0xFF00BFA5),
+            width: 3.5,
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            reply.sender,
+            style: TextStyle(
+              color: isMe ? AppColors.accent : const Color(0xFF00BFA5),
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            reply.text,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReplyPreviewBanner() {
+    if (_replyingToMessage == null) return const SizedBox.shrink();
+
+    final isMe = _replyingToMessage!.senderId == widget.currentUser.uid;
+    final senderName = isMe ? 'Siz' : widget.peerUser.displayName;
+    final snippet = _getMessageSnippet(_replyingToMessage!);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceLight,
+        border: Border(
+          left: const BorderSide(color: AppColors.accent, width: 4),
+          top: BorderSide(color: Colors.white.withOpacity(0.06)),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.reply_rounded, color: AppColors.accent, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  senderName,
+                  style: const TextStyle(
+                    color: AppColors.accent,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12.5,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  snippet,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 12,
                   ),
                 ),
               ],
-            ],
+            ),
           ),
-        ),
+          IconButton(
+            icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 18),
+            splashRadius: 18,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: _cancelReply,
+          ),
+        ],
       ),
     );
   }
@@ -2496,133 +2832,139 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      color: AppColors.surface,
-      child: SafeArea(
-        top: false,
-        bottom: !_showEmojiPicker,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceLight,
-                  borderRadius: BorderRadius.circular(25),
-                  border: Border.all(color: AppColors.cardBorder),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    // WhatsApp-style Emoji, GIF, Sticker Tray Toggle
-                    IconButton(
-                      icon: Icon(
-                        _showEmojiPicker ? Icons.keyboard_rounded : Icons.sentiment_satisfied_alt_rounded,
-                        color: _showEmojiPicker ? AppColors.accent : AppColors.textSecondary,
-                        size: 24,
-                      ),
-                      splashRadius: 20,
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                      constraints: const BoxConstraints(),
-                      onPressed: _toggleEmojiPicker,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildReplyPreviewBanner(),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          color: AppColors.surface,
+          child: SafeArea(
+            top: false,
+            bottom: !_showEmojiPicker,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceLight,
+                      borderRadius: BorderRadius.circular(25),
+                      border: Border.all(color: AppColors.cardBorder),
                     ),
-                    Expanded(
-                      child: TextField(
-                        controller: _messageController,
-                        focusNode: _focusNode,
-                        onTap: () {
-                          if (_showEmojiPicker) {
-                            setState(() {
-                              _showEmojiPicker = false;
-                            });
-                          }
-                        },
-                        style: const TextStyle(color: AppColors.textPrimary, fontSize: 15),
-                        decoration: const InputDecoration(
-                          hintText: 'Mesaj yazın...',
-                          hintStyle: TextStyle(color: AppColors.textSecondary, fontSize: 14.5),
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 10),
-                          isDense: true,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        // WhatsApp-style Emoji, GIF, Sticker Tray Toggle
+                        IconButton(
+                          icon: Icon(
+                            _showEmojiPicker ? Icons.keyboard_rounded : Icons.sentiment_satisfied_alt_rounded,
+                            color: _showEmojiPicker ? AppColors.accent : AppColors.textSecondary,
+                            size: 24,
+                          ),
+                          splashRadius: 20,
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                          constraints: const BoxConstraints(),
+                          onPressed: _toggleEmojiPicker,
                         ),
-                        maxLines: 5,
-                        minLines: 1,
-                        textInputAction: TextInputAction.newline,
-                        onSubmitted: (_) => _sendMessage(),
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.attach_file_rounded, color: AppColors.textSecondary, size: 22),
-                      splashRadius: 20,
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                      constraints: const BoxConstraints(),
-                      onPressed: _showMediaPickerSheet,
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.camera_alt_rounded, color: AppColors.primaryLight, size: 22),
-                      splashRadius: 20,
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                      constraints: const BoxConstraints(),
-                      onPressed: _openCameraScreen,
-                    ),
-                    const SizedBox(width: 4),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
-              child: _hasText
-                  ? GestureDetector(
-                      key: const ValueKey('send_btn'),
-                      onTap: () => _sendMessage(),
-                      child: Container(
-                        width: 46,
-                        height: 46,
-                        decoration: BoxDecoration(
-                          gradient: AppColors.primaryGradient,
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppColors.primary.withValues(alpha: 0.4),
-                              blurRadius: 10,
-                              offset: const Offset(0, 3),
+                        Expanded(
+                          child: TextField(
+                            controller: _messageController,
+                            focusNode: _focusNode,
+                            onTap: () {
+                              if (_showEmojiPicker) {
+                                setState(() {
+                                  _showEmojiPicker = false;
+                                });
+                              }
+                            },
+                            style: const TextStyle(color: AppColors.textPrimary, fontSize: 15),
+                            decoration: const InputDecoration(
+                              hintText: 'Mesaj yazın...',
+                              hintStyle: TextStyle(color: AppColors.textSecondary, fontSize: 14.5),
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+                              isDense: true,
                             ),
-                          ],
+                            maxLines: 5,
+                            minLines: 1,
+                            textInputAction: TextInputAction.newline,
+                            onSubmitted: (_) => _sendMessage(),
+                          ),
                         ),
-                        child: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                      ),
-                    )
-                  : GestureDetector(
-                      key: const ValueKey('mic_btn'),
-                      onTap: _startVoiceRecording,
-                      child: Container(
-                        width: 46,
-                        height: 46,
-                        decoration: BoxDecoration(
-                          gradient: AppColors.primaryGradient,
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppColors.accent.withValues(alpha: 0.4),
-                              blurRadius: 10,
-                              offset: const Offset(0, 3),
-                            ),
-                          ],
+                        IconButton(
+                          icon: const Icon(Icons.attach_file_rounded, color: AppColors.textSecondary, size: 22),
+                          splashRadius: 20,
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                          constraints: const BoxConstraints(),
+                          onPressed: _showMediaPickerSheet,
                         ),
-                        child: const Icon(Icons.mic_rounded, color: Colors.white, size: 22),
-                      ),
+                        IconButton(
+                          icon: const Icon(Icons.camera_alt_rounded, color: AppColors.primaryLight, size: 22),
+                          splashRadius: 20,
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                          constraints: const BoxConstraints(),
+                          onPressed: _openCameraScreen,
+                        ),
+                        const SizedBox(width: 4),
+                      ],
                     ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
+                  child: _hasText
+                      ? GestureDetector(
+                          key: const ValueKey('send_btn'),
+                          onTap: () => _sendMessage(),
+                          child: Container(
+                            width: 46,
+                            height: 46,
+                            decoration: BoxDecoration(
+                              gradient: AppColors.primaryGradient,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.primary.withValues(alpha: 0.4),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                          ),
+                        )
+                      : GestureDetector(
+                          key: const ValueKey('mic_btn'),
+                          onTap: _startVoiceRecording,
+                          child: Container(
+                            width: 46,
+                            height: 46,
+                            decoration: BoxDecoration(
+                              gradient: AppColors.primaryGradient,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.accent.withValues(alpha: 0.4),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: const Icon(Icons.mic_rounded, color: Colors.white, size: 22),
+                          ),
+                        ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }

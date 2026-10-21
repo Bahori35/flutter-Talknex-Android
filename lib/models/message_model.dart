@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../utils/media_url_helper.dart';
+import 'message_envelope.dart';
+import '../services/starred_messages_service.dart';
 
 enum MessageType { text, image, video, doc, audio, call, location, gif, sticker, contact }
 
@@ -17,6 +19,14 @@ class MessageModel {
   final bool isDeleted;
   final bool isEdited;
   final String? originalContent;
+  final ReplyMetadata? replyTo;
+  final bool isForwarded;
+  final bool isStarred;
+
+  String? get replyToText => replyTo?.text;
+  String? get replyToSender => replyTo?.sender;
+  String? get replyToId => replyTo?.id;
+  String? get replyToType => replyTo?.type;
 
   MessageModel({
     required this.id,
@@ -32,6 +42,9 @@ class MessageModel {
     this.isDeleted = false,
     this.isEdited = false,
     this.originalContent,
+    this.replyTo,
+    this.isForwarded = false,
+    this.isStarred = false,
   }) : mediaUrl = formatMediaUrl(mediaUrl);
 
   Map<String, dynamic> toMap() {
@@ -49,6 +62,8 @@ class MessageModel {
       'isDeleted': isDeleted,
       'isEdited': isEdited,
       'originalContent': originalContent,
+      if (replyTo != null) 'replyTo': replyTo!.toJson(),
+      'isForwarded': isForwarded,
     };
   }
 
@@ -62,12 +77,23 @@ class MessageModel {
       }
     }
 
+    final rawContent = map['content']?.toString() ?? '';
+    final unpacked = MessageEnvelope.unpack(rawContent);
+
+    ReplyMetadata? reply = unpacked.replyTo;
+    if (reply == null && map['replyTo'] is Map) {
+      reply = ReplyMetadata.fromJson(Map<String, dynamic>.from(map['replyTo']));
+    }
+
+    final isFwd = unpacked.isForwarded || map['isForwarded'] == 1 || map['isForwarded'] == true;
+    final starred = map['isStarred'] == true || StarredMessagesService.isStarred(docId);
+
     return MessageModel(
       id: docId,
       senderId: map['senderId']?.toString() ?? '',
       senderName: map['senderName'],
       receiverId: map['receiverId']?.toString() ?? '',
-      content: map['content'] ?? '',
+      content: unpacked.text,
       type: MessageType.values.firstWhere(
         (e) => e.name == map['type'],
         orElse: () => MessageType.text,
@@ -79,6 +105,9 @@ class MessageModel {
       isDeleted: map['isDeleted'] == 1 || map['isDeleted'] == true,
       isEdited: map['isEdited'] == 1 || map['isEdited'] == true,
       originalContent: map['originalContent'],
+      replyTo: reply,
+      isForwarded: isFwd,
+      isStarred: starred,
     );
   }
 
@@ -96,6 +125,9 @@ class MessageModel {
     bool? isDeleted,
     bool? isEdited,
     String? originalContent,
+    ReplyMetadata? replyTo,
+    bool? isForwarded,
+    bool? isStarred,
   }) {
     return MessageModel(
       id: id ?? this.id,
@@ -111,7 +143,9 @@ class MessageModel {
       isDeleted: isDeleted ?? this.isDeleted,
       isEdited: isEdited ?? this.isEdited,
       originalContent: originalContent ?? this.originalContent,
+      replyTo: replyTo ?? this.replyTo,
+      isForwarded: isForwarded ?? this.isForwarded,
+      isStarred: isStarred ?? this.isStarred,
     );
   }
 }
-

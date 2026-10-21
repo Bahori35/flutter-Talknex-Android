@@ -36,6 +36,10 @@ import '../../widgets/app_avatar.dart';
 import '../chat/chat_screen.dart';
 import '../call/call_screen.dart';
 import '../../models/call_model.dart';
+import '../../models/message_envelope.dart';
+import '../../services/starred_messages_service.dart';
+import '../chat/widgets/forward_message_sheet.dart';
+import '../chat/starred_messages_screen.dart';
 
 class GroupChatScreen extends StatefulWidget {
   final GroupModel group;
@@ -74,6 +78,213 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Timer? _voiceRecordTimer;
   double _voiceAmplitude = 0.0;
   Timer? _voiceAmpTimer;
+  GroupMessageModel? _replyingToMessage;
+
+  void _setReplyMessage(GroupMessageModel message) {
+    setState(() {
+      _replyingToMessage = message;
+    });
+    _focusNode.requestFocus();
+  }
+
+  void _cancelReply() {
+    setState(() {
+      _replyingToMessage = null;
+    });
+  }
+
+  String _getMessageSnippet(GroupMessageModel msg) {
+    if (msg.type == 'image') return '📷 Fotoğraf';
+    if (msg.type == 'video') return '🎥 Video';
+    if (msg.type == 'audio') return '🎤 Ses Kaydı';
+    if (msg.type == 'doc') return '📄 Belge';
+    if (msg.type == 'location') return '📍 Konum';
+    if (msg.type == 'contact') return '👤 Kişi Kartı';
+    if (msg.type == 'sticker') return '🏷️ Çıkartma';
+    if (msg.type == 'gif') return '👾 GIF';
+    if (msg.type == 'poll') return '📊 Anket';
+    if (msg.type == 'event') return '📅 Etkinlik';
+    return msg.content;
+  }
+
+  void _openForwardSheet(GroupMessageModel message) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => ForwardMessageSheet(
+        currentUser: widget.currentUser,
+        content: message.content,
+        type: message.type,
+        mediaUrl: message.mediaUrl,
+      ),
+    );
+  }
+
+  void _toggleStar(GroupMessageModel message) async {
+    final nowStarred = await StarredMessagesService.toggleStar(
+      messageId: message.id,
+      chatId: 'group_${_group.id}',
+      chatTitle: _group.name,
+      senderId: message.senderId,
+      senderName: message.senderName,
+      content: message.content,
+      type: message.type,
+      mediaUrl: message.mediaUrl,
+      timestamp: message.timestamp,
+      isGroup: true,
+    );
+
+    setState(() {
+      _messages = _messages.map((m) {
+        if (m.id == message.id) {
+          return m.copyWith(isStarred: nowStarred);
+        }
+        return m;
+      }).toList();
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(
+                nowStarred ? Icons.star_rounded : Icons.star_outline_rounded,
+                color: Colors.amber,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                nowStarred ? 'Mesaj yıldızlandı' : 'Yıldız kaldırıldı',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+          backgroundColor: AppColors.surfaceLight,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Widget _buildForwardedHeader() {
+    return const Padding(
+      padding: EdgeInsets.only(bottom: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.shortcut_rounded, size: 13, color: Colors.white60),
+          SizedBox(width: 4),
+          Text(
+            'İletildi',
+            style: TextStyle(
+              color: Colors.white60,
+              fontSize: 11,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuotedBox(ReplyMetadata reply) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.22),
+        borderRadius: BorderRadius.circular(8),
+        border: const Border(
+          left: BorderSide(color: AppColors.accent, width: 3.5),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            reply.sender,
+            style: const TextStyle(
+              color: AppColors.accent,
+              fontWeight: FontWeight.bold,
+              fontSize: 11.5,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            reply.text,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 11.5,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReplyPreviewBanner() {
+    if (_replyingToMessage == null) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceLight,
+        border: Border(
+          top: BorderSide(color: AppColors.cardBorder.withOpacity(0.5), width: 0.8),
+          left: const BorderSide(color: AppColors.accent, width: 4),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.reply_rounded, color: AppColors.accent, size: 14),
+                    const SizedBox(width: 4),
+                    Text(
+                      _replyingToMessage!.senderName,
+                      style: const TextStyle(
+                        color: AppColors.accent,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12.5,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _getMessageSnippet(_replyingToMessage!),
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close_rounded, color: Colors.white54, size: 18),
+            splashRadius: 18,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: _cancelReply,
+          ),
+        ],
+      ),
+    );
+  }
 
   void _toggleEmojiPicker() {
     if (_showEmojiPicker) {
@@ -481,13 +692,30 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
-  void _sendMessage({String type = 'text', String? mediaUrl, String? caption}) {
+  void _sendMessage({String type = 'text', String? mediaUrl, String? caption, bool isForwarded = false}) {
     final text = caption ?? _messageController.text.trim();
     if (text.isEmpty && mediaUrl == null) return;
 
     final tempId = 'temp_${DateTime.now().millisecondsSinceEpoch}';
+
+    ReplyMetadata? replyMeta;
+    if (_replyingToMessage != null && !isForwarded) {
+      replyMeta = ReplyMetadata(
+        id: _replyingToMessage!.id,
+        sender: _replyingToMessage!.senderName,
+        text: _getMessageSnippet(_replyingToMessage!),
+        type: _replyingToMessage!.type,
+      );
+    }
+
+    final packedContent = MessageEnvelope.pack(
+      text: text,
+      replyTo: replyMeta,
+      isForwarded: isForwarded,
+    );
+
     final encrypted = EndToEndEncryptionService.encryptText(
-      text,
+      packedContent,
       widget.currentUser.uid,
       'group_${_group.id}',
     );
@@ -512,10 +740,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       type: type,
       mediaUrl: mediaUrl,
       timestamp: DateTime.now(),
+      replyTo: replyMeta,
+      isForwarded: isForwarded,
     );
 
     setState(() {
       _messages.insert(0, optimisticMsg);
+      _replyingToMessage = null;
     });
 
     if (caption == null) {
@@ -1049,6 +1280,36 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
               ),
             ),
+            ListTile(
+              leading: const Icon(Icons.reply_rounded, color: AppColors.accent),
+              title: const Text('Cevapla', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _setReplyMessage(message);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.shortcut_rounded, color: Colors.white),
+              title: const Text('İlet', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _openForwardSheet(message);
+              },
+            ),
+            ListTile(
+              leading: Icon(
+                message.isStarred ? Icons.star_outline_rounded : Icons.star_rounded,
+                color: Colors.amber,
+              ),
+              title: Text(
+                message.isStarred ? 'Yıldızı Kaldır' : 'Yıldız Ekle',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                _toggleStar(message);
+              },
+            ),
             if (isMe && message.type == 'text' && isWithin15Minutes)
               ListTile(
                 leading: const Icon(Icons.edit_rounded, color: AppColors.accent),
@@ -1238,6 +1499,48 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           IconButton(
             icon: const Icon(Icons.info_outline_rounded, color: AppColors.textPrimary),
             onPressed: _openGroupInfo,
+          ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert_rounded, color: AppColors.textPrimary),
+            color: AppColors.surface,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            onSelected: (value) {
+              if (value == 'starred') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => StarredMessagesScreen(
+                      chatId: 'group_${_group.id}',
+                      chatTitle: _group.name,
+                    ),
+                  ),
+                );
+              } else if (value == 'info') {
+                _openGroupInfo();
+              }
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'starred',
+                child: Row(
+                  children: [
+                    Icon(Icons.star_rounded, color: Colors.amber, size: 20),
+                    SizedBox(width: 10),
+                    Text('Yıldızlı Mesajlar', style: TextStyle(color: Colors.white, fontSize: 14)),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'info',
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline_rounded, color: AppColors.textSecondary, size: 20),
+                    SizedBox(width: 10),
+                    Text('Grup Bilgisi', style: TextStyle(color: Colors.white, fontSize: 14)),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -2762,6 +3065,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ),
               ),
 
+            // Forwarded Tag
+            if (message.isForwarded)
+              _buildForwardedHeader(),
+
+            // Quoted Reply Box
+            if (message.replyTo != null)
+              _buildQuotedBox(message.replyTo!),
+
             // Deleted message text
             if (message.isDeleted)
               Row(
@@ -2874,6 +3185,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       timeStr,
                       style: const TextStyle(color: Colors.white54, fontSize: 10),
                     ),
+                    if (message.isStarred) ...[
+                      const SizedBox(width: 4),
+                      const Icon(Icons.star_rounded, size: 12, color: Colors.amber),
+                    ],
                   ],
                 ),
               ),
@@ -2883,37 +3198,55 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ),
     );
 
-    // If sent by current user: right-aligned without left avatar
-    if (isMe) {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: bubbleWidget,
-      );
-    }
-
-    // If sent by another group member: WhatsApp-style profile avatar on the LEFT, message bubble on the RIGHT
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.start,
-        children: [
-          GestureDetector(
-            onTap: () => _showSenderQuickProfile(message),
-            child: Padding(
-              padding: const EdgeInsets.only(top: 3, right: 8),
-              child: AppAvatar(
-                radius: 16,
-                imageUrl: senderPhoto,
-                name: message.senderName,
-              ),
-            ),
-          ),
-          Flexible(
+    final Widget fullRow = isMe
+        ? Align(
+            alignment: Alignment.centerRight,
             child: bubbleWidget,
+          )
+        : Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.start,
+              children: [
+                GestureDetector(
+                  onTap: () => _showSenderQuickProfile(message),
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 3, right: 8),
+                    child: AppAvatar(
+                      radius: 16,
+                      imageUrl: senderPhoto,
+                      name: message.senderName,
+                    ),
+                  ),
+                ),
+                Flexible(
+                  child: bubbleWidget,
+                ),
+              ],
+            ),
+          );
+
+    return Dismissible(
+      key: Key('reply_${message.id}'),
+      direction: DismissDirection.startToEnd,
+      confirmDismiss: (_) async {
+        _setReplyMessage(message);
+        return false;
+      },
+      background: Container(
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.only(left: 16),
+        child: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: AppColors.accent.withOpacity(0.2),
+            shape: BoxShape.circle,
           ),
-        ],
+          child: const Icon(Icons.reply_rounded, color: AppColors.accent, size: 20),
+        ),
       ),
+      child: fullRow,
     );
   }
 
@@ -3012,12 +3345,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      color: AppColors.surface,
-      child: SafeArea(
-        top: false,
-        bottom: !_showEmojiPicker,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_replyingToMessage != null) _buildReplyPreviewBanner(),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          color: AppColors.surface,
+          child: SafeArea(
+            top: false,
+            bottom: !_showEmojiPicker,
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
@@ -3139,7 +3476,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           ],
         ),
       ),
-    );
+    ),
+  ],
+);
   }
 
   void _openCreatePollDialog() {
