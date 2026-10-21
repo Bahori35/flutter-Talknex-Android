@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -11,55 +12,76 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
   final AudioPlayer _ringtonePlayer = AudioPlayer();
   bool _isRinging = false;
+  bool _isInitialized = false;
 
   Future<void> init() async {
-    const AndroidInitializationSettings androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+    if (_isInitialized) return;
+    try {
+      const AndroidInitializationSettings androidSettings =
+          AndroidInitializationSettings('@mipmap/launcher_icon');
 
-    const InitializationSettings initSettings = InitializationSettings(
-      android: androidSettings,
-    );
-
-    await _notificationsPlugin.initialize(initSettings);
-
-    // Create Notification Channels for Android 8.0+
-    final androidImplementation = _notificationsPlugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
-
-    if (androidImplementation != null) {
-      await androidImplementation.createNotificationChannel(
-        const AndroidNotificationChannel(
-          'talknex_messages',
-          'Mesajlar',
-          description: 'Gelen anlık sohbet mesajları',
-          importance: Importance.max,
-          enableVibration: true,
-          playSound: true,
-        ),
+      const InitializationSettings initSettings = InitializationSettings(
+        android: androidSettings,
       );
 
-      await androidImplementation.createNotificationChannel(
-        const AndroidNotificationChannel(
-          'talknex_system_call_ringtone_channel',
-          'Gelen Telefon Aramaları',
-          description: 'Telefonun kendi varsayılan arama zil sesi ile çalan arama kanalı',
-          importance: Importance.max,
-          sound: UriAndroidNotificationSound('content://settings/system/ringtone'),
-          playSound: true,
-          enableVibration: true,
-        ),
+      await _notificationsPlugin.initialize(
+        initSettings,
+        onDidReceiveNotificationResponse: (NotificationResponse details) {
+          debugPrint('[NOTIFICATION] Tapped notification: ${details.payload}');
+        },
       );
 
-      await androidImplementation.createNotificationChannel(
-        const AndroidNotificationChannel(
-          'talknex_reminders',
-          'Hatırlatıcılar ve Planlar',
-          description: 'Talknex Asistan hatırlatıcı ve plan bildirimleri',
-          importance: Importance.max,
-          enableVibration: true,
-          playSound: true,
-        ),
-      );
+      // Create Notification Channels for Android 8.0+
+      final androidImplementation = _notificationsPlugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+
+      if (androidImplementation != null) {
+        // Request runtime notification permission on Android 13+ (API 33+)
+        try {
+          await androidImplementation.requestNotificationsPermission();
+        } catch (e) {
+          debugPrint('[NOTIFICATION] Request notification permission error: $e');
+        }
+
+        await androidImplementation.createNotificationChannel(
+          const AndroidNotificationChannel(
+            'talknex_reminders',
+            'Hatırlatıcılar ve Planlar',
+            description: 'Talknex Asistan hatırlatıcı ve plan bildirimleri',
+            importance: Importance.max,
+            enableVibration: true,
+            playSound: true,
+            showBadge: true,
+          ),
+        );
+
+        await androidImplementation.createNotificationChannel(
+          const AndroidNotificationChannel(
+            'talknex_messages',
+            'Mesajlar',
+            description: 'Gelen anlık sohbet mesajları',
+            importance: Importance.max,
+            enableVibration: true,
+            playSound: true,
+          ),
+        );
+
+        await androidImplementation.createNotificationChannel(
+          const AndroidNotificationChannel(
+            'talknex_system_call_ringtone_channel',
+            'Gelen Telefon Aramaları',
+            description: 'Telefonun kendi varsayılan arama zil sesi ile çalan arama kanalı',
+            importance: Importance.max,
+            sound: UriAndroidNotificationSound('content://settings/system/ringtone'),
+            playSound: true,
+            enableVibration: true,
+          ),
+        );
+      }
+      _isInitialized = true;
+      debugPrint('[NOTIFICATION] NotificationService successfully initialized');
+    } catch (e) {
+      debugPrint('[NOTIFICATION] Init error: $e');
     }
   }
 
@@ -69,6 +91,10 @@ class NotificationService {
     required String senderName,
     required String messageContent,
   }) async {
+    if (!_isInitialized) {
+      await init();
+    }
+
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'talknex_messages',
       'Mesajlar',
@@ -78,6 +104,8 @@ class NotificationService {
       showWhen: true,
       enableVibration: true,
       playSound: true,
+      icon: '@mipmap/launcher_icon',
+      category: AndroidNotificationCategory.message,
     );
 
     const NotificationDetails notificationDetails = NotificationDetails(
@@ -103,6 +131,10 @@ class NotificationService {
     required String title,
     required String body,
   }) async {
+    if (!_isInitialized) {
+      await init();
+    }
+
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'talknex_reminders',
       'Hatırlatıcılar ve Planlar',
@@ -112,6 +144,9 @@ class NotificationService {
       showWhen: true,
       enableVibration: true,
       playSound: true,
+      icon: '@mipmap/launcher_icon',
+      category: AndroidNotificationCategory.reminder,
+      visibility: NotificationVisibility.public,
     );
 
     const NotificationDetails notificationDetails = NotificationDetails(

@@ -98,6 +98,12 @@ void main() async {
   }
 
   try {
+    await NotificationService().init();
+  } catch (e) {
+    debugPrint('[NOTIFICATION] Init error: $e');
+  }
+
+  try {
     await AiAssistantService.init();
   } catch (e) {
     debugPrint('[AI ASSISTANT] Init error: $e');

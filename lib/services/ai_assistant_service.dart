@@ -39,6 +39,9 @@ class AiAssistantService {
         await initializeDateFormatting('tr_TR', null);
         await initializeDateFormatting('tr', null);
       } catch (_) {}
+      try {
+        await NotificationService().init();
+      } catch (_) {}
       final prefs = await SharedPreferences.getInstance();
 
       // Load Reminders
@@ -617,12 +620,29 @@ class AiAssistantService {
       'alarm kur',
       'uyar',
       'planım var',
+      'planim var',
+      'planlama',
       'randevum var',
+      'randevu',
       'yapıcam',
       'yapacağım',
       'toplantım var',
+      'toplantı',
+      'toplanti',
+      'doğum günü',
+      'dogum gunu',
+      'seyahat',
+      'uçuş',
+      'ucus',
+      'buluşma',
+      'bulusma',
+      'sınav',
+      'sinav',
       'unutma',
       'hatırlatıcı kur',
+      'hatirlatici kur',
+      'hatırlatıcı',
+      'hatirlatici',
     ];
     return triggers.any((t) => text.contains(t));
   }
@@ -810,13 +830,21 @@ class AiAssistantService {
         targetHour = int.tryParse(hourMatch.group(1) ?? '12') ?? 12;
         timeIdentified = true;
       } else {
-        // Pattern 3: akşam 8, sabah 9
-        final aksamRegex = RegExp(r'akşam\s*(\d{1,2})');
-        final aksamMatch = aksamRegex.firstMatch(textLower);
-        if (aksamMatch != null) {
-          targetHour = int.tryParse(aksamMatch.group(1) ?? '8') ?? 8;
-          if (targetHour < 12) targetHour += 12;
+        // Pattern 3: 14'te, 15'te, 8'de
+        final hourSuffixRegex = RegExp(r'\b(\d{1,2})[\x27\u2019]?(?:te|ta|de|da)\b');
+        final hourSuffixMatch = hourSuffixRegex.firstMatch(textLower);
+        if (hourSuffixMatch != null) {
+          targetHour = int.tryParse(hourSuffixMatch.group(1) ?? '12') ?? 12;
           timeIdentified = true;
+        } else {
+          // Pattern 4: akşam 8, sabah 9
+          final aksamRegex = RegExp(r'akşam\s*(\d{1,2})');
+          final aksamMatch = aksamRegex.firstMatch(textLower);
+          if (aksamMatch != null) {
+            targetHour = int.tryParse(aksamMatch.group(1) ?? '8') ?? 8;
+            if (targetHour < 12) targetHour += 12;
+            timeIdentified = true;
+          }
         }
       }
     }
@@ -828,7 +856,12 @@ class AiAssistantService {
 
     // If no specific time identified, default to default meeting/plan time (10:00 or 14:00)
     if (!timeIdentified) {
-      targetHour = now.hour < 12 ? 14 : 19;
+      if (textLower.contains('doğum günü') || textLower.contains('dogum gunu')) {
+        targetHour = 10;
+        targetMinute = 0;
+      } else {
+        targetHour = now.hour < 12 ? 14 : 19;
+      }
     }
 
     DateTime eventTime = DateTime(
@@ -857,52 +890,82 @@ class AiAssistantService {
   }
 
   static String _extractCleanTitle(String raw, String lower) {
-    String cleaned = raw;
-    final removals = [
-      RegExp(r'bana\s+\d+\s*(dakika|dk|saat)\s*(önce|once)\s*(hatırlat|haber ver)', caseSensitive: false),
-      RegExp(r'\d+\s*(dakika|dk|saat)\s*(önce|once)\s*(hatırlat|haber ver)', caseSensitive: false),
-      RegExp(r'\d+\s*(dakika|dk|saat)\s*(önce|once)', caseSensitive: false),
-      RegExp(r'\d+\s*(dakika|dk|saat)\s*sonra', caseSensitive: false),
-      RegExp(r'yarım saat önce', caseSensitive: false),
-      RegExp(r'hatırlat.*', caseSensitive: false),
-      RegExp(r'haber ver.*', caseSensitive: false),
-      RegExp(r'uyar.*', caseSensitive: false),
-      RegExp(r'bana', caseSensitive: false),
-      RegExp(r'planım var', caseSensitive: false),
-      RegExp(r'pilannım var', caseSensitive: false),
-      RegExp(r'randevum var', caseSensitive: false),
-      RegExp(r'toplantım var', caseSensitive: false),
-      RegExp(r'yarın', caseSensitive: false),
-      RegExp(r'bugün', caseSensitive: false),
-      RegExp(r'saat\s*\d{1,2}[:.]\d{2}', caseSensitive: false),
-      RegExp(r'saat\s*\d{1,2}', caseSensitive: false),
-      RegExp(r'akşam', caseSensitive: false),
-      RegExp(r'sabah', caseSensitive: false),
-      RegExp(r'öğlen', caseSensitive: false),
-    ];
+    String cleaned = raw.trim();
 
-    for (final r in removals) {
-      cleaned = cleaned.replaceAll(r, ' ');
+    // 1. Remove command / reminder triggers at end or anywhere
+    final commandPatterns = [
+      RegExp(r'(?:,\s*)?(?:bana\s+|beni\s+)?(?:\d+\s*(?:dakika|dk|saat)\s*(?:önce|once)\s*)?(?:hatırlat[a-z0-9_]*|haber ver[a-z0-9_]*|uyar[a-z0-9_]*|bildir[a-z0-9_]*|kaydet[a-z0-9_]*|not et[a-z0-9_]*).*$', caseSensitive: false),
+      RegExp(r'\b(?:bana|beni|bize)\b', caseSensitive: false),
+      RegExp(r'\b\d+\s*(?:dakika|dk|saat)\s*(?:önce|once)\b', caseSensitive: false),
+      RegExp(r'\byarım saat önce\b|\byarim saat once\b', caseSensitive: false),
+      RegExp(r'\b\d+\s*(?:dakika|dk|saat)\s*sonra\b', caseSensitive: false),
+    ];
+    for (final cp in commandPatterns) {
+      cleaned = cleaned.replaceAll(cp, ' ');
     }
 
-    cleaned = cleaned.replaceAll(RegExp(r'[,.!?]'), ' ').trim();
-    cleaned = cleaned.replaceAll("'", ' ');
-    cleaned = cleaned.replaceAll('"', ' ');
-    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ');
+    // 2. Remove date expressions
+    final datePatterns = [
+      RegExp(r'\b(?:yarın|yarin|bugün|bugun|öbür gün|obur gun)\b', caseSensitive: false),
+      RegExp(r'\b(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|cumartesi|pazar)(?:[\x27\u2019]?(?:si|sı|ye|ya|e|a|de|da|te|ta))?\b', caseSensitive: false),
+      RegExp(r'\b\d{1,2}\s+(?:ocak|şubat|subat|mart|nisan|mayıs|mayis|haziran|temmuz|ağustos|agustos|eylül|eylul|ekim|kasım|kasim|aralık|aralik)(?:[\x27\u2019]?(?:te|ta|de|da|ye|ya|e|a))?\b', caseSensitive: false),
+    ];
+    for (final dp in datePatterns) {
+      cleaned = cleaned.replaceAll(dp, ' ');
+    }
 
-    if (cleaned.isEmpty || cleaned.length < 2) {
-      if (lower.contains('toplantı')) return 'Toplantı';
-      if (lower.contains('ilaç')) return 'İlaç Vakti';
-      if (lower.contains('spor')) return 'Spor Egzersizi';
-      if (lower.contains('doktor')) return 'Doktor Randevusu';
-      if (lower.contains('fırın')) return 'Fırını Kapatma';
-      if (lower.contains('fatura')) return 'Fatura Ödemesi';
+    // 3. Remove time expressions INCLUDING their Turkish locative/dative suffixes ('te, 'de, 'ta, 'da, de, da, te, ta, e, a, etc.)
+    final timePatterns = [
+      // e.g. "saat 14:00'te", "14:00'te", "14:00te", "saat 14:00"
+      RegExp(r'\b(?:saat\s*)?\d{1,2}[:.]\d{2}(?:[\x27\u2019]?(?:[td][ea]|[yea]))?\b', caseSensitive: false),
+      // e.g. "saat 14'te", "saat 14", "saat 8'de"
+      RegExp(r'\bsaat\s*\d{1,2}(?:[\x27\u2019]?(?:[td][ea]|[yea]))?\b', caseSensitive: false),
+      // Leftover time suffixes like "'te", "'de", "’te"
+      RegExp(r'[\x27\u2019](?:[td][ea]|[yea])\b', caseSensitive: false),
+      // Standalone time-of-day indicators
+      RegExp(r'\b(?:sabah|öğlen|oglen|akşam|aksam|gece)\b', caseSensitive: false),
+    ];
+    for (final tp in timePatterns) {
+      cleaned = cleaned.replaceAll(tp, ' ');
+    }
+
+    // 4. Remove punctuation & quotes
+    cleaned = cleaned.replaceAll(RegExp(r'[\x27\x22\u2018\u2019\u201c\u201d]'), ' ');
+    cleaned = cleaned.replaceAll(RegExp(r'[,.!?;:_\-–]'), ' ');
+
+    // 5. Clean filler words & verbs
+    cleaned = cleaned.replaceAll(RegExp(r'\b(bir|şu|su|olan|diye)\b', caseSensitive: false), ' ');
+    cleaned = cleaned.replaceAll(RegExp(r'\b(var|vardır|vardir|olacak|yapılacak|yapilacak)\b', caseSensitive: false), ' ');
+    // Remove standalone dangling suffix words (te, de, ta, da)
+    cleaned = cleaned.replaceAll(RegExp(r'\b([td][ea])\b', caseSensitive: false), ' ');
+
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+    // 6. Intelligent Fallback for common Turkish reminder keywords if title is empty or too short
+    if (cleaned.length < 3) {
+      if (lower.contains('doğum günü') || lower.contains('dogum gunu')) return 'Doğum Günü';
+      if (lower.contains('toplantı') || lower.contains('toplanti')) return 'Toplantı';
+      if (lower.contains('seyahat') || lower.contains('yolculuk') || lower.contains('gezi')) return 'Seyahat';
+      if (lower.contains('doktor') || lower.contains('muayene') || lower.contains('hastane')) return 'Doktor Randevusu';
+      if (lower.contains('randevu')) return 'Randevu';
+      if (lower.contains('sınav') || lower.contains('sinav')) return 'Sınav';
+      if (lower.contains('ilaç') || lower.contains('ilac')) return 'İlaç Vakti';
+      if (lower.contains('spor') || lower.contains('antrenman') || lower.contains('gym')) return 'Spor / Antrenman';
+      if (lower.contains('fırın') || lower.contains('firin')) return 'Fırını Kapatma';
+      if (lower.contains('fatura') || lower.contains('ödeme') || lower.contains('odeme')) return 'Fatura Ödemesi';
+      if (lower.contains('ders')) return 'Ders Çalışma';
+      if (lower.contains('uçuş') || lower.contains('ucus') || lower.contains('uçak') || lower.contains('ucak')) return 'Uçuş';
       if (lower.contains('su')) return 'Su İçme';
       return 'Plan';
     }
 
-    // Capitalize first letter
-    return cleaned[0].toUpperCase() + cleaned.substring(1);
+    // Capitalize words
+    final words = cleaned.split(' ');
+    final capitalized = words.where((w) => w.isNotEmpty).map((w) {
+      return w[0].toUpperCase() + w.substring(1);
+    }).join(' ');
+
+    return capitalized;
   }
 
   /// Conversational AI Knowledge Engine

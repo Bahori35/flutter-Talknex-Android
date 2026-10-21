@@ -195,11 +195,43 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                   ),
                                 ),
                                 isThreeLine: true,
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.delete_outline_rounded, color: AppColors.callRed, size: 22),
-                                  onPressed: () async {
-                                    await AiAssistantService.cancelReminder(r.id);
-                                  },
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.notifications_active_outlined, color: AppColors.accent, size: 20),
+                                      tooltip: 'Test Bildirimi Gönder',
+                                      onPressed: () async {
+                                        try {
+                                          await AiAssistantService.testTriggerReminder(r);
+                                          if (ctx.mounted) {
+                                            ScaffoldMessenger.of(ctx).showSnackBar(
+                                              SnackBar(
+                                                content: Text('🔔 "${r.title}" için bildirim gönderildi!'),
+                                                duration: const Duration(seconds: 2),
+                                              ),
+                                            );
+                                          }
+                                        } catch (e) {
+                                          if (ctx.mounted) {
+                                            ScaffoldMessenger.of(ctx).showSnackBar(
+                                              SnackBar(
+                                                content: Text('Bildirim hatası: $e'),
+                                                duration: const Duration(seconds: 3),
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      },
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete_outline_rounded, color: AppColors.callRed, size: 20),
+                                      tooltip: 'Sil',
+                                      onPressed: () async {
+                                        await AiAssistantService.cancelReminder(r.id);
+                                      },
+                                    ),
+                                  ],
                                 ),
                               );
                             },
@@ -649,14 +681,27 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                 ),
                 icon: const Icon(Icons.notifications_outlined, size: 14),
                 label: const Text('Test Et', style: TextStyle(fontSize: 11)),
-                onPressed: () {
-                  AiAssistantService.testTriggerReminder(r);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Test bildirimi gönderildi!'),
-                      duration: Duration(seconds: 1),
-                    ),
-                  );
+                onPressed: () async {
+                  try {
+                    await AiAssistantService.testTriggerReminder(r);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('🔔 Test bildirimi gönderildi!'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Bildirim hatası: $e'),
+                          duration: const Duration(seconds: 3),
+                        ),
+                      );
+                    }
+                  }
                 },
               ),
               const SizedBox(width: 8),
