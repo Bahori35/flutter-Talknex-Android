@@ -49,6 +49,17 @@ class NotificationService {
           enableVibration: true,
         ),
       );
+
+      await androidImplementation.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'talknex_reminders',
+          'Hatırlatıcılar ve Planlar',
+          description: 'Talknex Asistan hatırlatıcı ve plan bildirimleri',
+          importance: Importance.max,
+          enableVibration: true,
+          playSound: true,
+        ),
+      );
     }
   }
 
@@ -81,6 +92,39 @@ class NotificationService {
     );
 
     // Haptic feedback
+    try {
+      HapticFeedback.vibrate();
+    } catch (_) {}
+  }
+
+  // Show Heads-up Notification for AI Reminders
+  Future<void> showReminderNotification({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'talknex_reminders',
+      'Hatırlatıcılar ve Planlar',
+      channelDescription: 'Talknex Asistan hatırlatıcı ve plan bildirimleri',
+      importance: Importance.max,
+      priority: Priority.high,
+      showWhen: true,
+      enableVibration: true,
+      playSound: true,
+    );
+
+    const NotificationDetails notificationDetails = NotificationDetails(
+      android: androidDetails,
+    );
+
+    await _notificationsPlugin.show(
+      id,
+      title,
+      body,
+      notificationDetails,
+    );
+
     try {
       HapticFeedback.vibrate();
     } catch (_) {}

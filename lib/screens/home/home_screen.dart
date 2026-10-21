@@ -29,6 +29,7 @@ import '../../services/encryption_service.dart';
 import '../../widgets/app_avatar.dart';
 import '../../models/message_envelope.dart';
 import '../chat/starred_messages_screen.dart';
+import '../ai/ai_assistant_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -597,6 +598,34 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ),
         actions: [
           IconButton(
+            icon: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF8A2387), Color(0xFFE94057), Color(0xFFF27121)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFFE94057).withAlpha(100),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
+            ),
+            tooltip: 'Talknex Asistan (Yapay Zeka)',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AiAssistantScreen()),
+              );
+            },
+          ),
+          IconButton(
             icon: Icon(
               _isSearching ? Icons.close : Icons.search,
               color: AppColors.textPrimary,
@@ -624,7 +653,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             color: AppColors.surfaceLight,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             onSelected: (val) {
-              if (val == 'emergency') {
+              if (val == 'ai_assistant') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AiAssistantScreen()),
+                );
+              } else if (val == 'emergency') {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const EmergencyScreen()),
@@ -663,6 +697,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               }
             },
             itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'ai_assistant',
+                child: Row(
+                  children: [
+                    Icon(Icons.auto_awesome, color: Color(0xFFE94057), size: 20),
+                    SizedBox(width: 12),
+                    Text(
+                      'Talknex Asistan (AI)',
+                      style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
               PopupMenuItem(
                 value: 'emergency',
                 child: Row(
@@ -1130,6 +1177,147 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
   }
 
+  Widget _buildAiAssistantCard() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFF8A2387).withOpacity(0.18),
+            const Color(0xFFE94057).withOpacity(0.14),
+            AppColors.surface,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: const Color(0xFFE94057).withOpacity(0.35),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFFE94057).withOpacity(0.08),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AiAssistantScreen()),
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Stack(
+                  children: [
+                    Container(
+                      width: 52,
+                      height: 52,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          colors: [Color(0xFF8A2387), Color(0xFFE94057), Color(0xFFF27121)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Color(0x66E94057),
+                            blurRadius: 10,
+                            offset: Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: const Center(
+                        child: Icon(Icons.auto_awesome, color: Colors.white, size: 26),
+                      ),
+                    ),
+                    Positioned(
+                      bottom: 0,
+                      right: 0,
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF22C55E),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppColors.surface, width: 2),
+                        ),
+                        child: const Icon(Icons.flash_on_rounded, size: 8, color: Colors.white),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Text(
+                            'Talknex Asistan',
+                            style: TextStyle(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                colors: [Color(0xFF8A2387), Color(0xFFE94057)],
+                              ),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              'AI',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      const Text(
+                        'Plan ve hatırlatıcı oluştur, sohbet et...',
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12.5,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  size: 14,
+                  color: AppColors.textMuted,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   // Chats Tab
   Widget _buildChatsTab(UserModel currentUser) {
     if (_isLoadingUsers) {
@@ -1322,9 +1510,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     _loadGroups();
                   },
                   child: ListView(
-                    padding: const EdgeInsets.all(24.0),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
                     children: [
-                      const SizedBox(height: 60),
+                      if (_searchQuery.isEmpty) _buildAiAssistantCard(),
+                      const SizedBox(height: 40),
                       Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -1399,6 +1588,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 );
               }
 
+              final bool showAiCard = _searchQuery.isEmpty;
+              final int totalItems = allConversations.length + (showAiCard ? 1 : 0);
+
               return RefreshIndicator(
                 color: AppColors.primaryLight,
                 onRefresh: () async {
@@ -1407,9 +1599,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 },
                 child: ListView.builder(
                   padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemCount: allConversations.length,
+                  itemCount: totalItems,
                   itemBuilder: (context, index) {
-                    final item = allConversations[index];
+                    if (showAiCard && index == 0) {
+                      return _buildAiAssistantCard();
+                    }
+                    final convIndex = showAiCard ? index - 1 : index;
+                    final item = allConversations[convIndex];
 
                     if (item['type'] == 'group') {
                       final GroupModel group = item['group'] as GroupModel;
