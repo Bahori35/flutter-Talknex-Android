@@ -1,4 +1,5 @@
 import 'ai_reminder_model.dart';
+import 'ai_weather_model.dart';
 
 class AiMessageModel {
   final String id;
@@ -6,6 +7,7 @@ class AiMessageModel {
   final String text;
   final DateTime timestamp;
   final AiReminderModel? reminder;
+  final AiWeatherModel? weather;
   final String? actionType;
 
   AiMessageModel({
@@ -14,6 +16,7 @@ class AiMessageModel {
     required this.text,
     required this.timestamp,
     this.reminder,
+    this.weather,
     this.actionType,
   });
 
@@ -26,6 +29,7 @@ class AiMessageModel {
     'text': text,
     'timestamp': timestamp.toIso8601String(),
     if (reminder != null) 'reminder': reminder!.toJson(),
+    if (weather != null) 'weather': weather!.toJson(),
     if (actionType != null) 'actionType': actionType,
   };
 
@@ -35,6 +39,7 @@ class AiMessageModel {
     text: json['text'] ?? '',
     timestamp: DateTime.tryParse(json['timestamp'] ?? '') ?? DateTime.now(),
     reminder: json['reminder'] != null ? AiReminderModel.fromJson(json['reminder']) : null,
+    weather: json['weather'] != null ? AiWeatherModel.fromJson(json['weather']) : null,
     actionType: json['actionType'],
   );
 }

@@ -7,7 +7,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/ai_message_model.dart';
 import '../models/ai_reminder_model.dart';
+import '../models/ai_weather_model.dart';
 import 'notification_service.dart';
+import 'package:http/http.dart' as http;
 
 class AiAssistantService {
   static final ValueNotifier<int> notifier = ValueNotifier<int>(0);
@@ -75,12 +77,12 @@ class AiAssistantService {
             id: const Uuid().v4(),
             sender: 'ai',
             text: 'Merhaba! Ben Talknex Asistan 🤖\n\n'
-                'Senin kişisel yapay zeka asistanınım. Günlük planlarını, toplantılarını ve randevularını bana söyleyebilirsin.\n\n'
+                'Senin kişisel yapay zeka asistanınım. Günlük planlarını, toplantılarını bana söyleyebilir veya güncel hava durumunu sorabilirsin.\n\n'
                 'Örneğin:\n'
-                '• "Yarın saat 14:00\'te toplantım var, 30 dakika önce hatırlat"\n'
-                '• "Bugün akşam 20:00\'de maç var, 15 dk önce haber ver"\n'
-                '• "20 dakika sonra fırını kapatmamı hatırlat"\n'
-                '• "Aktif planlarımı göster"\n\n'
+                '• "Bugün İstanbul\'da hava durumu nasıl?" 🌤️\n'
+                '• "Yarın saat 14:00\'te toplantım var, 30 dakika önce hatırlat" ⏰\n'
+                '• "Kadıköy hava nasıl?" ☀️\n'
+                '• "Aktif planlarımı göster" 📋\n\n'
                 'Ayrıca aklına takılan her şeyi sorabilir, benimle sohbet de edebilirsin! Nasıl yardımcı olabilirim? ✨',
             timestamp: DateTime.now(),
           ),
@@ -277,13 +279,307 @@ class AiAssistantService {
       }
     }
 
-    // D. Conversational Engine (Small Talk & Knowledge Base)
+    // D. Check if user is asking for weather
+    if (_isWeatherQuery(textLower)) {
+      final weatherResponse = await _handleWeatherQuery(text);
+      if (weatherResponse != null) {
+        return weatherResponse;
+      }
+    }
+
+    // E. Conversational Engine (Small Talk & Knowledge Base)
     final reply = _generateConversationalResponse(text);
     return AiMessageModel(
       id: const Uuid().v4(),
       sender: 'ai',
       text: reply,
       timestamp: DateTime.now(),
+    );
+  }
+
+  // --- Weather Intelligence Engine ---
+
+  static bool _isWeatherQuery(String text) {
+    final lower = text.toLowerCase();
+    return lower.contains('hava') ||
+        lower.contains('havalar') ||
+        lower.contains('sıcaklık') ||
+        lower.contains('sicaklik') ||
+        lower.contains('derece') ||
+        lower.contains('yağmur var mı') ||
+        lower.contains('yagmur var mi') ||
+        lower.contains('kar var mı') ||
+        lower.contains('kar var mi');
+  }
+
+  static String? _extractCityForWeather(String text) {
+    final stopWords = {
+      'bugun', 'bugün', 'yarin', 'yarın', 'hava', 'havalar', 'durumu', 'durum', 'durumları',
+      'nasil', 'nasıl', 'nedir', 'var', 'mı', 'mi', 'mu', 'mü', 've', 'ile', 'şu', 'su',
+      'an', 'şuan', 'suan', 'bana', 'söyle', 'soyle', 'öğren', 'öğrenmek', 'istiyorum',
+      'il', 'ilçe', 'ilcesi', 'ilçesi', 'ilçede', 'ilde', 'derece', 'kaç', 'kac', 'olan',
+      'bir', 'veya', 'hakkında', 'bilgi', 'ver', 'verir', 'misin', 'misiniz', 'lütfen',
+      'şöyle', 'böyle', 'güncel', 'guncel', 'sabah', 'akşam', 'aksam', 'öğle', 'ogle'
+    };
+
+    final clean = text.toLowerCase().replaceAll(RegExp(r'[\?\.!,;:]'), ' ').trim();
+    final tokens = clean.split(RegExp(r'\s+'));
+
+    for (final t in tokens) {
+      if (stopWords.contains(t)) continue;
+
+      if (t.contains("'")) {
+        final prefix = t.split("'").first;
+        if (!stopWords.contains(prefix) && prefix.length >= 2) {
+          return prefix;
+        }
+      }
+
+      String cand = t;
+      for (final suffix in ['nda', 'nde', 'da', 'de', 'ta', 'te']) {
+        if (cand.endsWith(suffix) && cand.length - suffix.length >= 3) {
+          cand = cand.substring(0, cand.length - suffix.length);
+          break;
+        }
+      }
+
+      if (!stopWords.contains(cand) && cand.length >= 2) {
+        return cand;
+      }
+    }
+    return null;
+  }
+
+  static Future<AiWeatherModel?> _fetchWeatherData(String cityName) async {
+    // 1. Try Open-Meteo first (super accurate & free)
+    try {
+      final geoUrl = Uri.parse(
+        'https://geocoding-api.open-meteo.com/v1/search?name=${Uri.encodeComponent(cityName)}&count=8&language=tr&format=json',
+      );
+      final geoRes = await http.get(geoUrl, headers: {'User-Agent': 'TalknexAI/1.0'}).timeout(const Duration(seconds: 4));
+      if (geoRes.statusCode == 200) {
+        final geoData = jsonDecode(geoRes.body);
+        final results = geoData['results'];
+        if (results is List && results.isNotEmpty) {
+          // Prioritize Turkey
+          Map<String, dynamic>? selected;
+          for (final r in results) {
+            final countryCode = (r['country_code'] ?? '').toString().toUpperCase();
+            final country = (r['country'] ?? '').toString().toLowerCase();
+            if (countryCode == 'TR' || country.contains('türk') || country.contains('turk')) {
+              selected = Map<String, dynamic>.from(r);
+              break;
+            }
+          }
+          selected ??= Map<String, dynamic>.from(results.first);
+
+          final double lat = (selected['latitude'] as num).toDouble();
+          final double lon = (selected['longitude'] as num).toDouble();
+          final String name = selected['name'] ?? cityName;
+          final String admin1 = selected['admin1'] ?? '';
+          final String locStr = (admin1.isNotEmpty && admin1 != name) ? '$name, $admin1' : name;
+
+          final wUrl = Uri.parse(
+            'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min&timezone=auto',
+          );
+          final wRes = await http.get(wUrl, headers: {'User-Agent': 'TalknexAI/1.0'}).timeout(const Duration(seconds: 4));
+          if (wRes.statusCode == 200) {
+            final wData = jsonDecode(wRes.body);
+            final current = wData['current'] as Map<String, dynamic>;
+            final daily = (wData['daily'] as Map<String, dynamic>?) ?? {};
+
+            final weatherCode = (current['weather_code'] as num?)?.toInt() ?? 0;
+            final descAndIcon = _wmoToTextAndIcon(weatherCode);
+
+            final maxList = daily['temperature_2m_max'] as List?;
+            final minList = daily['temperature_2m_min'] as List?;
+
+            return AiWeatherModel(
+              location: locStr,
+              temp: (current['temperature_2m'] as num).round(),
+              feelsLike: (current['apparent_temperature'] as num).round(),
+              humidity: (current['relative_humidity_2m'] as num).round(),
+              windSpeed: (current['wind_speed_10m'] as num).round(),
+              description: descAndIcon['text']!,
+              icon: descAndIcon['icon']!,
+              maxTemp: (maxList != null && maxList.isNotEmpty) ? (maxList.first as num).round() : null,
+              minTemp: (minList != null && minList.isNotEmpty) ? (minList.first as num).round() : null,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[AI WEATHER] Open-Meteo error: $e');
+    }
+
+    // 2. Fallback to wttr.in
+    try {
+      final wttrUrl = Uri.parse('https://wttr.in/${Uri.encodeComponent(cityName)}?format=j1&lang=tr');
+      final res = await http.get(wttrUrl, headers: {'User-Agent': 'curl/7.68.0'}).timeout(const Duration(seconds: 4));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final current = data['current_condition'][0];
+        final langTr = current['lang_tr'] as List?;
+        final weatherDesc = current['weatherDesc'] as List?;
+
+        String desc = 'Açık';
+        if (langTr != null && langTr.isNotEmpty) {
+          desc = langTr[0]['value'] ?? 'Açık';
+        } else if (weatherDesc != null && weatherDesc.isNotEmpty) {
+          desc = weatherDesc[0]['value'] ?? 'Açık';
+        }
+
+        final icon = _descToIcon(desc);
+        final formattedLoc = cityName.length > 1
+            ? cityName[0].toUpperCase() + cityName.substring(1)
+            : cityName.toUpperCase();
+
+        return AiWeatherModel(
+          location: formattedLoc,
+          temp: int.tryParse(current['temp_C'].toString()) ?? 20,
+          feelsLike: int.tryParse(current['FeelsLikeC'].toString()) ?? 20,
+          humidity: int.tryParse(current['humidity'].toString()) ?? 50,
+          windSpeed: int.tryParse(current['windspeedKmph'].toString()) ?? 5,
+          description: desc,
+          icon: icon,
+        );
+      }
+    } catch (e) {
+      debugPrint('[AI WEATHER] wttr.in error: $e');
+    }
+
+    return null;
+  }
+
+  static Map<String, String> _wmoToTextAndIcon(int code) {
+    switch (code) {
+      case 0:
+        return {'text': 'Açık ve Güneşli', 'icon': '☀️'};
+      case 1:
+        return {'text': 'Çoğunlukla Açık', 'icon': '🌤️'};
+      case 2:
+        return {'text': 'Parçalı Bulutlu', 'icon': '⛅'};
+      case 3:
+        return {'text': 'Çok Bulutlu / Kapalı', 'icon': '☁️'};
+      case 45:
+      case 48:
+        return {'text': 'Sisli', 'icon': '🌫️'};
+      case 51:
+      case 53:
+      case 55:
+        return {'text': 'Hafif Çiseleyen Yağmur', 'icon': '🌦️'};
+      case 61:
+        return {'text': 'Hafif Yağmurlu', 'icon': '🌧️'};
+      case 63:
+        return {'text': 'Orta Şiddette Yağmurlu', 'icon': '🌧️'};
+      case 65:
+        return {'text': 'Kuvvetli Sağanak Yağış', 'icon': '🌧️'};
+      case 66:
+      case 67:
+        return {'text': 'Dondurucu Yağmur', 'icon': '🌨️'};
+      case 71:
+      case 73:
+      case 75:
+        return {'text': 'Kar Yağışlı', 'icon': '🌨️'};
+      case 77:
+        return {'text': 'Kar Taneleri', 'icon': '❄️'};
+      case 80:
+      case 81:
+      case 82:
+        return {'text': 'Sağanak Yağış', 'icon': '🌦️'};
+      case 85:
+      case 86:
+        return {'text': 'Yoğun Kar Sağanağı', 'icon': '🌨️'};
+      case 95:
+      case 96:
+      case 99:
+        return {'text': 'Gök Gürültülü Fırtına', 'icon': '⛈️'};
+      default:
+        return {'text': 'Açık ve Bulutlu', 'icon': '🌤️'};
+    }
+  }
+
+  static String _descToIcon(String desc) {
+    final d = desc.toLowerCase();
+    if (d.contains('güneş') || d.contains('gunes') || d.contains('açık') || d.contains('acik') || d.contains('sunny') || d.contains('clear')) {
+      return '☀️';
+    }
+    if (d.contains('parçalı') || d.contains('partly')) {
+      return '⛅';
+    }
+    if (d.contains('bulut') || d.contains('cloud') || d.contains('overcast')) {
+      return '☁️';
+    }
+    if (d.contains('fırtına') || d.contains('thunder') || d.contains('gök gürült')) {
+      return '⛈️';
+    }
+    if (d.contains('kar') || d.contains('snow') || d.contains('blizzard')) {
+      return '🌨️';
+    }
+    if (d.contains('yağmur') || d.contains('yagmur') || d.contains('rain') || d.contains('drizzle')) {
+      return '🌧️';
+    }
+    if (d.contains('sis') || d.contains('fog') || d.contains('mist')) {
+      return '🌫️';
+    }
+    return '🌤️';
+  }
+
+  static Future<AiMessageModel?> _handleWeatherQuery(String text) async {
+    final city = _extractCityForWeather(text);
+
+    if (city == null || city.isEmpty) {
+      return AiMessageModel(
+        id: const Uuid().v4(),
+        sender: 'ai',
+        text: 'Hangi şehir veya ilçenin hava durumunu öğrenmek istersin? 🌤️\n\n'
+            'Örneğin:\n'
+            '• *"Bugün İstanbul\'da hava durumu nasıl?"*\n'
+            '• *"Ankara hava durumu"*\n'
+            '• *"Kadıköy hava nasıl?"*\n'
+            '• *"Alanya hava durumu"*',
+        timestamp: DateTime.now(),
+      );
+    }
+
+    final weather = await _fetchWeatherData(city);
+    if (weather == null) {
+      return AiMessageModel(
+        id: const Uuid().v4(),
+        sender: 'ai',
+        text: 'Üzgünüm, "$city" için güncel hava durumu bilgilerine şu anda ulaşılamadı. Lütfen il veya ilçe adını doğru yazdığından emin olup tekrar dener misin? 🌤️',
+        timestamp: DateTime.now(),
+      );
+    }
+
+    String tip = '';
+    final descLower = weather.description.toLowerCase();
+    if (descLower.contains('yağmur') || descLower.contains('sağanak') || descLower.contains('fırtına')) {
+      tip = '\n💡 **İpucu:** Dışarı çıkarken şemsiyeni ve yağmurluğunu yanına almayı unutma! ☔';
+    } else if (descLower.contains('kar') || weather.temp <= 5) {
+      tip = '\n💡 **İpucu:** Hava oldukça soğuk, sıkı giyinmeyi ve sıcak kalmayı ihmal etme! 🧣';
+    } else if (weather.temp >= 24) {
+      tip = '\n💡 **İpucu:** Dışarıda ılık ve keyifli bir hava var, tadını çıkar! ☀️';
+    }
+
+    final dailyStr = (weather.maxTemp != null && weather.minTemp != null)
+        ? '• 📈 **Günün En Yükseği:** ${weather.maxTemp}°C  |  📉 **En Düşüğü:** ${weather.minTemp}°C\n'
+        : '';
+
+    final responseText = '📍 **${weather.location}** için güncel hava durumu:\n\n'
+        'Şu an sıcaklık **${weather.temp}°C** ve hava **${weather.description}** ${weather.icon}.\n\n'
+        '• 🌡️ **Hissedilen:** ${weather.feelsLike}°C\n'
+        '• 💧 **Nem Oranı:** %${weather.humidity}\n'
+        '• 💨 **Rüzgar Hızı:** ${weather.windSpeed} km/s\n'
+        '$dailyStr$tip';
+
+    return AiMessageModel(
+      id: const Uuid().v4(),
+      sender: 'ai',
+      text: responseText,
+      timestamp: DateTime.now(),
+      weather: weather,
+      actionType: 'weather_report',
     );
   }
 
@@ -616,6 +912,7 @@ class AiAssistantService {
         lower.contains('neler yapabilirsin')) {
       return 'Ben **Talknex Asistan**! 🤖 Talknex iletişim uygulamasının akıllı yapay zeka asistanıyım.\n\n'
           'Sana şu konularda yardımcı olabilirim:\n'
+          '🌤️ **Hava Durumu:** "Bugün İstanbul\'da hava durumu nasıl?" veya "Ankara hava nasıl?" dersen anlık sıcaklık, hissedilen, nem ve rüzgar bilgilerini söylerim.\n'
           '⏰ **Plan & Hatırlatıcı:** "Yarın saat 14:00\'te toplantım var, 30 dakika önce hatırlat" dersen tam vaktinde bildirim gönderirim.\n'
           '💬 **Sohbet & Tavsiye:** Günün her saati seninle konuşabilir, moral verebilir, önerilerde bulunabilirim.\n'
           '🧠 **Bilgi & Hesaplama:** Matematiksel hesaplar, zaman yönetimi veya genel soruları yanıtlayabilirim.\n'

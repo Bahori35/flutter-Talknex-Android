@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import '../../constants/app_colors.dart';
 import '../../models/ai_message_model.dart';
 import '../../models/ai_reminder_model.dart';
+import '../../models/ai_weather_model.dart';
 import '../../services/ai_assistant_service.dart';
 
 class AiAssistantScreen extends StatefulWidget {
@@ -18,13 +19,15 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   bool _isSending = false;
 
   final List<String> _quickSuggestions = [
+    'Bugün İstanbul\'da hava durumu nasıl?',
+    'Ankara hava durumu',
     'Yarın saat 14:00\'te toplantım var, 30 dk önce hatırlat',
     'Akşam 20:00\'de ilaç içeceğim, 15 dk önce haber ver',
+    'İzmir hava nasıl?',
     '20 dakika sonra fırını kapatmamı hatırlat',
     'Aktif planlarımı göster',
     'Zaman yönetimi için tavsiye ver',
     'Bana motive edici bir söz söyle',
-    'Bir fıkra anlat',
   ];
 
   @override
@@ -537,6 +540,10 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
               const SizedBox(height: 10),
               _buildReminderCard(msg.reminder!),
             ],
+            if (msg.weather != null) ...[
+              const SizedBox(height: 10),
+              _buildWeatherCard(msg.weather!),
+            ],
             const SizedBox(height: 4),
             Align(
               alignment: Alignment.centerRight,
@@ -659,6 +666,136 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildWeatherCard(AiWeatherModel w) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFF1E3A8A).withOpacity(0.45),
+            AppColors.surfaceLight,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.location_on_rounded, color: Color(0xFF38BDF8), size: 16),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  w.location,
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13.5),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF38BDF8).withOpacity(0.18),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(w.icon, style: const TextStyle(fontSize: 12)),
+                    const SizedBox(width: 4),
+                    Text(
+                      w.description,
+                      style: const TextStyle(
+                        color: Color(0xFF38BDF8),
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                '${w.temp}°',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 38,
+                  fontWeight: FontWeight.w900,
+                  height: 1,
+                  letterSpacing: -1,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    w.description,
+                    style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Hissedilen: ${w.feelsLike}°C',
+                    style: const TextStyle(color: Colors.white60, fontSize: 11.5),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.05),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildWeatherStat(Icons.water_drop_outlined, 'Nem', '%${w.humidity}'),
+                Container(width: 1, height: 22, color: Colors.white12),
+                _buildWeatherStat(Icons.air_rounded, 'Rüzgar', '${w.windSpeed} km/s'),
+                if (w.maxTemp != null && w.minTemp != null) ...[
+                  Container(width: 1, height: 22, color: Colors.white12),
+                  _buildWeatherStat(Icons.thermostat_rounded, 'En Y/D', '${w.maxTemp}° / ${w.minTemp}°'),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWeatherStat(IconData icon, String label, String value) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: const Color(0xFF38BDF8), size: 12),
+            const SizedBox(width: 3),
+            Text(label, style: const TextStyle(color: Colors.white60, fontSize: 10)),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.bold),
+        ),
+      ],
     );
   }
 }
