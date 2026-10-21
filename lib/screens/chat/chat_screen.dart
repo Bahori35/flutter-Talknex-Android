@@ -2408,6 +2408,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final bool isGif = message.type == MessageType.gif && message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool hasMedia = message.mediaUrl != null && message.mediaUrl!.isNotEmpty;
     final bool isVideo = message.type == MessageType.video ||
+        (hasMedia && !isDoc && !isLocation && !isContact && !isSticker && !isGif && (message.mediaUrl!.endsWith('.mp4') || message.content.contains('🎥 Video')));
     final bool isAudio = message.type == MessageType.audio ||
         (hasMedia && !isVideo && !isDoc && !isLocation && !isContact && !isSticker && !isGif && (message.mediaUrl!.endsWith('.m4a') || message.mediaUrl!.endsWith('.aac') || message.mediaUrl!.endsWith('.mp3')));
 
