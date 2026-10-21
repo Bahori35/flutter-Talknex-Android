@@ -114,6 +114,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       content: MessageEnvelope.unpack(message.content).text,
       messageType: message.type,
       mediaUrl: message.mediaUrl,
+      contacts: widget.contacts,
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 import '../../../constants/app_colors.dart';
 import '../../../models/user_model.dart';
 import '../../../models/group_model.dart';
@@ -6,19 +7,25 @@ import '../../../models/message_envelope.dart';
 import '../../../services/custom_chat_service.dart';
 import '../../../services/socket_service.dart';
 import '../../../services/encryption_service.dart';
+import '../../../widgets/app_avatar.dart';
+import '../../../utils/media_url_helper.dart';
 
 class ForwardTarget {
   final String id;
   final String name;
   final String photoUrl;
   final bool isGroup;
+  final String subtitle;
+  final String phone;
 
   ForwardTarget({
     required this.id,
     required this.name,
-    this.photoUrl = '',
+    String photoUrl = '',
     required this.isGroup,
-  });
+    this.subtitle = '',
+    this.phone = '',
+  }) : photoUrl = formatMediaUrl(photoUrl);
 }
 
 class ForwardMessageSheet extends StatefulWidget {
@@ -26,6 +33,7 @@ class ForwardMessageSheet extends StatefulWidget {
   final String content;
   final String messageType;
   final String? mediaUrl;
+  final List<UserModel>? contacts;
 
   const ForwardMessageSheet({
     super.key,
@@ -34,6 +42,7 @@ class ForwardMessageSheet extends StatefulWidget {
     String messageType = 'text',
     String? type,
     this.mediaUrl,
+    this.contacts,
   }) : messageType = type ?? messageType;
 
   static Future<bool?> show(
@@ -43,6 +52,7 @@ class ForwardMessageSheet extends StatefulWidget {
     String messageType = 'text',
     String? type,
     String? mediaUrl,
+    List<UserModel>? contacts,
   }) {
     return showModalBottomSheet<bool>(
       context: context,
@@ -57,6 +67,7 @@ class ForwardMessageSheet extends StatefulWidget {
         content: content,
         messageType: messageType,
         mediaUrl: mediaUrl,
+        contacts: contacts,
       ),
     );
   }
@@ -89,34 +100,104 @@ class _ForwardMessageSheetState extends State<ForwardMessageSheet> {
     super.dispose();
   }
 
+  static String _normalizePhone(String phone) {
+    final digits = phone.replaceAll(RegExp(r'\D'), '');
+    if (digits.length >= 10) {
+      return digits.substring(digits.length - 10);
+    }
+    return digits;
+  }
+
   Future<void> _loadTargets() async {
     try {
+      final Map<String, String> phoneToNameMap = {};
+      final Map<String, String> uidToNameMap = {};
+
+      // 1. If caller passed existing synced contacts (e.g. from GroupChatScreen / HomeScreen)
+      if (widget.contacts != null) {
+        for (final c in widget.contacts!) {
+          if (c.displayName.trim().isNotEmpty) {
+            uidToNameMap[c.uid] = c.displayName.trim();
+          }
+          final norm = _normalizePhone(c.phoneNumber);
+          if (norm.isNotEmpty && c.displayName.trim().isNotEmpty) {
+            phoneToNameMap[norm] = c.displayName.trim();
+          }
+        }
+      }
+
+      // 2. Query device address book (phone contacts)
+      try {
+        final bool permission = await FlutterContacts.requestPermission(readonly: true);
+        if (permission) {
+          final deviceContacts = await FlutterContacts.getContacts(withProperties: true, withPhoto: false);
+          for (final dc in deviceContacts) {
+            final cName = dc.displayName.trim();
+            if (cName.isNotEmpty) {
+              for (final phone in dc.phones) {
+                final norm = _normalizePhone(phone.number);
+                if (norm.isNotEmpty) {
+                  phoneToNameMap[norm] = cName;
+                }
+              }
+            }
+          }
+        }
+      } catch (ce) {
+        debugPrint('[FORWARD CONTACTS PERMISSION ERR] $ce');
+      }
+
+      // 3. Fetch groups and registered users
       final groups = await _chatService.getMyGroups(widget.currentUser.uid);
       final users = await _chatService.getUsers(widget.currentUser.uid);
 
       final List<ForwardTarget> targets = [];
 
-      // Add groups first
+      // Add groups
       for (final g in groups) {
         targets.add(ForwardTarget(
           id: 'group_${g.id}',
           name: g.name,
           photoUrl: g.photoUrl,
           isGroup: true,
+          subtitle: '${g.memberCount} üye • Grup',
         ));
       }
 
       // Add users
       for (final u in users) {
         if (u.uid != widget.currentUser.uid) {
+          String resolvedName = u.displayName.trim();
+          final norm = _normalizePhone(u.phoneNumber);
+
+          if (uidToNameMap.containsKey(u.uid)) {
+            resolvedName = uidToNameMap[u.uid]!;
+          } else if (norm.isNotEmpty && phoneToNameMap.containsKey(norm)) {
+            resolvedName = phoneToNameMap[norm]!;
+          } else if (resolvedName.isEmpty) {
+            resolvedName = u.username.isNotEmpty ? u.username : 'Talknex Kullanıcısı';
+          }
+
           targets.add(ForwardTarget(
             id: u.uid,
-            name: u.displayName,
+            name: resolvedName,
             photoUrl: u.photoUrl,
             isGroup: false,
+            subtitle: u.status.isNotEmpty
+                ? u.status
+                : (u.phoneNumber.isNotEmpty ? u.phoneNumber : 'Birebir Sohbet'),
+            phone: u.phoneNumber,
           ));
         }
       }
+
+      // Sort: Groups first, then users alphabetically by resolved name
+      targets.sort((a, b) {
+        if (a.isGroup != b.isGroup) {
+          return a.isGroup ? -1 : 1;
+        }
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
 
       if (mounted) {
         setState(() {
@@ -139,7 +220,11 @@ class _ForwardMessageSheetState extends State<ForwardMessageSheet> {
       if (q.isEmpty) {
         _filteredTargets = _allTargets;
       } else {
-        _filteredTargets = _allTargets.where((t) => t.name.toLowerCase().contains(q)).toList();
+        _filteredTargets = _allTargets.where((t) {
+          return t.name.toLowerCase().contains(q) ||
+              t.subtitle.toLowerCase().contains(q) ||
+              t.phone.replaceAll(RegExp(r'\D'), '').contains(q);
+        }).toList();
       }
     });
   }
@@ -170,14 +255,16 @@ class _ForwardMessageSheetState extends State<ForwardMessageSheet> {
     setState(() => _isSending = true);
 
     try {
-      // Pack the content with isForwarded flag
       final packedContent = MessageEnvelope.pack(
         text: widget.content,
         isForwarded: true,
       );
 
       for (final targetId in _selectedTargetIds) {
-        final target = _allTargets.firstWhere((t) => t.id == targetId);
+        final target = _allTargets.firstWhere(
+          (t) => t.id == targetId,
+          orElse: () => ForwardTarget(id: targetId, name: '', isGroup: false),
+        );
 
         if (target.isGroup) {
           final gIdInt = int.tryParse(target.id.replaceFirst('group_', '')) ?? 0;
@@ -327,6 +414,72 @@ class _ForwardMessageSheetState extends State<ForwardMessageSheet> {
               ),
             ),
 
+            // Horizontal selected chips preview bar (WhatsApp style)
+            if (_selectedTargetIds.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                height: 74,
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _selectedTargetIds.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 12),
+                  itemBuilder: (context, idx) {
+                    final targetId = _selectedTargetIds.elementAt(idx);
+                    final target = _allTargets.firstWhere(
+                      (t) => t.id == targetId,
+                      orElse: () => ForwardTarget(id: targetId, name: '', isGroup: false),
+                    );
+                    return GestureDetector(
+                      onTap: () => _toggleSelection(target),
+                      child: SizedBox(
+                        width: 54,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                AppAvatar(
+                                  radius: 20,
+                                  imageUrl: target.photoUrl,
+                                  name: target.name,
+                                  isGroup: target.isGroup,
+                                ),
+                                Positioned(
+                                  top: -2,
+                                  right: -2,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade800,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: AppColors.surface, width: 1.5),
+                                    ),
+                                    child: const Icon(Icons.close, size: 10, color: Colors.white),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              target.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white70, fontSize: 10.5),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Divider(color: Colors.white.withOpacity(0.06), height: 1),
+            ],
+
             const SizedBox(height: 8),
 
             // Targets list
@@ -353,35 +506,28 @@ class _ForwardMessageSheetState extends State<ForwardMessageSheet> {
                           itemBuilder: (ctx, index) {
                             final target = _filteredTargets[index];
                             final isSelected = _selectedTargetIds.contains(target.id);
-                            final initial = target.name.isNotEmpty ? target.name.substring(0, 1).toUpperCase() : '?';
 
                             return ListTile(
                               contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                               leading: Stack(
+                                clipBehavior: Clip.none,
                                 children: [
-                                  CircleAvatar(
+                                  AppAvatar(
                                     radius: 22,
-                                    backgroundColor: target.isGroup
-                                        ? const Color(0xFF673AB7).withOpacity(0.3)
-                                        : AppColors.primary.withOpacity(0.25),
-                                    child: Text(
-                                      initial,
-                                      style: TextStyle(
-                                        color: target.isGroup ? const Color(0xFFB388FF) : AppColors.primaryLight,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 16,
-                                      ),
-                                    ),
+                                    imageUrl: target.photoUrl,
+                                    name: target.name,
+                                    isGroup: target.isGroup,
                                   ),
                                   if (target.isGroup)
                                     Positioned(
-                                      bottom: 0,
-                                      right: 0,
+                                      bottom: -2,
+                                      right: -2,
                                       child: Container(
-                                        padding: const EdgeInsets.all(2),
-                                        decoration: const BoxDecoration(
-                                          color: Color(0xFF673AB7),
+                                        padding: const EdgeInsets.all(2.5),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF673AB7),
                                           shape: BoxShape.circle,
+                                          border: Border.all(color: AppColors.surface, width: 1.5),
                                         ),
                                         child: const Icon(Icons.group, color: Colors.white, size: 10),
                                       ),
@@ -391,10 +537,16 @@ class _ForwardMessageSheetState extends State<ForwardMessageSheet> {
                               title: Text(
                                 target.name,
                                 style: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.w600),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                               subtitle: Text(
-                                target.isGroup ? 'Grup Sohbeti' : 'Birebir Sohbet',
+                                target.subtitle.isNotEmpty
+                                    ? target.subtitle
+                                    : (target.isGroup ? 'Grup Sohbeti' : 'Birebir Sohbet'),
                                 style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                               trailing: Container(
                                 width: 24,

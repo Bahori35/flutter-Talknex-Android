@@ -30,6 +30,7 @@ class CustomChatService {
             email: '${json['username']}@custom.server',
             displayName: json['displayName'] ?? json['username'] ?? 'User',
             photoUrl: json['photoUrl'] ?? '',
+            phoneNumber: json['phoneNumber'] ?? '',
             status: json['status'] ?? 'Hey there! I am using this app.',
             isOnline: json['isOnline'] == 1 || json['isOnline'] == true,
           );
