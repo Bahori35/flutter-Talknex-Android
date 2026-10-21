@@ -196,6 +196,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.chatBackground,
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(
         backgroundColor: AppColors.surface,
         elevation: 1,
@@ -400,50 +401,56 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
 
           // Message Input Field
           Container(
-            padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
             color: AppColors.surface,
-            child: Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceLight,
-                      borderRadius: BorderRadius.circular(24),
-                      border: Border.all(color: Colors.white12),
-                    ),
-                    child: TextField(
-                      controller: _textController,
-                      style: const TextStyle(color: Colors.white, fontSize: 15),
-                      maxLines: null,
-                      textCapitalization: TextCapitalization.sentences,
-                      decoration: const InputDecoration(
-                        hintText: 'Bir plan söyle veya soru sor...',
-                        hintStyle: TextStyle(color: Colors.white38, fontSize: 14),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        border: InputBorder.none,
+            child: SafeArea(
+              top: false,
+              bottom: true,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceLight,
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(color: Colors.white12),
+                        ),
+                        child: TextField(
+                          controller: _textController,
+                          style: const TextStyle(color: Colors.white, fontSize: 15),
+                          maxLines: null,
+                          textCapitalization: TextCapitalization.sentences,
+                          decoration: const InputDecoration(
+                            hintText: 'Bir plan söyle veya soru sor...',
+                            hintStyle: TextStyle(color: Colors.white38, fontSize: 14),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                            border: InputBorder.none,
+                          ),
+                          onSubmitted: (_) => _handleSend(),
+                        ),
                       ),
-                      onSubmitted: (_) => _handleSend(),
                     ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: () => _handleSend(),
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Color(0xFF8A2387), Color(0xFFE94057)],
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () => _handleSend(),
+                      child: Container(
+                        width: 44,
+                        height: 44,
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [Color(0xFF8A2387), Color(0xFFE94057)],
+                          ),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Center(
+                          child: Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                        ),
                       ),
-                      shape: BoxShape.circle,
                     ),
-                    child: const Center(
-                      child: Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                    ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ],
