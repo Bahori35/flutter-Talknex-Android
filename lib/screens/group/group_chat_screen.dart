@@ -41,6 +41,8 @@ import '../../models/message_envelope.dart';
 import '../../services/starred_messages_service.dart';
 import '../chat/widgets/forward_message_sheet.dart';
 import '../chat/starred_messages_screen.dart';
+import '../../services/message_reactions_service.dart';
+import '../../widgets/reaction_widgets.dart';
 
 class GroupChatScreen extends StatefulWidget {
   final GroupModel group;
@@ -1313,6 +1315,33 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
               ),
             ),
+            // WhatsApp style emoji reaction bar
+            Center(
+              child: EmojiReactionPickerBar(
+                currentReaction: MessageReactionsService.getUserReaction(message.id, widget.currentUser.uid),
+                onReactionSelected: (emoji) async {
+                  Navigator.pop(ctx);
+                  final newEmoji = await MessageReactionsService.toggleReaction(
+                    messageId: message.id,
+                    userId: widget.currentUser.uid,
+                    userName: widget.currentUser.displayName,
+                    emoji: emoji,
+                  );
+                  _socketService.sendGroupReaction(
+                    messageId: message.id,
+                    groupId: _group.id,
+                    senderId: widget.currentUser.uid,
+                    senderName: widget.currentUser.displayName,
+                    emoji: newEmoji ?? '',
+                  );
+                },
+                onPlusPressed: () {
+                  Navigator.pop(ctx);
+                  _openCustomEmojiPickerForMessage(message.id);
+                },
+              ),
+            ),
+            const Divider(color: Colors.white12, height: 16),
             ListTile(
               leading: const Icon(Icons.reply_rounded, color: AppColors.accent),
               title: const Text('Cevapla', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
@@ -1388,6 +1417,42 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  void _openCustomEmojiPickerForMessage(String messageId) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SizedBox(
+          height: 320,
+          child: EmojiGifStickerPicker(
+            onEmojiSelected: (emoji) async {
+              Navigator.pop(ctx);
+              final newEmoji = await MessageReactionsService.toggleReaction(
+                messageId: messageId,
+                userId: widget.currentUser.uid,
+                userName: widget.currentUser.displayName,
+                emoji: emoji,
+              );
+              _socketService.sendGroupReaction(
+                messageId: messageId,
+                groupId: _group.id,
+                senderId: widget.currentUser.uid,
+                senderName: widget.currentUser.displayName,
+                emoji: newEmoji ?? '',
+              );
+            },
+            onBackspacePressed: () {},
+            onGifSelected: (_) {},
+            onStickerSelected: (_) {},
+          ),
+        );
+      },
     );
   }
 
@@ -3070,12 +3135,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
     final bubbleWidget = GestureDetector(
       onLongPress: () => _showMessageOptions(message),
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 3),
-        padding: EdgeInsets.all(isSticker ? 0 : (isSpecialCard ? 2 : (isContact ? 4 : (hasMedia && !isDoc && !isLocation ? 4 : 10)))),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * (isSpecialCard ? (isMe ? 0.88 : 0.80) : (isMe ? 0.78 : 0.72)),
-        ),
+      child: ValueListenableBuilder<int>(
+        valueListenable: MessageReactionsService.reactionNotifier,
+        builder: (context, _, __) {
+          final hasReactions = MessageReactionsService.getReactions(message.id).isNotEmpty;
+
+          return Padding(
+            padding: EdgeInsets.only(bottom: hasReactions ? 10.0 : 0.0),
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  margin: const EdgeInsets.symmetric(vertical: 3),
+                  padding: EdgeInsets.all(isSticker ? 0 : (isSpecialCard ? 2 : (isContact ? 4 : (hasMedia && !isDoc && !isLocation ? 4 : 10)))),
+                  constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * (isSpecialCard ? (isMe ? 0.88 : 0.80) : (isMe ? 0.78 : 0.72)),
+                  ),
         decoration: isSticker
             ? null
             : BoxDecoration(
@@ -3242,7 +3317,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           ],
         ),
       ),
-    );
+      if (hasReactions)
+        Positioned(
+          bottom: -6,
+          right: isMe ? 12 : null,
+          left: isMe ? null : 12,
+          child: MessageReactionBadge(
+            messageId: message.id,
+            isMe: isMe,
+          ),
+        ),
+    ],
+  ),
+);
+},
+),
+);
 
     final Widget fullRow = isMe
         ? Align(

@@ -7,6 +7,10 @@ import '../models/user_model.dart';
 import 'encryption_service.dart';
 import '../models/message_envelope.dart';
 import 'starred_messages_service.dart';
+import 'message_reactions_service.dart';
+
+typedef OnMessageReactionReceived = void Function(Map<String, dynamic> data);
+typedef OnGroupMessageReactionReceived = void Function(Map<String, dynamic> data);
 
 typedef OnMessageReceived = void Function(MessageModel message);
 typedef OnMessageDelivered = void Function(Map<String, dynamic> data);
@@ -68,6 +72,8 @@ class SocketService {
   OnGroupDeleted? onGroupDeleted;
   OnGroupPollUpdated? onGroupPollUpdated;
   OnGroupEventUpdated? onGroupEventUpdated;
+  OnMessageReactionReceived? onMessageReactionReceived;
+  OnGroupMessageReactionReceived? onGroupMessageReactionReceived;
 
   // Initialize and connect native WebSocket to Go backend (Port 3000 -> Nginx -> Go)
   void initSocket(String userId) {
@@ -375,6 +381,34 @@ class SocketService {
             onGroupEventUpdated!(Map<String, dynamic>.from(data));
           }
           break;
+
+        case 'message_reaction':
+        case 'receive_message_reaction':
+          if (data is Map<String, dynamic>) {
+            final mapData = Map<String, dynamic>.from(data);
+            MessageReactionsService.applyIncomingReaction(
+              messageId: mapData['messageId']?.toString() ?? '',
+              userId: mapData['senderId']?.toString() ?? '',
+              userName: mapData['senderName']?.toString() ?? '',
+              emoji: mapData['emoji']?.toString() ?? '',
+            );
+            onMessageReactionReceived?.call(mapData);
+          }
+          break;
+
+        case 'group_message_reaction':
+        case 'receive_group_message_reaction':
+          if (data is Map<String, dynamic>) {
+            final mapData = Map<String, dynamic>.from(data);
+            MessageReactionsService.applyIncomingReaction(
+              messageId: mapData['messageId']?.toString() ?? '',
+              userId: mapData['senderId']?.toString() ?? '',
+              userName: mapData['senderName']?.toString() ?? '',
+              emoji: mapData['emoji']?.toString() ?? '',
+            );
+            onGroupMessageReactionReceived?.call(mapData);
+          }
+          break;
       }
     } catch (e) {
       debugPrint('[GORILLA WS] Parse error: $e');
@@ -658,6 +692,40 @@ class SocketService {
       'eventId': eventId,
       'status': status,
       'guestCount': guestCount,
+    });
+  }
+
+  // Send 1-on-1 reaction
+  void sendReaction({
+    required String messageId,
+    required String senderId,
+    required String senderName,
+    required String receiverId,
+    required String emoji,
+  }) {
+    _emit('message_reaction', {
+      'messageId': messageId,
+      'senderId': senderId,
+      'senderName': senderName,
+      'receiverId': receiverId,
+      'emoji': emoji,
+    });
+  }
+
+  // Send group reaction
+  void sendGroupReaction({
+    required String messageId,
+    required int groupId,
+    required String senderId,
+    required String senderName,
+    required String emoji,
+  }) {
+    _emit('group_message_reaction', {
+      'messageId': messageId,
+      'groupId': groupId,
+      'senderId': senderId,
+      'senderName': senderName,
+      'emoji': emoji,
     });
   }
 

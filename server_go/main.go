@@ -919,6 +919,11 @@ func main() {
 					"messageId":  msgID,
 				})
 
+			case "message_reaction":
+				receiverIDStr := fmt.Sprintf("%v", data["receiverId"])
+				dispatchUserEvent(receiverIDStr, "receive_message_reaction", data)
+				_ = client.Send("receive_message_reaction", data)
+
 			case "live_location_update":
 				receiverID := fmt.Sprintf("%v", data["receiverId"])
 				dispatchUserEvent(receiverID, "live_location_received", data)
@@ -1215,6 +1220,23 @@ func main() {
 					}
 					mRows.Close()
 				}
+
+			case "group_message_reaction":
+				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))
+				senderIDStr := fmt.Sprintf("%v", data["senderId"])
+				mRows, mErr := db.Query("SELECT user_id FROM group_members WHERE group_id = ?", groupID)
+				if mErr == nil {
+					for mRows.Next() {
+						var mUID int
+						_ = mRows.Scan(&mUID)
+						mUIDStr := strconv.Itoa(mUID)
+						if mUIDStr != senderIDStr {
+							dispatchUserEvent(mUIDStr, "receive_group_message_reaction", data)
+						}
+					}
+					mRows.Close()
+				}
+				_ = client.Send("receive_group_message_reaction", data)
 
 			case "create_group_poll":
 				groupID, _ := strconv.Atoi(fmt.Sprintf("%v", data["groupId"]))

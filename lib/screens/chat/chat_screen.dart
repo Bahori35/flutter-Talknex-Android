@@ -41,6 +41,8 @@ import '../../models/message_envelope.dart';
 import '../../services/starred_messages_service.dart';
 import 'widgets/forward_message_sheet.dart';
 import 'starred_messages_screen.dart';
+import '../../services/message_reactions_service.dart';
+import '../../widgets/reaction_widgets.dart';
 
 class ChatScreen extends StatefulWidget {
   final UserModel currentUser;
@@ -1250,6 +1252,8 @@ class _ChatScreenState extends State<ChatScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) {
+        final currentReaction = MessageReactionsService.getUserReaction(message.id, widget.currentUser.uid);
+
         return SafeArea(
           child: Wrap(
             children: [
@@ -1265,6 +1269,33 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
               ),
+              // WhatsApp style emoji reaction bar
+              Center(
+                child: EmojiReactionPickerBar(
+                  currentReaction: currentReaction,
+                  onReactionSelected: (emoji) async {
+                    Navigator.pop(ctx);
+                    final newEmoji = await MessageReactionsService.toggleReaction(
+                      messageId: message.id,
+                      userId: widget.currentUser.uid,
+                      userName: widget.currentUser.displayName,
+                      emoji: emoji,
+                    );
+                    _socketService.sendReaction(
+                      messageId: message.id,
+                      senderId: widget.currentUser.uid,
+                      senderName: widget.currentUser.displayName,
+                      receiverId: widget.peerUser.uid,
+                      emoji: newEmoji ?? '',
+                    );
+                  },
+                  onPlusPressed: () {
+                    Navigator.pop(ctx);
+                    _openCustomEmojiPickerForMessage(message.id);
+                  },
+                ),
+              ),
+              const Divider(color: Colors.white12, height: 16),
               // 1. Cevapla (Reply)
               ListTile(
                 leading: const Icon(Icons.reply_rounded, color: AppColors.primaryLight),
@@ -1361,6 +1392,42 @@ class _ChatScreenState extends State<ChatScreen> {
                 onTap: () => Navigator.pop(ctx),
               ),
             ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _openCustomEmojiPickerForMessage(String messageId) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SizedBox(
+          height: 320,
+          child: EmojiGifStickerPicker(
+            onEmojiSelected: (emoji) async {
+              Navigator.pop(ctx);
+              final newEmoji = await MessageReactionsService.toggleReaction(
+                messageId: messageId,
+                userId: widget.currentUser.uid,
+                userName: widget.currentUser.displayName,
+                emoji: emoji,
+              );
+              _socketService.sendReaction(
+                messageId: messageId,
+                senderId: widget.currentUser.uid,
+                senderName: widget.currentUser.displayName,
+                receiverId: widget.peerUser.uid,
+                emoji: newEmoji ?? '',
+              );
+            },
+            onBackspacePressed: () {},
+            onGifSelected: (_) {},
+            onStickerSelected: (_) {},
           ),
         );
       },
@@ -2486,12 +2553,22 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         child: GestureDetector(
           onLongPress: () => _showMessageActionDialog(message, isMe),
-          child: Container(
-            margin: const EdgeInsets.symmetric(vertical: 3.5),
-            padding: EdgeInsets.all(isSticker ? 0 : (isContact ? 4 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
-            constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.78,
-            ),
+          child: ValueListenableBuilder<int>(
+            valueListenable: MessageReactionsService.reactionNotifier,
+            builder: (context, _, __) {
+              final hasReactions = MessageReactionsService.getReactions(message.id).isNotEmpty;
+
+              return Padding(
+                padding: EdgeInsets.only(bottom: hasReactions ? 10.0 : 0.0),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.symmetric(vertical: 3.5),
+                      padding: EdgeInsets.all(isSticker ? 0 : (isContact ? 4 : (hasMedia && !isDoc && !isLocation ? 4 : 10))),
+                      constraints: BoxConstraints(
+                        maxWidth: MediaQuery.of(context).size.width * 0.78,
+                      ),
             decoration: isSticker
                 ? null
                 : BoxDecoration(
@@ -2661,10 +2738,25 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
           ),
-        ),
+          if (hasReactions)
+            Positioned(
+              bottom: -6,
+              right: isMe ? 12 : null,
+              left: isMe ? null : 12,
+              child: MessageReactionBadge(
+                messageId: message.id,
+                isMe: isMe,
+              ),
+            ),
+        ],
       ),
     );
-  }
+  },
+),
+),
+),
+);
+}
 
   Widget _buildForwardedHeader() {
     return const Padding(
