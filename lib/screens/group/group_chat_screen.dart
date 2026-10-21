@@ -108,16 +108,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   void _openForwardSheet(GroupMessageModel message) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => ForwardMessageSheet(
-        currentUser: widget.currentUser,
-        content: message.content,
-        type: message.type,
-        mediaUrl: message.mediaUrl,
-      ),
+    ForwardMessageSheet.show(
+      context,
+      currentUser: widget.currentUser,
+      content: message.content,
+      messageType: message.type,
+      mediaUrl: message.mediaUrl,
     );
   }
 

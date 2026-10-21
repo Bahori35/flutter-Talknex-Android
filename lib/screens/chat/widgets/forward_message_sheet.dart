@@ -31,15 +31,17 @@ class ForwardMessageSheet extends StatefulWidget {
     super.key,
     required this.currentUser,
     required this.content,
-    this.messageType = 'text',
+    String messageType = 'text',
+    String? type,
     this.mediaUrl,
-  });
+  }) : messageType = type ?? messageType;
 
   static Future<bool?> show(
     BuildContext context, {
     required UserModel currentUser,
     required String content,
     String messageType = 'text',
+    String? type,
     String? mediaUrl,
   }) {
     return showModalBottomSheet<bool>(
