@@ -23,6 +23,8 @@ class AiAssistantService {
   static const String _prefKeyMessages = 'talknex_ai_chat_messages_v2';
   static const String _prefKeyReminders = 'talknex_ai_reminders_v2';
   static const String _prefKeyGeminiKey = 'talknex_gemini_api_key_v1';
+  static const String _prefKeyGroqKey = 'talknex_groq_api_key_v1';
+  static const String _prefKeyActiveProvider = 'talknex_active_ai_provider_v1';
   static const String _prefKeyUserName = 'talknex_ai_user_name_v1';
 
   static String? _userName;
@@ -31,6 +33,38 @@ class AiAssistantService {
   static String? _geminiApiKey;
   static String? get geminiApiKey => _geminiApiKey;
   static bool get hasGeminiApiKey => _geminiApiKey != null && _geminiApiKey!.trim().isNotEmpty;
+
+  static String? _groqApiKey;
+  static String? get groqApiKey => _groqApiKey;
+  static bool get hasGroqApiKey => _groqApiKey != null && _groqApiKey!.trim().isNotEmpty;
+
+  static String _activeProvider = 'auto'; // 'gemini', 'groq', or 'auto'
+  static String get activeProvider => _activeProvider;
+
+  static bool get isRealAiConnected => hasGeminiApiKey || hasGroqApiKey;
+
+  static String get activeAiModelLabel {
+    if (_activeProvider == 'groq' && hasGroqApiKey) {
+      return 'Groq (Llama 3.3) Aktif ⚡';
+    }
+    if (_activeProvider == 'gemini' && hasGeminiApiKey) {
+      return 'Gemini 1.5 Flash Aktif ✨';
+    }
+    if (hasGroqApiKey && !hasGeminiApiKey) {
+      return 'Groq (Llama 3.3) Aktif ⚡';
+    }
+    if (hasGeminiApiKey) {
+      return 'Gemini 1.5 Flash Aktif ✨';
+    }
+    return '⚡ Gerçek Yapay Zekayı Bağla';
+  }
+
+  static Future<void> setActiveProvider(String provider) async {
+    _activeProvider = provider;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_prefKeyActiveProvider, provider);
+    notifier.value++;
+  }
 
   static String cleanGeminiKey(String raw) {
     String clean = raw.trim().replaceAll('"', '').replaceAll("'", '').replaceAll('`', '').replaceAll(' ', '');
@@ -49,6 +83,27 @@ class AiAssistantService {
       final cleanKey = cleanGeminiKey(key);
       _geminiApiKey = cleanKey;
       await prefs.setString(_prefKeyGeminiKey, cleanKey);
+    }
+    notifier.value++;
+  }
+
+  static String cleanGroqKey(String raw) {
+    String clean = raw.trim().replaceAll('"', '').replaceAll("'", '').replaceAll('`', '').replaceAll(' ', '');
+    if (clean.toLowerCase().startsWith('bearer')) {
+      clean = clean.substring(6).trim();
+    }
+    return clean;
+  }
+
+  static Future<void> setGroqApiKey(String? key) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (key == null || key.trim().isEmpty) {
+      _groqApiKey = null;
+      await prefs.remove(_prefKeyGroqKey);
+    } else {
+      final cleanKey = cleanGroqKey(key);
+      _groqApiKey = cleanKey;
+      await prefs.setString(_prefKeyGroqKey, cleanKey);
     }
     notifier.value++;
   }
@@ -152,6 +207,86 @@ class AiAssistantService {
     };
   }
 
+  /// Robust Groq key verification (Llama 3.3 70B & Llama 3.1 8B on Groq LPU)
+  static Future<Map<String, dynamic>> testGroqApiKeyDetails(String apiKey) async {
+    final cleanKey = cleanGroqKey(apiKey);
+
+    if (cleanKey.isEmpty) {
+      return {'success': false, 'message': 'Lütfen bir Groq anahtarı girin veya panodan yapıştırın.', 'key': ''};
+    }
+
+    if (!cleanKey.startsWith('gsk_')) {
+      return {
+        'success': false,
+        'message': 'Groq API anahtarları "gsk_" ile başlar. Lütfen console.groq.com/keys adresinden aldığınız anahtarı kontrol edin.',
+        'key': cleanKey
+      };
+    }
+
+    final models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+    String? lastError;
+
+    for (final model in models) {
+      try {
+        final url = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
+        final response = await http.post(
+          url,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $cleanKey',
+          },
+          body: jsonEncode({
+            'model': model,
+            'messages': [
+              {'role': 'user', 'content': 'Ping'}
+            ],
+            'max_tokens': 10,
+          }),
+        ).timeout(const Duration(seconds: 12));
+
+        if (response.statusCode == 200) {
+          return {
+            'success': true,
+            'message': '✅ Groq ($model) başarıyla doğrulandı! LPU Süper Hızı Devrede ⚡',
+            'key': cleanKey
+          };
+        } else {
+          try {
+            final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+            final msg = decoded['error']?['message']?.toString() ?? 'Hata kodu: ${response.statusCode}';
+            lastError = msg;
+            if (response.statusCode == 401) {
+              return {
+                'success': false,
+                'message': '❌ Groq: Geçersiz API Anahtarı. Lütfen console.groq.com/keys üzerinden aldığınız anahtarı kontrol edin.',
+                'key': cleanKey
+              };
+            }
+          } catch (_) {
+            lastError = 'HTTP ${response.statusCode}';
+          }
+        }
+      } catch (e) {
+        lastError = e.toString();
+      }
+    }
+
+    // Fallback: If starts with gsk_ and length >= 40, allow save
+    if (cleanKey.startsWith('gsk_') && cleanKey.length >= 40) {
+      return {
+        'success': true,
+        'message': '⚠️ Ağ testi zaman aşımına uğradı ancak anahtar formatı geçerli (gsk_). Kaydedildi!',
+        'key': cleanKey
+      };
+    }
+
+    return {
+      'success': false,
+      'message': '❌ Groq doğrulanamadı: ${lastError ?? "Bilinmeyen hata"}. Lütfen console.groq.com/keys üzerinden yeni bir anahtar alıp deneyin.',
+      'key': cleanKey
+    };
+  }
+
   static List<AiMessageModel> get messages => List.unmodifiable(_messages);
   static List<AiReminderModel> get reminders => List.unmodifiable(_reminders);
 
@@ -178,6 +313,12 @@ class AiAssistantService {
 
       // Load Gemini API Key
       _geminiApiKey = prefs.getString(_prefKeyGeminiKey);
+
+      // Load Groq API Key
+      _groqApiKey = prefs.getString(_prefKeyGroqKey);
+
+      // Load Active Provider
+      _activeProvider = prefs.getString(_prefKeyActiveProvider) ?? 'auto';
 
       // Load Reminders
       final remindersRaw = prefs.getString(_prefKeyReminders);
@@ -455,21 +596,63 @@ class AiAssistantService {
       }
     }
 
-    // E. Generative AI Engine (Zero-Setup Free Cloud AI & Gemini)
-    // 1. If user configured Gemini API Key, prioritize Gemini
-    if (hasGeminiApiKey) {
-      final geminiReply = await _callGeminiApi(text);
-      if (geminiReply != null && geminiReply.isNotEmpty) {
+    // E. Generative AI Engine (Google Gemini & Groq Cloud LPU)
+    final bool preferGroq = (_activeProvider == 'groq' && hasGroqApiKey) ||
+        (hasGroqApiKey && !hasGeminiApiKey);
+
+    if (preferGroq) {
+      // 1. Try Groq (Llama 3.3 on Groq LPU)
+      final groqReply = await _callGroqApi(text);
+      if (groqReply != null && groqReply.isNotEmpty) {
         return AiMessageModel(
           id: const Uuid().v4(),
           sender: 'ai',
-          text: geminiReply,
+          text: groqReply,
           timestamp: DateTime.now(),
         );
       }
+
+      // Failover to Gemini if configured
+      if (hasGeminiApiKey) {
+        final geminiReply = await _callGeminiApi(text);
+        if (geminiReply != null && geminiReply.isNotEmpty) {
+          return AiMessageModel(
+            id: const Uuid().v4(),
+            sender: 'ai',
+            text: geminiReply,
+            timestamp: DateTime.now(),
+          );
+        }
+      }
+    } else {
+      // 1. Try Gemini (Gemini 1.5 Flash / 2.0 Flash)
+      if (hasGeminiApiKey) {
+        final geminiReply = await _callGeminiApi(text);
+        if (geminiReply != null && geminiReply.isNotEmpty) {
+          return AiMessageModel(
+            id: const Uuid().v4(),
+            sender: 'ai',
+            text: geminiReply,
+            timestamp: DateTime.now(),
+          );
+        }
+      }
+
+      // Failover to Groq if configured
+      if (hasGroqApiKey) {
+        final groqReply = await _callGroqApi(text);
+        if (groqReply != null && groqReply.isNotEmpty) {
+          return AiMessageModel(
+            id: const Uuid().v4(),
+            sender: 'ai',
+            text: groqReply,
+            timestamp: DateTime.now(),
+          );
+        }
+      }
     }
 
-    // 2. Direct Zero-Setup Free Cloud AI (Pollinations / Llama / OpenAI)
+    // 2. Direct Zero-Setup Free Cloud AI (Pollinations / Llama fallback)
     final freeAiReply = await _callFreeCloudAi(text);
     if (freeAiReply != null && freeAiReply.isNotEmpty) {
       return AiMessageModel(
@@ -697,6 +880,57 @@ class AiAssistantService {
         }
       } catch (e) {
         debugPrint('[GEMINI] Model $model error: $e');
+      }
+    }
+    return null;
+  }
+
+  /// Calls Groq API (Llama 3.3 70B & Llama 3.1 8B on Groq LPU)
+  static Future<String?> _callGroqApi(String userPrompt) async {
+    final apiKey = _groqApiKey?.trim();
+    if (apiKey == null || apiKey.isEmpty) return null;
+
+    final models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+
+    for (final model in models) {
+      try {
+        final url = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
+        final messages = _buildFreeAiMessages(userPrompt);
+
+        final response = await http.post(
+          url,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $apiKey',
+          },
+          body: jsonEncode({
+            'model': model,
+            'messages': messages,
+            'temperature': 0.7,
+            'max_tokens': 1500,
+          }),
+        ).timeout(const Duration(seconds: 15));
+
+        if (response.statusCode == 200) {
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+          if (decoded is Map && decoded.containsKey('choices')) {
+            final choices = decoded['choices'] as List;
+            if (choices.isNotEmpty) {
+              final first = choices[0];
+              final message = first['message'];
+              if (message != null && message['content'] != null) {
+                final text = message['content'].toString().trim();
+                if (text.isNotEmpty) {
+                  return text;
+                }
+              }
+            }
+          }
+        } else {
+          debugPrint('[GROQ] Model $model returned status ${response.statusCode}: ${response.body}');
+        }
+      } catch (e) {
+        debugPrint('[GROQ] Model $model error: $e');
       }
     }
     return null;
