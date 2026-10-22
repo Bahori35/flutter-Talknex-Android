@@ -41,23 +41,31 @@ class AiAssistantService {
   static String? get groqApiKey => _groqApiKey;
   static bool get hasGroqApiKey => _groqApiKey != null && _groqApiKey!.trim().isNotEmpty;
 
+  static String? _workingGroqModel;
+  static String? get workingGroqModel => _workingGroqModel;
+
+  static String? _lastAiError;
+  static String? get lastAiError => _lastAiError;
+
   static String _activeProvider = 'auto'; // 'gemini', 'groq', or 'auto'
   static String get activeProvider => _activeProvider;
 
   static bool get isRealAiConnected => hasGeminiApiKey || hasGroqApiKey;
 
   static String get activeAiModelLabel {
-    if (_activeProvider == 'groq' && hasGroqApiKey) {
-      return 'Groq (Llama 3.3) Aktif ⚡';
-    }
-    if (_activeProvider == 'gemini' && hasGeminiApiKey) {
-      return 'Gemini 1.5 Flash Aktif ✨';
-    }
-    if (hasGroqApiKey && !hasGeminiApiKey) {
-      return 'Groq (Llama 3.3) Aktif ⚡';
+    final bool useGroq = (_activeProvider == 'groq' && hasGroqApiKey) ||
+        (hasGroqApiKey && !hasGeminiApiKey);
+    if (useGroq) {
+      final model = _workingGroqModel ?? 'llama-3.3-70b';
+      final shortName = model.contains('70b')
+          ? 'Llama 3.3 70B'
+          : (model.contains('8b') ? 'Llama 3.1 8B' : 'Llama');
+      return 'Groq ($shortName) Aktif ⚡';
     }
     if (hasGeminiApiKey) {
-      return 'Gemini 1.5 Flash Aktif ✨';
+      final model = _workingGeminiModel ?? 'gemini-1.5-flash';
+      final shortName = model.replaceFirst('gemini-', '');
+      return 'Gemini ($shortName) Aktif ✨';
     }
     return '⚡ Gerçek Yapay Zekayı Bağla';
   }
@@ -81,11 +89,14 @@ class AiAssistantService {
     final prefs = await SharedPreferences.getInstance();
     if (key == null || key.trim().isEmpty) {
       _geminiApiKey = null;
+      _workingGeminiModel = null;
       await prefs.remove(_prefKeyGeminiKey);
     } else {
       final cleanKey = cleanGeminiKey(key);
       _geminiApiKey = cleanKey;
+      _activeProvider = 'gemini';
       await prefs.setString(_prefKeyGeminiKey, cleanKey);
+      await prefs.setString(_prefKeyActiveProvider, 'gemini');
     }
     notifier.value++;
   }
@@ -102,11 +113,14 @@ class AiAssistantService {
     final prefs = await SharedPreferences.getInstance();
     if (key == null || key.trim().isEmpty) {
       _groqApiKey = null;
+      _workingGroqModel = null;
       await prefs.remove(_prefKeyGroqKey);
     } else {
       final cleanKey = cleanGroqKey(key);
       _groqApiKey = cleanKey;
+      _activeProvider = 'groq';
       await prefs.setString(_prefKeyGroqKey, cleanKey);
+      await prefs.setString(_prefKeyActiveProvider, 'groq');
     }
     notifier.value++;
   }
@@ -267,7 +281,7 @@ class AiAssistantService {
     };
   }
 
-  /// Robust Groq key verification (Llama 3.3 70B & Llama 3.1 8B on Groq LPU)
+  /// Robust Groq key verification (Dynamic Model Discovery + Fallbacks)
   static Future<Map<String, dynamic>> testGroqApiKeyDetails(String apiKey) async {
     final cleanKey = cleanGroqKey(apiKey);
 
@@ -283,7 +297,57 @@ class AiAssistantService {
       };
     }
 
-    final models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+    // 1. Probe Groq's Models API to dynamically discover active models for this key
+    try {
+      final modelsUrl = Uri.parse('https://api.groq.com/openai/v1/models');
+      final modelsRes = await http.get(
+        modelsUrl,
+        headers: {
+          'Authorization': 'Bearer $cleanKey',
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+          'Accept': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (modelsRes.statusCode == 200) {
+        final decoded = jsonDecode(utf8.decode(modelsRes.bodyBytes));
+        if (decoded is Map && decoded['data'] is List) {
+          final list = (decoded['data'] as List).map((e) => e['id']?.toString() ?? '').toList();
+          String best = 'llama-3.3-70b-versatile';
+          if (list.contains('llama-3.3-70b-versatile')) {
+            best = 'llama-3.3-70b-versatile';
+          } else if (list.contains('llama-3.1-8b-instant')) {
+            best = 'llama-3.1-8b-instant';
+          } else if (list.isNotEmpty) {
+            best = list.firstWhere((id) => id.contains('llama'), orElse: () => list.first);
+          }
+          _workingGroqModel = best;
+          return {
+            'success': true,
+            'message': '✅ Groq ($best) başarıyla doğrulandı! LPU Süper Hızı Devrede ⚡',
+            'key': cleanKey,
+            'model': best,
+          };
+        }
+      } else if (modelsRes.statusCode == 401) {
+        return {
+          'success': false,
+          'message': '❌ Groq: Geçersiz API Anahtarı. Lütfen console.groq.com/keys üzerinden anahtarınızı kontrol edin.',
+          'key': cleanKey
+        };
+      }
+    } catch (e) {
+      debugPrint('[GROQ PROBE] Error: $e');
+    }
+
+    // 2. Direct chat completion test
+    final models = [
+      'llama-3.3-70b-versatile',
+      'llama-3.1-8b-instant',
+      'llama-3.2-3b-preview',
+      'llama-3.2-1b-preview',
+      'mixtral-8x7b-32768'
+    ];
     String? lastError;
 
     for (final model in models) {
@@ -294,6 +358,8 @@ class AiAssistantService {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $cleanKey',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+            'Accept': 'application/json',
           },
           body: jsonEncode({
             'model': model,
@@ -305,10 +371,12 @@ class AiAssistantService {
         ).timeout(const Duration(seconds: 12));
 
         if (response.statusCode == 200) {
+          _workingGroqModel = model;
           return {
             'success': true,
             'message': '✅ Groq ($model) başarıyla doğrulandı! LPU Süper Hızı Devrede ⚡',
-            'key': cleanKey
+            'key': cleanKey,
+            'model': model,
           };
         } else {
           try {
@@ -657,6 +725,7 @@ class AiAssistantService {
     }
 
     // E. Generative AI Engine (Google Gemini & Groq Cloud LPU)
+    _lastAiError = null;
     final bool preferGroq = (_activeProvider == 'groq' && hasGroqApiKey) ||
         (hasGroqApiKey && !hasGeminiApiKey);
 
@@ -712,7 +781,28 @@ class AiAssistantService {
       }
     }
 
-    // 2. Direct Zero-Setup Free Cloud AI (Pollinations / Llama fallback)
+    // IF USER CONNECTED REAL AI AND IT FAILED:
+    // Transparently report the diagnostic issue so the user knows why
+    if (isRealAiConnected) {
+      final activeProviderName = preferGroq ? 'Groq (Llama)' : 'Google Gemini';
+      final errDetail = _lastAiError != null && _lastAiError!.isNotEmpty
+          ? _lastAiError!
+          : 'Yapay zeka sunucusu yanıt vermedi veya zaman aşımı oluştu.';
+
+      return AiMessageModel(
+        id: const Uuid().v4(),
+        sender: 'ai',
+        text: '⚠️ **$activeProviderName Bağlantı Hatası**\n\n'
+            'Bağlı olan yapay zeka servisine erişilemedi:\n'
+            '📌 **Detay:** $errDetail\n\n'
+            '💡 **Çözüm Önerisi:**\n'
+            '• Sağ üstteki ayarlar simgesinden API anahtarınızı kontrol edin.\n'
+            '• Diğer sağlayıcıyı (${preferGroq ? "Google Gemini ✨" : "Groq LPU ⚡"}) deneyebilirsiniz.',
+        timestamp: DateTime.now(),
+      );
+    }
+
+    // 2. Direct Zero-Setup Free Cloud AI (Pollinations / Llama fallback) - Only for users without API keys!
     final freeAiReply = await _callFreeCloudAi(text);
     if (freeAiReply != null && freeAiReply.isNotEmpty) {
       return AiMessageModel(
@@ -733,39 +823,6 @@ class AiAssistantService {
     );
   }
 
-  /// Builds multi-turn conversation messages for free cloud AI (Pollinations / Llama)
-  static List<Map<String, String>> _buildFreeAiMessages(String currentPrompt) {
-    final msgs = <Map<String, String>>[];
-    final nameHint = (_userName != null && _userName!.isNotEmpty)
-        ? ' Konuştuğun kullanıcının adı: $_userName. Ona ismiyle hitap et.'
-        : '';
-
-    msgs.add({
-      'role': 'system',
-      'content': 'Sen Talknex Asistan adında Türkçe konuşan, düşünerek cevap veren, zeki, faydalı ve samimi bir kişisel yapay zeka asistanısın.$nameHint '
-          'Soruları akıcı, mantıklı, samimi ve yardımcı olacak şekilde yanıtla. Gerektiğinde Markdown biçimlendirmesi (kalın, madde işaretleri) kullan.',
-    });
-
-    // Recent conversation history (last 6 messages)
-    final history = _messages.length > 6 ? _messages.sublist(_messages.length - 6) : _messages;
-    for (final m in history) {
-      if (m.text.trim().isEmpty) continue;
-      if (m.actionType == 'welcome' || m.actionType == 'reminder_created' || m.actionType == 'weather') continue;
-      final role = m.sender == 'ai' ? 'assistant' : 'user';
-      msgs.add({
-        'role': role,
-        'content': m.text.trim(),
-      });
-    }
-
-    // Add current user prompt
-    msgs.add({
-      'role': 'user',
-      'content': currentPrompt.trim(),
-    });
-
-    return msgs;
-  }
 
   /// Zero-setup free cloud AI: Fast direct GET requests with model fallback
   static Future<String?> _callFreeCloudAi(String userPrompt) async {
@@ -838,37 +895,45 @@ class AiAssistantService {
   static List<Map<String, dynamic>> _buildGeminiContents(String currentPrompt) {
     final contents = <Map<String, dynamic>>[];
 
-    // Extract recent messages (up to 8)
-    final history = _messages.length > 8 ? _messages.sublist(_messages.length - 8) : _messages;
+    // Extract past non-action messages
+    final past = _messages.where((m) =>
+      m.actionType != 'welcome' &&
+      m.actionType != 'reminder_created' &&
+      m.actionType != 'weather' &&
+      m.text.trim().isNotEmpty
+    ).toList();
+
+    // If the last message in past is the current prompt, remove it so it's appended fresh
+    if (past.isNotEmpty && past.last.sender == 'user' && past.last.text.trim() == currentPrompt.trim()) {
+      past.removeLast();
+    }
+
+    final recent = past.length > 8 ? past.sublist(past.length - 8) : past;
 
     String? lastRole;
-    for (final msg in history) {
-      if (msg.actionType == 'welcome') continue;
+    for (final msg in recent) {
       final role = msg.sender == 'ai' ? 'model' : 'user';
-
-      // Ensure no consecutive same roles
       if (role == lastRole) continue;
-      if (msg.text.trim().isEmpty) continue;
 
       contents.add({
         'role': role,
-        'parts': [{'text': msg.text.trim()}]
+        'parts': [{'text': msg.text.trim()}],
       });
       lastRole = role;
     }
 
-    // If the last added message was a user message, remove it so currentPrompt takes over
-    if (lastRole == 'user' && contents.isNotEmpty) {
+    // If the last role was already user, remove it so currentPrompt takes over
+    if (contents.isNotEmpty && lastRole == 'user') {
       contents.removeLast();
     }
 
-    // Add current user prompt
+    // Append current user prompt
     contents.add({
       'role': 'user',
-      'parts': [{'text': currentPrompt.trim()}]
+      'parts': [{'text': currentPrompt.trim()}],
     });
 
-    // Gemini requires the first message to be from 'user'
+    // Gemini strictly requires the first message to be from 'user'
     while (contents.isNotEmpty && contents.first['role'] != 'user') {
       contents.removeAt(0);
     }
@@ -891,6 +956,15 @@ class AiAssistantService {
       'gemini-1.5-pro-latest'
     ];
     final models = candidateModels.toSet().toList();
+    final contents = _buildGeminiContents(userPrompt);
+
+    final nameHint = (_userName != null && _userName!.isNotEmpty)
+        ? ' Konuştuğun kullanıcının adı: $_userName. Ona ismiyle hitap et.'
+        : '';
+    final systemPrompt = 'Sen "Talknex Asistan" adında, kullanıcının kişisel yapay zeka asistanısın.$nameHint '
+        'Akıllıca, düşünerek, samimi ve son derece yardımsever bir şekilde Türkçe konuşursun. '
+        'Kullanıcının her türlü sorusuna (günlük hayat, yemek tarifleri, tavsiye, genel kültür, teknoloji, bilim vb.) '
+        'özenle, derinlemesine ve özgün yanıtlar ver. Yanıtlarında Markdown biçimlendirmesini (kalın yazılar, emojiler, liste işaretleri) şık bir şekilde kullan.';
 
     for (final model in models) {
       try {
@@ -898,22 +972,11 @@ class AiAssistantService {
           'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey',
         );
 
-        final contents = _buildGeminiContents(userPrompt);
-
-        final nameHint = (_userName != null && _userName!.isNotEmpty)
-            ? ' Konuştuğun kullanıcının adı: $_userName. Ona ismiyle hitap et.'
-            : '';
-
         final requestBody = {
           'contents': contents,
           'systemInstruction': {
             'parts': [
-              {
-                'text': 'Sen "Talknex Asistan" adında, kullanıcının kişisel yapay zeka asistanısın.$nameHint '
-                    'Akıllıca, düşünerek, samimi ve son derece yardımsever bir şekilde Türkçe konuşursun. '
-                    'Kullanıcının her türlü sorusuna (günlük hayat, fikir danışma, tavsiye, genel kültür, teknoloji, bilim vb.) '
-                    'özenle, derinlemesine ve özgün yanıtlar ver. Yanıtlarında Markdown biçimlendirmesini (kalın yazılar, emojiler, liste işaretleri) şık bir şekilde kullan.'
-              }
+              {'text': systemPrompt}
             ]
           },
           'generationConfig': {
@@ -922,11 +985,35 @@ class AiAssistantService {
           }
         };
 
-        final response = await http.post(
+        var response = await http.post(
           url,
-          headers: {'Content-Type': 'application/json'},
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+          },
           body: jsonEncode(requestBody),
-        ).timeout(const Duration(seconds: 18));
+        ).timeout(const Duration(seconds: 22));
+
+        // Fallback for older models (like gemini-pro) that reject systemInstruction
+        if (response.statusCode == 400 && response.body.contains('systemInstruction')) {
+          final simplifiedBody = {
+            'contents': contents,
+            'generationConfig': {
+              'temperature': 0.7,
+              'maxOutputTokens': 1500,
+            }
+          };
+          response = await http.post(
+            url,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+              'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+            },
+            body: jsonEncode(simplifiedBody),
+          ).timeout(const Duration(seconds: 18));
+        }
 
         if (response.statusCode == 200) {
           final decoded = jsonDecode(utf8.decode(response.bodyBytes));
@@ -940,19 +1027,82 @@ class AiAssistantService {
                 final text = parts.map((p) => p['text']?.toString() ?? '').join();
                 if (text.trim().isNotEmpty) {
                   _workingGeminiModel = model;
+                  _lastAiError = null;
                   return text.trim();
                 }
               }
             }
           }
         } else {
+          try {
+            final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+            final msg = decoded['error']?['message']?.toString() ?? 'Hata kodu: ${response.statusCode}';
+            _lastAiError = 'Gemini ($model): $msg (HTTP ${response.statusCode})';
+          } catch (_) {
+            _lastAiError = 'Gemini ($model): HTTP ${response.statusCode}';
+          }
           debugPrint('[GEMINI] Model $model returned status ${response.statusCode}: ${response.body}');
         }
       } catch (e) {
+        _lastAiError = 'Gemini ($model) bağlantı hatası: $e';
         debugPrint('[GEMINI] Model $model error: $e');
       }
     }
     return null;
+  }
+
+  /// Builds strictly compliant multi-turn message history for Groq / OpenAI Chat API
+  static List<Map<String, String>> _buildGroqMessages(String currentPrompt) {
+    final msgs = <Map<String, String>>[];
+    final nameHint = (_userName != null && _userName!.isNotEmpty)
+        ? ' Konuştuğun kullanıcının adı: $_userName. Ona ismiyle hitap et.'
+        : '';
+
+    msgs.add({
+      'role': 'system',
+      'content': 'Sen "Talknex Asistan" adında, kullanıcının kişisel yapay zeka asistanısın.$nameHint '
+          'Akıllıca, düşünerek, samimi ve son derece yardımsever bir şekilde Türkçe konuşursun. '
+          'Kullanıcının her türlü sorusuna (günlük hayat, yemek tarifleri, tavsiye, genel kültür, teknoloji, bilim vb.) '
+          'özenle, derinlemesine ve özgün yanıtlar ver. Yanıtlarında Markdown biçimlendirmesini (kalın yazılar, emojiler, liste işaretleri) şık bir şekilde kullan.',
+    });
+
+    // Extract past non-action messages
+    final past = _messages.where((m) =>
+      m.actionType != 'welcome' &&
+      m.actionType != 'reminder_created' &&
+      m.actionType != 'weather' &&
+      m.text.trim().isNotEmpty
+    ).toList();
+
+    // If the last message in past is the current prompt, exclude it so we append it cleanly at the end
+    if (past.isNotEmpty && past.last.sender == 'user' && past.last.text.trim() == currentPrompt.trim()) {
+      past.removeLast();
+    }
+
+    final recent = past.length > 8 ? past.sublist(past.length - 8) : past;
+
+    String? lastRole = 'system';
+    for (final m in recent) {
+      final role = m.sender == 'ai' ? 'assistant' : 'user';
+      // Do not allow consecutive same roles
+      if (role == lastRole) continue;
+      // The first message after system must be user
+      if (lastRole == 'system' && role == 'assistant') continue;
+
+      msgs.add({
+        'role': role,
+        'content': m.text.trim(),
+      });
+      lastRole = role;
+    }
+
+    // Append current user prompt as final user turn
+    msgs.add({
+      'role': 'user',
+      'content': currentPrompt.trim(),
+    });
+
+    return msgs;
   }
 
   /// Calls Groq API (Llama 3.3 70B & Llama 3.1 8B on Groq LPU)
@@ -960,18 +1110,27 @@ class AiAssistantService {
     final apiKey = _groqApiKey?.trim();
     if (apiKey == null || apiKey.isEmpty) return null;
 
-    final models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+    final candidateModels = [
+      if (_workingGroqModel != null && _workingGroqModel!.isNotEmpty) _workingGroqModel!,
+      'llama-3.3-70b-versatile',
+      'llama-3.1-8b-instant',
+      'llama-3.2-3b-preview',
+      'llama-3.2-1b-preview',
+      'mixtral-8x7b-32768',
+    ];
+    final models = candidateModels.toSet().toList();
+    final messages = _buildGroqMessages(userPrompt);
 
     for (final model in models) {
       try {
         final url = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
-        final messages = _buildFreeAiMessages(userPrompt);
-
         final response = await http.post(
           url,
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $apiKey',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+            'Accept': 'application/json',
           },
           body: jsonEncode({
             'model': model,
@@ -979,7 +1138,7 @@ class AiAssistantService {
             'temperature': 0.7,
             'max_tokens': 1500,
           }),
-        ).timeout(const Duration(seconds: 15));
+        ).timeout(const Duration(seconds: 25));
 
         if (response.statusCode == 200) {
           final decoded = jsonDecode(utf8.decode(response.bodyBytes));
@@ -991,15 +1150,25 @@ class AiAssistantService {
               if (message != null && message['content'] != null) {
                 final text = message['content'].toString().trim();
                 if (text.isNotEmpty) {
+                  _workingGroqModel = model;
+                  _lastAiError = null;
                   return text;
                 }
               }
             }
           }
         } else {
+          try {
+            final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+            final msg = decoded['error']?['message']?.toString() ?? 'Hata kodu: ${response.statusCode}';
+            _lastAiError = 'Groq ($model): $msg (HTTP ${response.statusCode})';
+          } catch (_) {
+            _lastAiError = 'Groq ($model): HTTP ${response.statusCode}';
+          }
           debugPrint('[GROQ] Model $model returned status ${response.statusCode}: ${response.body}');
         }
       } catch (e) {
+        _lastAiError = 'Groq ($model) bağlantı hatası: $e';
         debugPrint('[GROQ] Model $model error: $e');
       }
     }
