@@ -443,87 +443,66 @@ class AiAssistantService {
     return msgs;
   }
 
-  /// Zero-setup free cloud AI: Pollinations / Llama / Reasoning Models with multi-turn support
+  /// Zero-setup free cloud AI: Fast direct GET requests with model fallback
   static Future<String?> _callFreeCloudAi(String userPrompt) async {
     try {
       final seed = Random().nextInt(999999);
-      final messages = _buildFreeAiMessages(userPrompt);
+      // Clean and sanitize prompt for URL path usage
+      final cleanText = userPrompt.replaceAll(RegExp(r'\s+'), ' ').trim();
+      final truncated = cleanText.length > 220 ? cleanText.substring(0, 220) : cleanText;
+      final promptWithContext = (_userName != null && _userName!.isNotEmpty)
+          ? 'Ben $_userName. $truncated'
+          : truncated;
+      final encoded = Uri.encodeComponent(promptWithContext);
 
-      // 1. Try POST to Pollinations with reasoning model (openai-fast / gpt-oss)
-      try {
-        final url = Uri.parse('https://text.pollinations.ai/');
-        final res = await http.post(
-          url,
-          headers: {
-            'Content-Type': 'application/json; charset=UTF-8',
-            'User-Agent': 'Talknex-Android/1.0',
-          },
-          body: jsonEncode({
-            'messages': messages,
-            'model': 'openai-fast',
-            'seed': seed,
-          }),
-        ).timeout(const Duration(seconds: 14));
-
-        if (res.statusCode == 200) {
-          final body = utf8.decode(res.bodyBytes).trim();
-          if (body.isNotEmpty && !body.contains('Free limit reached') && !body.contains('Payment Required') && !body.contains('"error":')) {
-            return body;
-          }
-        }
-      } catch (e) {
-        debugPrint('[FREE AI] POST openai-fast error: $e');
-      }
-
-      // 2. Try POST with default model & random seed
-      try {
-        final url = Uri.parse('https://text.pollinations.ai/');
-        final res = await http.post(
-          url,
-          headers: {
-            'Content-Type': 'application/json; charset=UTF-8',
-            'User-Agent': 'Talknex-Android/1.0',
-          },
-          body: jsonEncode({
-            'messages': messages,
-            'seed': seed,
-          }),
-        ).timeout(const Duration(seconds: 14));
-
-        if (res.statusCode == 200) {
-          final body = utf8.decode(res.bodyBytes).trim();
-          if (body.isNotEmpty && !body.contains('Free limit reached') && !body.contains('Payment Required') && !body.contains('"error":')) {
-            return body;
-          }
-        }
-      } catch (e) {
-        debugPrint('[FREE AI] POST default error: $e');
-      }
-
-      // 3. Fallback to GET endpoint
-      final systemPrompt = 'Sen Talknex Asistan adında Türkçe konuşan, düşünerek ve zekice yanıtlar veren bir yapay zekasın.';
-      final getEndpoints = [
-        'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?system=${Uri.encodeComponent(systemPrompt)}&seed=$seed',
-        'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?seed=$seed',
-      ];
-
-      for (final ep in getEndpoints) {
+      final models = ['openai', 'openai-fast'];
+      for (final m in models) {
         try {
-          final uri = Uri.parse(ep);
+          final uri = Uri.parse('https://text.pollinations.ai/$encoded?model=$m&seed=$seed');
           final res = await http.get(
             uri,
-            headers: {'User-Agent': 'Talknex-Android/1.0'},
-          ).timeout(const Duration(seconds: 10));
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36',
+              'Accept': 'text/plain, text/html, */*',
+            },
+          ).timeout(const Duration(seconds: 7));
 
           if (res.statusCode == 200) {
             final body = utf8.decode(res.bodyBytes).trim();
-            if (body.isNotEmpty && !body.contains('Free limit reached') && !body.contains('Payment Required')) {
+            if (body.isNotEmpty &&
+                !body.contains('Free limit reached') &&
+                !body.contains('Payment Required') &&
+                !body.contains('"error":') &&
+                !body.startsWith('<!DOCTYPE')) {
               return body;
             }
           }
         } catch (e) {
-          debugPrint('[FREE AI] GET error: $e');
+          debugPrint('[FREE AI] GET $m error: $e');
         }
+      }
+
+      // Fast fallback to bare endpoint without model query
+      try {
+        final uri = Uri.parse('https://text.pollinations.ai/$encoded?seed=$seed');
+        final res = await http.get(
+          uri,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36',
+          },
+        ).timeout(const Duration(seconds: 5));
+
+        if (res.statusCode == 200) {
+          final body = utf8.decode(res.bodyBytes).trim();
+          if (body.isNotEmpty &&
+              !body.contains('Free limit reached') &&
+              !body.contains('Payment Required') &&
+              !body.startsWith('<!DOCTYPE')) {
+            return body;
+          }
+        }
+      } catch (e) {
+        debugPrint('[FREE AI] GET bare endpoint error: $e');
       }
     } catch (e) {
       debugPrint('[FREE AI] Main Exception: $e');
@@ -1421,7 +1400,88 @@ class AiAssistantService {
       return 'Rica ederim$name! Her zaman senin için buradayım. Konuşmak istediğin başka bir konu olursa sormaktan çekinme! 😊🌟';
     }
 
-    // 11. Math calculation
+    // 11. Food Decisions & Meal Suggestions
+    if (lower.contains('et') && lower.contains('tavuk') &&
+        (lower.contains('mi') || lower.contains('mı') || lower.contains('arada') || lower.contains('fikir') || lower.contains('yemek') || lower.contains('hangisi'))) {
+      return 'Et mi tavuk mu ikilemi tam bir klasik! İşte karar vermeni kolaylaştıracak rehberim 🍽️:\n\n'
+          '🍗 **Tavuk Seçeneği (Hafif ve Rahat):**\n'
+          '• Sindirimi çok daha kolaydır, akşam saatlerinde mideyi hiç yormaz.\n'
+          '• Izgara tavuk göğsü, fırında sebzeli tavuk veya pratik bir tavuk sote harika ve lezzetli bir seçenektir.\n\n'
+          '🥩 **Et Seçeneği (Doyurucu ve Zengin):**\n'
+          '• Demir, B12 ve protein deposudur; enerjini anında yükseltir ve uzun süre tok tutar.\n'
+          '• Güzel bir anne köftesi, leziz bir et sote veya ızgara et günün yorgunluğunu alır!\n\n'
+          '💡 **Tavsiyem:** Eğer hafif ve dinlendirici bir akşam geçirmek istiyorsan **tavuğu**, daha doyurucu ve enerjik bir öğün arıyorsan **eti** tercih et! Yanına da bol yeşillikli bir salata harika gider. Afiyet olsun$name! 😊';
+    }
+
+    if (lower.contains('ne yesem') || lower.contains('yemek öner') || lower.contains('yemek ne yap') || lower.contains('akşam yemeği') || lower.contains('aksam yemegi')) {
+      return 'Günün menüsü için sana birkaç harika alternatif sunayım 🍲:\n\n'
+          '1. 🥗 **Hafif & Pratik:** Fırında sebzeli tavuk veya ton balıklı mısırlı taze bir Akdeniz salatası.\n'
+          '2. 🥘 **Geleneksel & Doyurucu:** Yanında tereyağlı pirinç pilavı ile nefis bir kuru fasulye veya anne köftesi.\n'
+          '3. 🍝 **Hızlı & Lezzetli:** Kremalı mantarlı makarna veya fırında kaşarlı sebzeli güveç.\n\n'
+          'Hangi mutfak tarzı canını çektiriyor$name?';
+    }
+
+    if (lower.contains('tatlı') || lower.contains('tatli')) {
+      return 'Tatlı krizine en güzel çözümler 🍰:\n\n'
+          '• **Hafif:** Sütlaç, magnolia veya muzlu chia puding.\n'
+          '• **Klasik:** Sıcak bir sufle veya fıstıklı baklava.\n'
+          '• **Sağlıklı:** Yoğurt üzerine bal, ceviz ve taze meyve dilimleri! 🍓';
+    }
+
+    // 12. Dilemmas & Decision Making (X mi Y mi)
+    final choiceRegex = RegExp(r'([a-zA-ZçğıöşüÇĞİÖŞÜ0-9]+)\s+(?:mi|mı|mu|mü)\s+([a-zA-ZçğıöşüÇĞİÖŞÜ0-9]+)');
+    final choiceMatch = choiceRegex.firstMatch(lower);
+    if (choiceMatch != null &&
+        (lower.contains('arada kaldım') || lower.contains('kararsızım') || lower.contains('hangisi') || lower.contains('fikir ver') || lower.contains('sence'))) {
+      final opt1 = choiceMatch.group(1) ?? 'İlk seçenek';
+      final opt2 = choiceMatch.group(2) ?? 'İkinci seçenek';
+      return '**$opt1** ile **$opt2** arasında kaldıysan karar vermene yardımcı olayım 🤔:\n\n'
+          '• **$opt1:** Eğer önceliğin pratiklik, konfor ve hızlı sonuç ise bu seçenek öne çıkıyor.\n'
+          '• **$opt2:** Eğer yenilik arıyorsan, uzun vadeli keyif veya farklı bir deneyim istiyorsan bu harika bir tercih!\n\n'
+          '💡 İç sesini dinle: İlk aklına gelen hangisi olduysa genelde doğru karardır! Hangisine daha yakınsın$name? ✨';
+    }
+
+    if (lower.contains('arada kaldım') || lower.contains('kararsızım') || lower.contains('fikir ver') || lower.contains('tavsiye ver')) {
+      return 'Kararsız kaldığın konularda sana objektif bir bakış açısı sunmaktan mutluluk duyarım$name! 🎯\n\n'
+          'Seçeneklerini veya aklındaki durumu biraz anlatır mısın? Artıları ve eksileri birlikte değerlendirip en iyi kararı verelim! 💡';
+    }
+
+    // 13. Entertainment & Free Time (Boredom, Movies, Books)
+    if (lower.contains('sıkıldım') || lower.contains('sikildim') || lower.contains('ne yapabilirim') || lower.contains('yapacak bir şey')) {
+      return 'Can sıkıntısını anında dağıtacak 4 harika fikir 🚀:\n\n'
+          '1. 🎧 **Yeni Bir Podcast ya da Müzik Keşfet:** İlgi duyduğun bir konuda (bilim, tarih, gizem) 20 dakikalık bir bölüm dinle.\n'
+          '2. 🚶 **Kısa Bir Yürüyüş:** Sadece 15 dakikalık bir açık hava yürüyüşü zihnini tamamen yeniler.\n'
+          '3. 🎬 **Sürükleyici Bir Dizi/Film:** Aklında bir tür varsa söyle, hemen nokta atışı bir öneri yapayım!\n'
+          '4. 📖 **Birkaç Sayfa Kitap Oku:** Telefonu bir kenara bırakıp sayfaların arasında kaybolmak her zaman iyi gelir.\n\n'
+          'Hangisi kulağa daha cazip geliyor$name?';
+    }
+
+    if (lower.contains('film öner') || lower.contains('film tavsiye') || lower.contains('ne izlesem')) {
+      return 'İşte her zevke uygun, mutlaka izlenmesi gereken başyapıtlar 🍿:\n\n'
+          '• 🌌 **Bilim Kurgu & Akıl Oyunları:** *Interstellar* veya *Inception*\n'
+          '• 🕵️ **Gerilim & Gizem:** *Zodiac* veya *Knives Out*\n'
+          '• 🎭 **İlham Verici & Dram:** *The Pursuit of Happyness* veya *Whiplash*\n'
+          '• 😂 **Neşeli & Keyifli:** *The Grand Budapest Hotel*\n\n'
+          'Hangi türe daha yakınsın? Daha spesifik bir öneri de verebilirim!';
+    }
+
+    if (lower.contains('kitap öner') || lower.contains('kitap tavsiye')) {
+      return 'Zihnini besleyecek harika kitap önerileri 📚:\n\n'
+          '• 🧠 **Kişisel Gelişim & Alışkanlıklar:** *Atomik Alışkanlıklar* - James Clear\n'
+          '• 🌍 **Felsefi & Psikolojik Roman:** *Simyacı* - Paulo Coelho veya *İnsanın Anlam Arayışı* - Viktor Frankl\n'
+          '• 🚀 **Distopya & Gelecek:** *1984* - George Orwell veya *Cesur Yeni Dünya* - Aldous Huxley';
+    }
+
+    // 14. Health & Lifestyle
+    if (lower.contains('su iç') || lower.contains('sağlık') || lower.contains('kilo') || lower.contains('diyet') || lower.contains('spor')) {
+      return 'Sağlıklı bir yaşam için küçük ama etkili altın kurallar 💧🏃:\n\n'
+          '• **Su Tüketimi:** Günde en az 2-2.5 litre su içmeyi ihmal etme. Yanında bir su bardağı bulundur!\n'
+          '• **Hareket:** Masa başında uzun süre oturuyorsan her saat başı 2 dakika esneme hareketi yap.\n'
+          '• **Dengeli Beslenme:** Paketli gıdalardan uzak durup taze sebze, meyve ve sağlıklı yağlara öncelik ver.\n'
+          '• **Uyku:** Her gece 7-8 saat kaliteli uyku, gün içindeki odaklanmanı ve enerjini ikiye katlar! 🌙';
+    }
+
+    // 15. Math calculation
     final mathRegex = RegExp(r'(\d+)\s*([\+\-\*\/xX])\s*(\d+)');
     final mathMatch = mathRegex.firstMatch(lower);
     if (mathMatch != null) {
@@ -1437,7 +1497,7 @@ class AiAssistantService {
       return 'Hesaplama sonucu: **$resStr** 🔢';
     }
 
-    // Default intelligent companion reply
-    return 'Bunu anladım$name! Seninle sohbet etmekten mutluluk duyuyorum. Aklına gelen herhangi bir şeyi sorabilir veya konuşmaya devam edebilirsin! 🤖✨';
+    // Default intelligent companion reply (contextual & conversational)
+    return 'Harika bir soru$name! Bu konuda sana en iyi ve en doğru fikri verebilmem için biraz daha detay paylaşır mısın? Örneğin seçeneklerin neler ya da kafandaki plan tam olarak nedir? Birlikte çözelim! 💡✨';
   }
 }

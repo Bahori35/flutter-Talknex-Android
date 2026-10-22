@@ -218,8 +218,9 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                           ),
                           const SizedBox(height: 6),
                           const Text(
-                            'Kişisel Google Gemini API anahtarınızı kullanmak isterseniz ekleyebilirsiniz. Zorunlu değildir; anahtar girmeseniz de yukarıdaki ücretsiz bulut yapay zeka kesintisiz çalışır.',
-                            style: TextStyle(color: Colors.white54, fontSize: 11.5, height: 1.35),
+                            'Kişisel Google Gemini API anahtarınızı kullanmak isterseniz ekleyebilirsiniz. Zorunlu değildir; anahtar girmeseniz de yukarıdaki ücretsiz bulut yapay zeka kesintisiz çalışır.\n\n'
+                            '💡 İpucu: Google AI Studio\'dan (aistudio.google.com/apikey) tamamen ÜCRETSİZ kişisel anahtar alıp bağlayabilirsiniz.',
+                            style: TextStyle(color: Colors.white70, fontSize: 11.5, height: 1.35),
                           ),
                           const SizedBox(height: 10),
                           TextField(
