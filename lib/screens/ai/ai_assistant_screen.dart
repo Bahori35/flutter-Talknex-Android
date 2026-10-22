@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../constants/app_colors.dart';
 import '../../models/ai_message_model.dart';
 import '../../models/ai_reminder_model.dart';
@@ -80,6 +82,265 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         _scrollToBottom();
       }
     }
+  }
+
+  void _showAiSettingsDialog() {
+    final textController = TextEditingController(text: AiAssistantService.geminiApiKey ?? '');
+    bool isObscured = true;
+    bool isTesting = false;
+    String? statusMessage;
+    bool isSuccess = false;
+
+    showDialog(
+      context: context,
+      builder: (dlgCtx) {
+        return StatefulBuilder(
+          builder: (context, setDlgState) {
+            final hasKey = AiAssistantService.hasGeminiApiKey;
+
+            return AlertDialog(
+              backgroundColor: AppColors.surface,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF8A2387), Color(0xFFE94057), Color(0xFFF27121)],
+                      ),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.auto_awesome, color: Colors.white, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Gemini Yapay Zeka',
+                      style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Status Badge
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: hasKey ? AppColors.onlineGreen.withAlpha(30) : Colors.orangeAccent.withAlpha(30),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: hasKey ? AppColors.onlineGreen.withAlpha(120) : Colors.orangeAccent.withAlpha(120),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            hasKey ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+                            color: hasKey ? AppColors.onlineGreen : Colors.orangeAccent,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            hasKey ? 'Gemini 1.5 Flash Aktif' : 'Hazır Cevap Modu (Çevrimdışı)',
+                            style: TextStyle(
+                              color: hasKey ? AppColors.onlineGreen : Colors.orangeAccent,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Google Gemini ile asistanınız kalıp cevaplar yerine tıpkı bir insan gibi düşünerek, sohbet geçmişinizi hatırlayarak derinlemesine yanıtlar üretir.',
+                      style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Link to get free key
+                    InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () async {
+                        final uri = Uri.parse('https://aistudio.google.com/app/apikey');
+                        try {
+                          await launchUrl(uri, mode: LaunchMode.externalApplication);
+                        } catch (_) {}
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.blueAccent.withAlpha(25),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.blueAccent.withAlpha(80)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.open_in_new_rounded, color: Colors.blueAccent, size: 18),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Ücretsiz Gemini API Anahtarı Al (Google AI Studio)',
+                                style: TextStyle(color: Colors.blueAccent, fontSize: 12.5, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      '• Kredi kartı gerekmez, Google hesabınızla anında ücretsiz oluşturabilirsiniz.',
+                      style: TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                    const SizedBox(height: 14),
+
+                    const Text(
+                      'API Anahtarınız:',
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: textController,
+                      obscureText: isObscured,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: 'AIzaSy...',
+                        hintStyle: const TextStyle(color: Colors.white30, fontSize: 13),
+                        filled: true,
+                        fillColor: AppColors.chatBackground,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide.none,
+                        ),
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                isObscured ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                                color: Colors.white60,
+                                size: 18,
+                              ),
+                              onPressed: () => setDlgState(() => isObscured = !isObscured),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.paste_rounded, color: AppColors.accent, size: 18),
+                              tooltip: 'Yapıştır',
+                              onPressed: () async {
+                                final data = await Clipboard.getData('text/plain');
+                                if (data?.text != null) {
+                                  textController.text = data!.text!.trim();
+                                  setDlgState(() {});
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    if (statusMessage != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        statusMessage!,
+                        style: TextStyle(
+                          color: isSuccess ? AppColors.onlineGreen : AppColors.callRed,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              actions: [
+                if (hasKey)
+                  TextButton(
+                    onPressed: isTesting
+                        ? null
+                        : () async {
+                            await AiAssistantService.setGeminiApiKey(null);
+                            textController.clear();
+                            setDlgState(() {
+                              statusMessage = 'Anahtar kaldırıldı. Varsayılan moda dönüldü.';
+                              isSuccess = false;
+                            });
+                            setState(() {});
+                          },
+                    child: const Text('Kaldır', style: TextStyle(color: AppColors.callRed, fontSize: 13)),
+                  ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dlgCtx),
+                  child: const Text('Kapat', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accent,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: isTesting
+                      ? null
+                      : () async {
+                          final keyToSave = textController.text.trim();
+                          if (keyToSave.isEmpty) {
+                            setDlgState(() {
+                              statusMessage = 'Lütfen bir API anahtarı girin.';
+                              isSuccess = false;
+                            });
+                            return;
+                          }
+
+                          setDlgState(() {
+                            isTesting = true;
+                            statusMessage = 'Bağlantı test ediliyor... ⏳';
+                          });
+
+                          final ok = await AiAssistantService.testGeminiApiKey(keyToSave);
+
+                          if (ok) {
+                            await AiAssistantService.setGeminiApiKey(keyToSave);
+                            setDlgState(() {
+                              isTesting = false;
+                              isSuccess = true;
+                              statusMessage = '✅ Başarılı! Gemini 1.5 Flash aktif.';
+                            });
+                            setState(() {});
+                            Future.delayed(const Duration(milliseconds: 1200), () {
+                              if (dlgCtx.mounted) Navigator.pop(dlgCtx);
+                            });
+                          } else {
+                            setDlgState(() {
+                              isTesting = false;
+                              isSuccess = false;
+                              statusMessage = '❌ Anahtar doğrulanamadı. Lütfen kontrol edin.';
+                            });
+                          }
+                        },
+                  child: isTesting
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Text('Test Et & Kaydet', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _showRemindersSheet() {
@@ -290,19 +551,29 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                       color: Colors.white,
                     ),
                   ),
-                  Row(
-                    children: [
-                      Icon(Icons.circle, color: AppColors.onlineGreen, size: 8),
-                      SizedBox(width: 4),
-                      Text(
-                        'Kişisel Yapay Zeka Asistanınız',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: AppColors.accent,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
+                  ValueListenableBuilder<int>(
+                    valueListenable: AiAssistantService.notifier,
+                    builder: (context, _, __) {
+                      final hasGemini = AiAssistantService.hasGeminiApiKey;
+                      return Row(
+                        children: [
+                          Icon(
+                            Icons.circle,
+                            color: hasGemini ? AppColors.onlineGreen : AppColors.accent,
+                            size: 8,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            hasGemini ? 'Gemini 1.5 Flash Aktif ✨' : 'Kişisel Yapay Zeka Asistanınız',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: hasGemini ? AppColors.onlineGreen : AppColors.accent,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ],
               ),
@@ -353,9 +624,25 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                 AiAssistantService.clearHistory();
               } else if (val == 'reminders') {
                 _showRemindersSheet();
+              } else if (val == 'settings') {
+                _showAiSettingsDialog();
               }
             },
             itemBuilder: (ctx) => [
+              PopupMenuItem(
+                value: 'settings',
+                child: Row(
+                  children: [
+                    Icon(
+                      AiAssistantService.hasGeminiApiKey ? Icons.auto_awesome : Icons.psychology_rounded,
+                      color: AiAssistantService.hasGeminiApiKey ? AppColors.onlineGreen : AppColors.accent,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    const Text('Yapay Zeka Ayarları (Gemini)', style: TextStyle(color: Colors.white, fontSize: 14)),
+                  ],
+                ),
+              ),
               const PopupMenuItem(
                 value: 'reminders',
                 child: Row(

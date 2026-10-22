@@ -22,6 +22,50 @@ class AiAssistantService {
   static bool _isInitialized = false;
   static const String _prefKeyMessages = 'talknex_ai_chat_messages_v2';
   static const String _prefKeyReminders = 'talknex_ai_reminders_v2';
+  static const String _prefKeyGeminiKey = 'talknex_gemini_api_key_v1';
+
+  static String? _geminiApiKey;
+  static String? get geminiApiKey => _geminiApiKey;
+  static bool get hasGeminiApiKey => _geminiApiKey != null && _geminiApiKey!.trim().isNotEmpty;
+
+  static Future<void> setGeminiApiKey(String? key) async {
+    final cleanKey = key?.trim();
+    final prefs = await SharedPreferences.getInstance();
+    if (cleanKey == null || cleanKey.isEmpty) {
+      _geminiApiKey = null;
+      await prefs.remove(_prefKeyGeminiKey);
+    } else {
+      _geminiApiKey = cleanKey;
+      await prefs.setString(_prefKeyGeminiKey, cleanKey);
+    }
+    notifier.value++;
+  }
+
+  static Future<bool> testGeminiApiKey(String apiKey) async {
+    try {
+      final cleanKey = apiKey.trim();
+      final url = Uri.parse(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$cleanKey',
+      );
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'contents': [
+            {
+              'role': 'user',
+              'parts': [{'text': 'Ping'}]
+            }
+          ],
+          'generationConfig': {'maxOutputTokens': 10}
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
 
   static List<AiMessageModel> get messages => List.unmodifiable(_messages);
   static List<AiReminderModel> get reminders => List.unmodifiable(_reminders);
@@ -43,6 +87,9 @@ class AiAssistantService {
         await NotificationService().init();
       } catch (_) {}
       final prefs = await SharedPreferences.getInstance();
+
+      // Load Gemini API Key
+      _geminiApiKey = prefs.getString(_prefKeyGeminiKey);
 
       // Load Reminders
       final remindersRaw = prefs.getString(_prefKeyReminders);
@@ -295,7 +342,20 @@ class AiAssistantService {
       }
     }
 
-    // E. Conversational Engine (Small Talk & Knowledge Base)
+    // E. Generative AI Engine (Google Gemini Thinking Engine)
+    if (hasGeminiApiKey) {
+      final geminiReply = await _callGeminiApi(text);
+      if (geminiReply != null && geminiReply.isNotEmpty) {
+        return AiMessageModel(
+          id: const Uuid().v4(),
+          sender: 'ai',
+          text: geminiReply,
+          timestamp: DateTime.now(),
+        );
+      }
+    }
+
+    // F. Fallback Conversational Engine (Small Talk & Knowledge Base)
     final reply = _generateConversationalResponse(text);
     return AiMessageModel(
       id: const Uuid().v4(),
@@ -303,6 +363,113 @@ class AiAssistantService {
       text: reply,
       timestamp: DateTime.now(),
     );
+  }
+
+  /// Builds compliant multi-turn message history for Gemini API
+  static List<Map<String, dynamic>> _buildGeminiContents(String currentPrompt) {
+    final contents = <Map<String, dynamic>>[];
+
+    // Extract recent messages (up to 8)
+    final history = _messages.length > 8 ? _messages.sublist(_messages.length - 8) : _messages;
+
+    String? lastRole;
+    for (final msg in history) {
+      if (msg.actionType == 'welcome') continue;
+      final role = msg.sender == 'ai' ? 'model' : 'user';
+
+      // Ensure no consecutive same roles
+      if (role == lastRole) continue;
+      if (msg.text.trim().isEmpty) continue;
+
+      contents.add({
+        'role': role,
+        'parts': [{'text': msg.text.trim()}]
+      });
+      lastRole = role;
+    }
+
+    // If the last added message was a user message, remove it so currentPrompt takes over
+    if (lastRole == 'user' && contents.isNotEmpty) {
+      contents.removeLast();
+    }
+
+    // Add current user prompt
+    contents.add({
+      'role': 'user',
+      'parts': [{'text': currentPrompt.trim()}]
+    });
+
+    // Gemini requires the first message to be from 'user'
+    while (contents.isNotEmpty && contents.first['role'] != 'user') {
+      contents.removeAt(0);
+    }
+
+    return contents;
+  }
+
+  /// Calls Google Gemini API with fallback across flash and pro models
+  static Future<String?> _callGeminiApi(String userPrompt) async {
+    final apiKey = _geminiApiKey?.trim();
+    if (apiKey == null || apiKey.isEmpty) return null;
+
+    final models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+
+    for (final model in models) {
+      try {
+        final url = Uri.parse(
+          'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey',
+        );
+
+        final contents = _buildGeminiContents(userPrompt);
+
+        final requestBody = {
+          'contents': contents,
+          'systemInstruction': {
+            'parts': [
+              {
+                'text': 'Sen "Talknex Asistan" adında, kullanıcının kişisel yapay zeka asistanısın. '
+                    'Akıllıca, düşünerek, samimi ve son derece yardımsever bir şekilde Türkçe konuşursun. '
+                    'Kullanıcının her türlü sorusuna (günlük hayat, fikir danışma, tavsiye, genel kültür, teknoloji, bilim vb.) '
+                    'özenle, derinlemesine ve özgün yanıtlar ver. Yanıtlarında Markdown biçimlendirmesini (kalın yazılar, emojiler, liste işaretleri) şık bir şekilde kullan.'
+              }
+            ]
+          },
+          'generationConfig': {
+            'temperature': 0.7,
+            'maxOutputTokens': 1500,
+          }
+        };
+
+        final response = await http.post(
+          url,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(requestBody),
+        ).timeout(const Duration(seconds: 18));
+
+        if (response.statusCode == 200) {
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+          if (decoded is Map && decoded.containsKey('candidates')) {
+            final candidates = decoded['candidates'] as List;
+            if (candidates.isNotEmpty) {
+              final first = candidates[0];
+              final content = first['content'];
+              if (content != null && content['parts'] is List) {
+                final parts = content['parts'] as List;
+                final text = parts.map((p) => p['text']?.toString() ?? '').join();
+                if (text.trim().isNotEmpty) {
+                  return text.trim();
+                }
+              }
+            }
+          }
+        } else {
+          debugPrint('[GEMINI] Model $model returned status ${response.statusCode}: ${response.body}');
+        }
+      } catch (e) {
+        debugPrint('[GEMINI] Model $model error: $e');
+      }
+    }
+    return null;
   }
 
   // --- Weather Intelligence Engine ---
