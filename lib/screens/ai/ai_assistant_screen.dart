@@ -138,103 +138,81 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Primary Active Model: Free Cloud AI
+                    // Main Gemini 1.5 Flash Section
                     Container(
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color: AppColors.onlineGreen.withAlpha(20),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: AppColors.onlineGreen.withAlpha(90)),
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            hasKey ? AppColors.onlineGreen.withAlpha(30) : AppColors.accent.withAlpha(25),
+                            AppColors.surface,
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: hasKey ? AppColors.onlineGreen.withAlpha(120) : AppColors.accent.withAlpha(120),
+                          width: 1.5,
+                        ),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(
                             children: [
-                              const Icon(Icons.check_circle_rounded, color: AppColors.onlineGreen, size: 18),
+                              Icon(
+                                hasKey ? Icons.check_circle_rounded : Icons.auto_awesome,
+                                color: hasKey ? AppColors.onlineGreen : AppColors.accent,
+                                size: 20,
+                              ),
                               const SizedBox(width: 8),
-                              const Expanded(
+                              Expanded(
                                 child: Text(
-                                  'Ücretsiz Bulut Yapay Zeka',
-                                  style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                                  hasKey ? 'Gemini 1.5 Flash (Aktif ✨)' : 'Gerçek Yapay Zekayı Bağla',
+                                  style: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.bold),
                                 ),
                               ),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                 decoration: BoxDecoration(
-                                  color: AppColors.onlineGreen.withAlpha(40),
+                                  color: (hasKey ? AppColors.onlineGreen : AppColors.accent).withAlpha(40),
                                   borderRadius: BorderRadius.circular(6),
                                 ),
-                                child: const Text(
-                                  'AKTİF ✨',
-                                  style: TextStyle(color: AppColors.onlineGreen, fontSize: 10, fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            '• Model: Pollinations (Reasoning LLM)\n'
-                            '• API Anahtarı: Gerekmez (Tamamen Ücretsiz)\n'
-                            '• Yetenek: Tıpkı Gemini / ChatGPT gibi düşünerek cevap verir, sohbet geçmişinizi hatırlar.',
-                            style: TextStyle(color: Colors.white70, fontSize: 12.5, height: 1.45),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Optional Custom Gemini API Key Section
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withAlpha(8),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.tune_rounded, color: Colors.white60, size: 16),
-                              const SizedBox(width: 6),
-                              const Expanded(
                                 child: Text(
-                                  'İsteğe Bağlı: Özel Gemini Anahtarı',
-                                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                                  hasKey ? 'BAĞLI 🚀' : 'ÖNERİLEN ⚡',
+                                  style: TextStyle(
+                                    color: hasKey ? AppColors.onlineGreen : AppColors.accent,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ),
-                              if (hasKey)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: Colors.blueAccent.withAlpha(40),
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: const Text('Bağlı', style: TextStyle(color: Colors.blueAccent, fontSize: 10)),
-                                ),
                             ],
-                          ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            'Kişisel Google Gemini API anahtarınızı kullanmak isterseniz ekleyebilirsiniz. Zorunlu değildir; anahtar girmeseniz de yukarıdaki ücretsiz bulut yapay zeka kesintisiz çalışır.\n\n'
-                            '💡 İpucu: Google AI Studio\'dan (aistudio.google.com/apikey) tamamen ÜCRETSİZ kişisel anahtar alıp bağlayabilirsiniz.',
-                            style: TextStyle(color: Colors.white70, fontSize: 11.5, height: 1.35),
                           ),
                           const SizedBox(height: 10),
+                          const Text(
+                            'Talknex Asistan\'ın düşünerek, akıllıca ve derinlemesine yanıt vermesi için Google Gemini 1.5 Flash modeli kullanılır.\n\n'
+                            '📌 Ücretsiz Anahtar Nasıl Alınır? (15 Saniye):\n'
+                            '1. Tarayıcınızda aistudio.google.com/apikey adresini açın.\n'
+                            '2. Google hesabınızla giriş yapıp "Create API key"e tıklayın.\n'
+                            '3. Oluşan anahtarı kopyalayıp aşağıdaki kutucuğa yapıştırın ve "Kaydet"e basın.\n\n'
+                            '💡 Tamamen ÜCRETSİZDİR, kredi kartı gerekmez!',
+                            style: TextStyle(color: Colors.white70, fontSize: 12, height: 1.45),
+                          ),
+                          const SizedBox(height: 12),
                           TextField(
                             controller: textController,
                             obscureText: isObscured,
                             style: const TextStyle(color: Colors.white, fontSize: 12.5),
                             decoration: InputDecoration(
-                              hintText: 'Opsiyonel Gemini Key (AIzaSy...)',
-                              hintStyle: const TextStyle(color: Colors.white30, fontSize: 12),
+                              hintText: 'AIzaSy... anahtarınızı buraya yapıştırın',
+                              hintStyle: const TextStyle(color: Colors.white30, fontSize: 11.5),
                               filled: true,
                               fillColor: AppColors.chatBackground,
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                               border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
+                                borderRadius: BorderRadius.circular(10),
                                 borderSide: BorderSide.none,
                               ),
                               suffixIcon: Row(
@@ -249,8 +227,8 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                     onPressed: () => setDlgState(() => isObscured = !isObscured),
                                   ),
                                   IconButton(
-                                    icon: const Icon(Icons.paste_rounded, color: AppColors.accent, size: 16),
-                                    tooltip: 'Yapıştır',
+                                    icon: const Icon(Icons.paste_rounded, color: AppColors.accent, size: 18),
+                                    tooltip: 'Panodan Yapıştır',
                                     onPressed: () async {
                                       final data = await Clipboard.getData('text/plain');
                                       if (data?.text != null) {
@@ -264,17 +242,24 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                             ),
                           ),
                           if (statusMessage != null) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              statusMessage!,
-                              style: TextStyle(
-                                color: isSuccess ? AppColors.onlineGreen : AppColors.callRed,
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w500,
+                            const SizedBox(height: 10),
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: (isSuccess ? AppColors.onlineGreen : AppColors.callRed).withAlpha(30),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                statusMessage!,
+                                style: TextStyle(
+                                  color: isSuccess ? AppColors.onlineGreen : AppColors.callRed,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                           ],
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 12),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.end,
                             children: [
@@ -286,7 +271,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                           await AiAssistantService.setGeminiApiKey(null);
                                           textController.clear();
                                           setDlgState(() {
-                                            statusMessage = 'Özel anahtar kaldırıldı. Ücretsiz bulut modu aktif.';
+                                            statusMessage = 'Anahtar kaldırıldı.';
                                             isSuccess = true;
                                           });
                                           setState(() {});
@@ -294,11 +279,22 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                   child: const Text('Anahtarı Kaldır', style: TextStyle(color: AppColors.callRed, fontSize: 12)),
                                 ),
                               const SizedBox(width: 8),
-                              ElevatedButton(
+                              ElevatedButton.icon(
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: AppColors.accent,
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
+                                icon: isTesting
+                                    ? const SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                      )
+                                    : const Icon(Icons.bolt_rounded, color: Colors.white, size: 18),
+                                label: Text(
+                                  isTesting ? 'Test Ediliyor...' : 'Test Et & Kaydet',
+                                  style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.bold),
                                 ),
                                 onPressed: isTesting
                                     ? null
@@ -306,7 +302,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                         final keyToSave = textController.text.trim();
                                         if (keyToSave.isEmpty) {
                                           setDlgState(() {
-                                            statusMessage = 'Lütfen bir anahtar girin veya boş bırakın.';
+                                            statusMessage = 'Lütfen bir anahtar girin veya panodan yapıştırın.';
                                             isSuccess = false;
                                           });
                                           return;
@@ -324,24 +320,20 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                           setDlgState(() {
                                             isTesting = false;
                                             isSuccess = true;
-                                            statusMessage = '✅ Gemini bağlandı ve öncelikli yapıldı.';
+                                            statusMessage = '✅ Gerçek Yapay Zeka (Gemini 1.5 Flash) Başarıyla Bağlandı! 🚀';
                                           });
                                           setState(() {});
+                                          Future.delayed(const Duration(milliseconds: 1400), () {
+                                            if (dlgCtx.mounted) Navigator.pop(dlgCtx);
+                                          });
                                         } else {
                                           setDlgState(() {
                                             isTesting = false;
                                             isSuccess = false;
-                                            statusMessage = '❌ Anahtar doğrulanamadı.';
+                                            statusMessage = '❌ Anahtar doğrulanamadı. Lütfen geçerli bir Gemini anahtarı girdiğinizden emin olun.';
                                           });
                                         }
                                       },
-                                child: isTesting
-                                    ? const SizedBox(
-                                        width: 14,
-                                        height: 14,
-                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                      )
-                                    : const Text('Kaydet', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
                               ),
                             ],
                           ),
@@ -573,29 +565,32 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                       color: Colors.white,
                     ),
                   ),
-                  ValueListenableBuilder<int>(
-                    valueListenable: AiAssistantService.notifier,
-                    builder: (context, _, __) {
-                      final hasGemini = AiAssistantService.hasGeminiApiKey;
-                      return Row(
-                        children: [
-                          const Icon(
-                            Icons.circle,
-                            color: AppColors.onlineGreen,
-                            size: 8,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            hasGemini ? 'Gemini 1.5 Flash Aktif ✨' : 'Bulut Yapay Zeka Aktif ✨',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: AppColors.onlineGreen,
-                              fontWeight: FontWeight.w600,
+                  GestureDetector(
+                    onTap: _showAiSettingsDialog,
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: AiAssistantService.notifier,
+                      builder: (context, _, __) {
+                        final hasGemini = AiAssistantService.hasGeminiApiKey;
+                        return Row(
+                          children: [
+                            Icon(
+                              Icons.circle,
+                              color: hasGemini ? AppColors.onlineGreen : AppColors.accent,
+                              size: 8,
                             ),
-                          ),
-                        ],
-                      );
-                    },
+                            const SizedBox(width: 4),
+                            Text(
+                              hasGemini ? 'Gemini 1.5 Flash Aktif ✨' : '⚡ Gerçek Yapay Zekayı Bağla',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: hasGemini ? AppColors.onlineGreen : AppColors.accent,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -603,6 +598,21 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
           ],
         ),
         actions: [
+          ValueListenableBuilder<int>(
+            valueListenable: AiAssistantService.notifier,
+            builder: (context, _, __) {
+              final hasGemini = AiAssistantService.hasGeminiApiKey;
+              return IconButton(
+                icon: Icon(
+                  hasGemini ? Icons.auto_awesome : Icons.key_rounded,
+                  color: hasGemini ? AppColors.onlineGreen : AppColors.accent,
+                  size: 20,
+                ),
+                tooltip: hasGemini ? 'Gemini 1.5 Flash Aktif' : 'Gerçek Yapay Zekayı (Gemini) Bağla',
+                onPressed: _showAiSettingsDialog,
+              );
+            },
+          ),
           ValueListenableBuilder<int>(
             valueListenable: AiAssistantService.notifier,
             builder: (context, _, __) {
