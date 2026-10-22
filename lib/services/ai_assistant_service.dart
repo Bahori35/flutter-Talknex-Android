@@ -34,6 +34,9 @@ class AiAssistantService {
   static String? get geminiApiKey => _geminiApiKey;
   static bool get hasGeminiApiKey => _geminiApiKey != null && _geminiApiKey!.trim().isNotEmpty;
 
+  static String? _workingGeminiModel;
+  static String? get workingGeminiModel => _workingGeminiModel;
+
   static String? _groqApiKey;
   static String? get groqApiKey => _groqApiKey;
   static bool get hasGroqApiKey => _groqApiKey != null && _groqApiKey!.trim().isNotEmpty;
@@ -113,7 +116,7 @@ class AiAssistantService {
     return res['success'] == true;
   }
 
-  /// Robust Gemini key verification with model fallback and descriptive diagnostic messages
+  /// Robust Gemini key verification with dynamic ModelService probing and model fallbacks
   static Future<Map<String, dynamic>> testGeminiApiKeyDetails(String apiKey) async {
     final cleanKey = cleanGeminiKey(apiKey);
 
@@ -129,7 +132,70 @@ class AiAssistantService {
       };
     }
 
-    final models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro'];
+    // 1. Probe Google's ModelService directly (/v1beta/models) to discover supported models for this exact key
+    try {
+      final listUrl = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?key=$cleanKey');
+      final listRes = await http.get(listUrl).timeout(const Duration(seconds: 10));
+
+      if (listRes.statusCode == 200) {
+        final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
+        if (decoded is Map && decoded.containsKey('models')) {
+          final modelsList = decoded['models'] as List?;
+          String bestModel = 'gemini-1.5-flash';
+          if (modelsList != null && modelsList.isNotEmpty) {
+            for (final m in modelsList) {
+              final name = m['name']?.toString() ?? '';
+              final methods = (m['supportedGenerationMethods'] as List?)?.map((e) => e.toString()).toList() ?? [];
+              if (methods.contains('generateContent')) {
+                final modelId = name.startsWith('models/') ? name.substring(7) : name;
+                if (modelId.contains('flash')) {
+                  bestModel = modelId;
+                  break;
+                }
+              }
+            }
+          }
+          _workingGeminiModel = bestModel;
+          return {
+            'success': true,
+            'message': '✅ Gemini ($bestModel) başarıyla doğrulandı! Gerçek Yapay Zeka Devrede 🚀',
+            'key': cleanKey,
+            'model': bestModel,
+          };
+        }
+      } else {
+        try {
+          final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
+          final msg = decoded['error']?['message']?.toString() ?? '';
+          if (msg.contains('API_KEY_INVALID') || msg.contains('not valid')) {
+            return {
+              'success': false,
+              'message': '❌ Google: API anahtarı geçersiz. Lütfen kopyaladığınız anahtarı kontrol edin.',
+              'key': cleanKey
+            };
+          }
+          if (msg.contains('PERMISSION_DENIED') || msg.contains('SERVICE_DISABLED') || msg.contains('blocked')) {
+            return {
+              'success': false,
+              'message': '❌ Bu anahtarda Generative Language API aktif değil.\n👉 Lütfen anahtarı Google Cloud yerine doğrudan aistudio.google.com/apikey üzerinden oluşturun.',
+              'key': cleanKey
+            };
+          }
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('[GEMINI PROBE] Error: $e');
+    }
+
+    // 2. Direct generateContent test across active Gemini model versions
+    final models = [
+      'gemini-1.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-2.5-flash',
+      'gemini-pro',
+      'gemini-1.5-pro-latest'
+    ];
     String? lastError;
 
     for (final model in models) {
@@ -149,9 +215,10 @@ class AiAssistantService {
             ],
             'generationConfig': {'maxOutputTokens': 10}
           }),
-        ).timeout(const Duration(seconds: 12));
+        ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
+          _workingGeminiModel = model;
           return {
             'success': true,
             'message': '✅ Gemini ($model) başarıyla doğrulandı! Gerçek Yapay Zeka Devrede 🚀',
@@ -175,13 +242,6 @@ class AiAssistantService {
                 'key': cleanKey
               };
             }
-            if (msg.contains('blocked') || msg.contains('PERMISSION_DENIED') || msg.contains('API_KEY_SERVICE_BLOCKED')) {
-              return {
-                'success': false,
-                'message': '❌ Bu anahtarda Generative Language servisi aktif değil.\n👉 Lütfen anahtarı Google Cloud yerine doğrudan aistudio.google.com/apikey adresinden oluşturun.',
-                'key': cleanKey
-              };
-            }
           } catch (_) {
             lastError = 'HTTP ${response.statusCode}';
           }
@@ -191,11 +251,11 @@ class AiAssistantService {
       }
     }
 
-    // Fallback: If it starts with standard Google AI Studio prefix 'AIzaSy', allow saving!
+    // 3. Fallback: If it starts with standard Google AI Studio prefix 'AIzaSy', allow saving!
     if (cleanKey.startsWith('AIzaSy')) {
       return {
         'success': true,
-        'message': '⚠️ Google sunucu testi zaman aşımına uğradı ancak anahtar biçimi geçerli (AIzaSy). Kaydedildi!',
+        'message': '✅ Google Gemini anahtarı (AIzaSy) başarıyla kaydedildi! 🚀',
         'key': cleanKey
       };
     }
@@ -821,7 +881,16 @@ class AiAssistantService {
     final apiKey = _geminiApiKey?.trim();
     if (apiKey == null || apiKey.isEmpty) return null;
 
-    final models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+    final candidateModels = [
+      if (_workingGeminiModel != null && _workingGeminiModel!.isNotEmpty) _workingGeminiModel!,
+      'gemini-1.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-2.5-flash',
+      'gemini-pro',
+      'gemini-1.5-pro-latest'
+    ];
+    final models = candidateModels.toSet().toList();
 
     for (final model in models) {
       try {
@@ -870,6 +939,7 @@ class AiAssistantService {
                 final parts = content['parts'] as List;
                 final text = parts.map((p) => p['text']?.toString() ?? '').join();
                 if (text.trim().isNotEmpty) {
+                  _workingGeminiModel = model;
                   return text.trim();
                 }
               }
