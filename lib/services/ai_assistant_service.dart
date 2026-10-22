@@ -23,6 +23,10 @@ class AiAssistantService {
   static const String _prefKeyMessages = 'talknex_ai_chat_messages_v2';
   static const String _prefKeyReminders = 'talknex_ai_reminders_v2';
   static const String _prefKeyGeminiKey = 'talknex_gemini_api_key_v1';
+  static const String _prefKeyUserName = 'talknex_ai_user_name_v1';
+
+  static String? _userName;
+  static String? get userName => _userName;
 
   static String? _geminiApiKey;
   static String? get geminiApiKey => _geminiApiKey;
@@ -87,6 +91,9 @@ class AiAssistantService {
         await NotificationService().init();
       } catch (_) {}
       final prefs = await SharedPreferences.getInstance();
+
+      // Load User Name
+      _userName = prefs.getString(_prefKeyUserName);
 
       // Load Gemini API Key
       _geminiApiKey = prefs.getString(_prefKeyGeminiKey);
@@ -246,12 +253,34 @@ class AiAssistantService {
       AiMessageModel(
         id: const Uuid().v4(),
         sender: 'ai',
-        text: 'Sohbet temizlendi. Yeni bir plan oluşturmak veya konuşmak için mesaj gönderebilirsin! 🤖✨',
+        text: 'Sohbet temizlendi. Nasıl yardımcı olabilirim? 🤖✨',
         timestamp: DateTime.now(),
       ),
     );
     await _persistMessages();
     notifier.value++;
+  }
+
+  /// Detects and remembers user's name when they introduce themselves
+  static void _checkAndLearnUserName(String text) {
+    final regexes = [
+      RegExp(r'(?:benim\s+adım|adım|ismim)\s+([a-zA-ZçÇğĞıİöÖşŞüÜ]+)', caseSensitive: false),
+      RegExp(r'(?:bana\s+)([a-zA-ZçÇğĞıİöÖşŞüÜ]+)(?:\s+de|\s+diyebilirsin)', caseSensitive: false),
+    ];
+
+    for (final reg in regexes) {
+      final match = reg.firstMatch(text);
+      if (match != null) {
+        final candidate = match.group(1)?.trim();
+        if (candidate != null &&
+            candidate.length >= 2 &&
+            !['ne', 'neydi', 'var', 'yok', 'bir', 'bu', 'şu', 'sen', 'ben', 've', 'ile', 'nasıl'].contains(candidate.toLowerCase())) {
+          _userName = candidate[0].toUpperCase() + candidate.substring(1).toLowerCase();
+          SharedPreferences.getInstance().then((p) => p.setString(_prefKeyUserName, _userName!));
+          break;
+        }
+      }
+    }
   }
 
   /// Main method: user sends a message to Talknex AI Assistant
@@ -286,6 +315,9 @@ class AiAssistantService {
   static Future<AiMessageModel> _processWithAiBrain(String text) async {
     final textLower = text.toLowerCase();
 
+    // 1. Learn user's name if they introduced themselves
+    _checkAndLearnUserName(text);
+
     // A. Check if user is asking to list reminders
     if (_isListingRemindersQuery(textLower)) {
       return _generateRemindersListResponse();
@@ -296,7 +328,7 @@ class AiAssistantService {
       return _handleCancelReminderQuery(textLower);
     }
 
-    // C. Check if user wants to schedule a plan / reminder
+    // C. Check if user wants to schedule a plan / reminder (STRICT)
     if (_isSchedulingQuery(textLower)) {
       final parsed = _parseReminderDetails(text);
       if (parsed != null) {
@@ -317,11 +349,11 @@ class AiAssistantService {
         final leadStr = reminder.leadMinutes > 0 ? '${reminder.leadMinutes} dakika önce' : 'tam vaktinde';
         final alertTimeStr = reminder.formattedReminderTime;
 
-        final responseText = 'Harika! Planını başarıyla kaydettim ve hatırlatıcını kurdum ⏰\n\n'
+        final responseText = 'Planını başarıyla kaydettim ve hatırlatıcını kurdum ⏰\n\n'
             '📌 **Plan:** ${reminder.title}\n'
             '📅 **Tarih & Saat:** $eventTimeStr\n'
             '🔔 **Hatırlatma Vakti:** $alertTimeStr ($leadStr)\n\n'
-            'Belirttiğin saatte sana bildirim göndereceğim. Başka bir planın var mı? 😊';
+            'Zamanı geldiğinde sana bildirim ile haber vereceğim! 🎯';
 
         return AiMessageModel(
           id: const Uuid().v4(),
@@ -380,10 +412,14 @@ class AiAssistantService {
   /// Builds multi-turn conversation messages for free cloud AI (Pollinations / Llama)
   static List<Map<String, String>> _buildFreeAiMessages(String currentPrompt) {
     final msgs = <Map<String, String>>[];
+    final nameHint = (_userName != null && _userName!.isNotEmpty)
+        ? ' Konuştuğun kullanıcının adı: $_userName. Ona ismiyle hitap et.'
+        : '';
+
     msgs.add({
       'role': 'system',
-      'content': 'Sen Talknex Asistan adında Türkçe konuşan, düşünerek cevap veren, zeki, faydalı ve samimi bir kişisel yapay zeka asistanısın. '
-          'Soruları akıcı, mantıklı ve yardımcı olacak şekilde yanıtla. Gerektiğinde Markdown biçimlendirmesi (kalın, madde işaretleri) kullan.',
+      'content': 'Sen Talknex Asistan adında Türkçe konuşan, düşünerek cevap veren, zeki, faydalı ve samimi bir kişisel yapay zeka asistanısın.$nameHint '
+          'Soruları akıcı, mantıklı, samimi ve yardımcı olacak şekilde yanıtla. Gerektiğinde Markdown biçimlendirmesi (kalın, madde işaretleri) kullan.',
     });
 
     // Recent conversation history (last 6 messages)
@@ -552,12 +588,16 @@ class AiAssistantService {
 
         final contents = _buildGeminiContents(userPrompt);
 
+        final nameHint = (_userName != null && _userName!.isNotEmpty)
+            ? ' Konuştuğun kullanıcının adı: $_userName. Ona ismiyle hitap et.'
+            : '';
+
         final requestBody = {
           'contents': contents,
           'systemInstruction': {
             'parts': [
               {
-                'text': 'Sen "Talknex Asistan" adında, kullanıcının kişisel yapay zeka asistanısın. '
+                'text': 'Sen "Talknex Asistan" adında, kullanıcının kişisel yapay zeka asistanısın.$nameHint '
                     'Akıllıca, düşünerek, samimi ve son derece yardımsever bir şekilde Türkçe konuşursun. '
                     'Kullanıcının her türlü sorusuna (günlük hayat, fikir danışma, tavsiye, genel kültür, teknoloji, bilim vb.) '
                     'özenle, derinlemesine ve özgün yanıtlar ver. Yanıtlarında Markdown biçimlendirmesini (kalın yazılar, emojiler, liste işaretleri) şık bir şekilde kullan.'
@@ -910,38 +950,36 @@ class AiAssistantService {
   }
 
   static bool _isSchedulingQuery(String text) {
+    final lower = text.toLowerCase();
+
+    // Must NOT be negated (e.g. "hatırlatma", "haber verme")
+    if (lower.contains('hatırlatma') ||
+        lower.contains('hatirlatma') ||
+        lower.contains('haber verme') ||
+        lower.contains('alarm kurma') ||
+        lower.contains('uyarma')) {
+      return false;
+    }
+
+    // Must contain explicit reminder command words
     final triggers = [
       'hatırlat',
       'hatirlat',
       'haber ver',
       'alarm kur',
       'uyar',
-      'planım var',
-      'planim var',
-      'planlama',
-      'randevum var',
-      'randevu',
-      'yapıcam',
-      'yapacağım',
-      'toplantım var',
-      'toplantı',
-      'toplanti',
-      'doğum günü',
-      'dogum gunu',
-      'seyahat',
-      'uçuş',
-      'ucus',
-      'buluşma',
-      'bulusma',
-      'sınav',
-      'sinav',
-      'unutma',
       'hatırlatıcı kur',
       'hatirlatici kur',
-      'hatırlatıcı',
-      'hatirlatici',
+      'hatırlatıcı ekle',
+      'hatirlatici ekle',
+      'hatırlatıcı oluştur',
+      'hatirlatici olustur',
+      'bildirim kur',
+      'bildirim gönder',
+      'bildirim yolla',
     ];
-    return triggers.any((t) => text.contains(t));
+
+    return triggers.any((t) => lower.contains(t));
   }
 
   static AiMessageModel _generateRemindersListResponse() {
@@ -1151,14 +1189,9 @@ class AiAssistantService {
       targetHour += 12;
     }
 
-    // If no specific time identified, default to default meeting/plan time (10:00 or 14:00)
+    // STRICT: If no specific time was identified by user, DO NOT create a reminder
     if (!timeIdentified) {
-      if (textLower.contains('doğum günü') || textLower.contains('dogum gunu')) {
-        targetHour = 10;
-        targetMinute = 0;
-      } else {
-        targetHour = now.hour < 12 ? 14 : 19;
-      }
+      return null;
     }
 
     DateTime eventTime = DateTime(
@@ -1265,9 +1298,29 @@ class AiAssistantService {
     return capitalized;
   }
 
-  /// Conversational AI Knowledge Engine
+  /// Conversational AI Knowledge Engine (clean fallback with memory)
   static String _generateConversationalResponse(String text) {
     final lower = text.toLowerCase();
+    final name = (_userName != null && _userName!.isNotEmpty) ? ' $_userName' : '';
+
+    // 0. Name Inquiries
+    if (lower.contains('benim adım ne') ||
+        lower.contains('adım neydi') ||
+        lower.contains('ismim ne') ||
+        lower.contains('adımı biliyor musun') ||
+        lower.contains('beni tanıyor musun') ||
+        lower.contains('ben kimim')) {
+      if (_userName != null && _userName!.isNotEmpty) {
+        return 'Senin adın **$_userName**! Seni çok iyi hatırlıyorum 😊 Sana nasıl yardımcı olabilirim?';
+      } else {
+        return 'Henüz bana adını söylemedin. Adın nedir? Sana isminle hitap etmek isterim! 😊';
+      }
+    }
+
+    // 0.1 Name Introduction
+    if (_userName != null && (lower.contains('benim adım') || lower.contains('adım ') || lower.contains('bana '))) {
+      return 'Tekrar memnun oldum **$_userName**! İsmini aklımda tutuyorum. Ne hakkında konuşmak istersin? ✨';
+    }
 
     // 1. Identity & Self Intro
     if (lower.contains('sen kimsin') ||
@@ -1276,13 +1329,8 @@ class AiAssistantService {
         lower.contains('kendini tanıt') ||
         lower.contains('neler yapabilirsin')) {
       return 'Ben **Talknex Asistan**! 🤖 Talknex iletişim uygulamasının akıllı yapay zeka asistanıyım.\n\n'
-          'Sana şu konularda yardımcı olabilirim:\n'
-          '🌤️ **Hava Durumu:** "Bugün İstanbul\'da hava durumu nasıl?" veya "Ankara hava nasıl?" dersen anlık sıcaklık, hissedilen, nem ve rüzgar bilgilerini söylerim.\n'
-          '⏰ **Plan & Hatırlatıcı:** "Yarın saat 14:00\'te toplantım var, 30 dakika önce hatırlat" dersen tam vaktinde bildirim gönderirim.\n'
-          '💬 **Sohbet & Tavsiye:** Günün her saati seninle konuşabilir, moral verebilir, önerilerde bulunabilirim.\n'
-          '🧠 **Bilgi & Hesaplama:** Matematiksel hesaplar, zaman yönetimi veya genel soruları yanıtlayabilirim.\n'
-          '📱 **Uygulama Rehberi:** Talknex özellikleri hakkında merak ettiğin her şeyi açıklayabilirim.\n\n'
-          'Senin için ne yapabilirim? 😊';
+          'Seninle dilediğin gibi sohbet edebilir, sorularını yanıtlayabilir, hava durumunu söyleyebilir veya istediğin saatte hatırlatıcı kurabilirim.\n\n'
+          'Sana nasıl yardımcı olabilirim$name? 😊';
     }
 
     // 2. Greetings
@@ -1293,24 +1341,24 @@ class AiAssistantService {
         lower == 'hey' ||
         lower == 'slm') {
       final greetings = [
-        'Merhaba! Sana nasıl yardımcı olabilirim? Bugün aklında bir plan var mı? 😊',
-        'Selam! Harika bir gün dilerim. Planlarını hatırlatmamı ister misin yoksa biraz sohbet mi edelim? ✨',
-        'Merhaba! Seni görmek çok güzel. Bugün senin için ne yapabilirim? 🤖',
+        'Merhaba$name! Nasıl yardımcı olabilirim? 😊',
+        'Selam$name! Harika bir gün dilerim, nasılsın? ✨',
+        'Merhaba$name! Seni görmek çok güzel, bugün neler yapıyorsun? 🤖',
       ];
       return greetings[Random().nextInt(greetings.length)];
     }
 
     // 3. How are you
     if (lower.contains('nasılsın') || lower.contains('nasilsin') || lower.contains('ne haber') || lower.contains('naber')) {
-      return 'Harikayım, teşekkür ederim! Senin günün nasıl geçiyor? Planladığın bir etkinlik veya konuşmak istediğin bir konu varsa buradayım! 🚀';
+      return 'Harikayım$name, teşekkür ederim! Senin günün nasıl geçiyor? Neler yapıyorsun? 🚀';
     }
 
     // 4. Good morning / night
     if (lower.contains('günaydın') || lower.contains('gunaydin')) {
-      return 'Günaydın! ☀️ Harika, üretken ve keyifli bir gün dilerim. Bugünkü planlarını bana söyle, hiçbirini unutmamanı sağlayayım!';
+      return 'Günaydın$name! ☀️ Harika, huzurlu ve keyifli bir gün dilerim!';
     }
     if (lower.contains('iyi geceler') || lower.contains('iyi aksamlar') || lower.contains('iyi akşamlar')) {
-      return 'İyi akşamlar! Huzurlu ve dinlendirici bir vakit dilerim. Yarın için kurmak istediğin bir hatırlatıcı olursa buradayım 🌙✨';
+      return 'İyi akşamlar$name! Huzurlu ve dinlendirici bir vakit dilerim 🌙✨';
     }
 
     // 5. Jokes & Fun
@@ -1328,7 +1376,7 @@ class AiAssistantService {
       final quotes = [
         '✨ "Gelecek, bugünden hazırlananlara aittir." - Malcolm X\nBugün attığın her küçük adım, yarınki büyük başarına giden yoldur!',
         '🌟 "Başlamak için harika olmak zorunda değilsin, ama harika olmak için başlamak zorundasın."\nBugün hedeflerine bir adım daha yaklaşmaya ne dersin?',
-        '🚀 "En uzun yolculuklar bile tek bir adımla başlar."\nPlanlarını aksatma, yapman gerekenleri bana hatırlat ve hedefine odaklan!',
+        '🚀 "En uzun yolculuklar bile tek bir adımla başlar."\nHedeflerine odaklan ve adım atmaktan asla vazgeçme!',
       ];
       return quotes[Random().nextInt(quotes.length)];
     }
@@ -1354,7 +1402,7 @@ class AiAssistantService {
       return 'Zaman yönetimi ve odaklanma için 3 altın kural 💡:\n\n'
           '1. **Pomodoro Tekniği:** 25 dakika kesintisiz çalış, 5 dakika mola ver. 4 setten sonra 20 dakika uzun mola ver.\n'
           '2. **En Zor Görevi Sabah Yap (Eat That Frog):** Günün enerjisi en yüksekken en zor işi aradan çıkar.\n'
-          '3. **Planlarını Hatırlatıcıya Bırak:** Aklını doldurmak yerine planlarını bana söyle, ben sana zamanı gelince haber vereyim! 🎯';
+          '3. **Planlarını Organize Et:** Yapacaklarını öncelik sırasına koy ve adım adım tamamla! 🎯';
     }
 
     // 9. Talknex App Guide
@@ -1364,13 +1412,13 @@ class AiAssistantService {
           '• 🌐 **WhatsApp Stili Dil Çevirisi:** Sohbeti veya mesajı istediğin dile anında çevirebilirsin.\n'
           '• 📹 **Sesli ve Görüntülü Arama:** WebRTC destekli yüksek kaliteli görüşmeler.\n'
           '• 💬 **Emojili Tepkiler:** Mesaja basılı tutarak emojilerle tepki verebilirsin.\n'
-          '• 🤖 **Talknex Asistan:** Seninle sohbet eder, planlarını hatırlar ve bildirim yollar!\n\n'
+          '• 🤖 **Talknex Asistan:** Seninle sohbet eder, sorularını yanıtlar, hava durumunu bildirir ve hatırlatıcı kurar!\n\n'
           'Keşfetmek istediğin başka bir özellik var mı?';
     }
 
     // 10. Thank you
     if (lower.contains('teşekkür') || lower.contains('tesekkur') || lower.contains('sağol') || lower.contains('harikasın')) {
-      return 'Rica ederim! Her zaman senin için buradayım. Başka bir planın veya sorun olursa sormaktan çekinme! 😊🌟';
+      return 'Rica ederim$name! Her zaman senin için buradayım. Konuşmak istediğin başka bir konu olursa sormaktan çekinme! 😊🌟';
     }
 
     // 11. Math calculation
@@ -1390,9 +1438,6 @@ class AiAssistantService {
     }
 
     // Default intelligent companion reply
-    return 'Bunu anladım! Talknex Asistan olarak her zaman yanındayım. 🤖✨\n\n'
-        'Eğer bir planın veya etkinliğin varsa bana şu şekilde söyleyebilirsin:\n'
-        '👉 *"Yarın saat 14:00\'te toplantım var, 30 dakika önce hatırlat"*\n\n'
-        'Senin için hatırlatıcı kurayım veya sormak istediğin başka bir konuyu yanıtlayayım!';
+    return 'Bunu anladım$name! Seninle sohbet etmekten mutluluk duyuyorum. Aklına gelen herhangi bir şeyi sorabilir veya konuşmaya devam edebilirsin! 🤖✨';
   }
 }
