@@ -174,7 +174,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                           ),
                           const SizedBox(height: 8),
                           const Text(
-                            '• Model: Pollinations / Llama (Reasoning LLM)\n'
+                            '• Model: Pollinations (Reasoning LLM)\n'
                             '• API Anahtarı: Gerekmez (Tamamen Ücretsiz)\n'
                             '• Yetenek: Tıpkı Gemini / ChatGPT gibi düşünerek cevap verir, sohbet geçmişinizi hatırlar.',
                             style: TextStyle(color: Colors.white70, fontSize: 12.5, height: 1.45),
@@ -585,7 +585,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                           ),
                           const SizedBox(width: 4),
                           Text(
-                            hasGemini ? 'Gemini 1.5 Flash Aktif ✨' : 'Bulut Yapay Zeka (Llama) Aktif ✨',
+                            hasGemini ? 'Gemini 1.5 Flash Aktif ✨' : 'Bulut Yapay Zeka Aktif ✨',
                             style: const TextStyle(
                               fontSize: 11,
                               color: AppColors.onlineGreen,
