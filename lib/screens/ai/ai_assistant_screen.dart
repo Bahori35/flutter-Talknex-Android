@@ -313,24 +313,27 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                           statusMessage = 'Bağlantı test ediliyor... ⏳';
                                         });
 
-                                        final ok = await AiAssistantService.testGeminiApiKey(keyToSave);
+                                        final res = await AiAssistantService.testGeminiApiKeyDetails(keyToSave);
+                                        final ok = res['success'] == true;
+                                        final cleanKey = res['key'] as String? ?? keyToSave;
+                                        final msg = res['message'] as String? ?? '';
 
                                         if (ok) {
-                                          await AiAssistantService.setGeminiApiKey(keyToSave);
+                                          await AiAssistantService.setGeminiApiKey(cleanKey);
                                           setDlgState(() {
                                             isTesting = false;
                                             isSuccess = true;
-                                            statusMessage = '✅ Gerçek Yapay Zeka (Gemini 1.5 Flash) Başarıyla Bağlandı! 🚀';
+                                            statusMessage = msg;
                                           });
                                           setState(() {});
-                                          Future.delayed(const Duration(milliseconds: 1400), () {
+                                          Future.delayed(const Duration(milliseconds: 1600), () {
                                             if (dlgCtx.mounted) Navigator.pop(dlgCtx);
                                           });
                                         } else {
                                           setDlgState(() {
                                             isTesting = false;
                                             isSuccess = false;
-                                            statusMessage = '❌ Anahtar doğrulanamadı. Lütfen geçerli bir Gemini anahtarı girdiğinizden emin olun.';
+                                            statusMessage = msg;
                                           });
                                         }
                                       },
