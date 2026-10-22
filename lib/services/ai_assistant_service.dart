@@ -342,7 +342,8 @@ class AiAssistantService {
       }
     }
 
-    // E. Generative AI Engine (Google Gemini Thinking Engine)
+    // E. Generative AI Engine (Zero-Setup Free Cloud AI & Gemini)
+    // 1. If user configured Gemini API Key, prioritize Gemini
     if (hasGeminiApiKey) {
       final geminiReply = await _callGeminiApi(text);
       if (geminiReply != null && geminiReply.isNotEmpty) {
@@ -355,6 +356,17 @@ class AiAssistantService {
       }
     }
 
+    // 2. Direct Zero-Setup Free Cloud AI (Pollinations / Llama / OpenAI)
+    final freeAiReply = await _callFreeCloudAi(text);
+    if (freeAiReply != null && freeAiReply.isNotEmpty) {
+      return AiMessageModel(
+        id: const Uuid().v4(),
+        sender: 'ai',
+        text: freeAiReply,
+        timestamp: DateTime.now(),
+      );
+    }
+
     // F. Fallback Conversational Engine (Small Talk & Knowledge Base)
     final reply = _generateConversationalResponse(text);
     return AiMessageModel(
@@ -363,6 +375,43 @@ class AiAssistantService {
       text: reply,
       timestamp: DateTime.now(),
     );
+  }
+
+  /// Zero-setup free cloud AI: Pollinations / Open Models with smart retry
+  static Future<String?> _callFreeCloudAi(String userPrompt) async {
+    try {
+      final systemPrompt = 'Sen Talknex Asistan adında Türkçe konuşan, düşünerek cevap veren, samimi bir yapay zeka asistanısın. '
+          'Soruları zekice, samimi, faydalı ve akıcı bir şekilde yanıtla. Gerektiğinde markdown kullan.';
+      final seed = Random().nextInt(999999);
+
+      final endpoints = [
+        'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?system=${Uri.encodeComponent(systemPrompt)}&seed=$seed',
+        'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?system=${Uri.encodeComponent(systemPrompt)}&model=openai&seed=$seed',
+        'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?system=${Uri.encodeComponent(systemPrompt)}&model=mistral&seed=$seed',
+      ];
+
+      for (final ep in endpoints) {
+        try {
+          final uri = Uri.parse(ep);
+          final res = await http.get(
+            uri,
+            headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
+          ).timeout(const Duration(seconds: 12));
+
+          if (res.statusCode == 200) {
+            final body = utf8.decode(res.bodyBytes).trim();
+            if (body.isNotEmpty && !body.contains('Free limit reached') && !body.contains('Payment Required')) {
+              return body;
+            }
+          }
+        } catch (e) {
+          debugPrint('[FREE AI] Error calling endpoint: $e');
+        }
+      }
+    } catch (e) {
+      debugPrint('[FREE AI] Exception: $e');
+    }
+    return null;
   }
 
   /// Builds compliant multi-turn message history for Gemini API

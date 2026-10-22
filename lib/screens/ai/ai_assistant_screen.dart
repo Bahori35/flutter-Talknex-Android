@@ -538,12 +538,12 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
               ),
             ),
             const SizedBox(width: 10),
-            const Expanded(
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
+                  const Text(
                     'Talknex Asistan',
                     style: TextStyle(
                       fontSize: 16,
@@ -557,17 +557,17 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                       final hasGemini = AiAssistantService.hasGeminiApiKey;
                       return Row(
                         children: [
-                          Icon(
+                          const Icon(
                             Icons.circle,
-                            color: hasGemini ? AppColors.onlineGreen : AppColors.accent,
+                            color: AppColors.onlineGreen,
                             size: 8,
                           ),
                           const SizedBox(width: 4),
                           Text(
-                            hasGemini ? 'Gemini 1.5 Flash Aktif ✨' : 'Kişisel Yapay Zeka Asistanınız',
-                            style: TextStyle(
+                            hasGemini ? 'Gemini 1.5 Flash Aktif ✨' : 'Bulut Yapay Zeka Aktif ✨',
+                            style: const TextStyle(
                               fontSize: 11,
-                              color: hasGemini ? AppColors.onlineGreen : AppColors.accent,
+                              color: AppColors.onlineGreen,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
