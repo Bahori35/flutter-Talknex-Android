@@ -377,26 +377,107 @@ class AiAssistantService {
     );
   }
 
-  /// Zero-setup free cloud AI: Pollinations / Open Models with smart retry
+  /// Builds multi-turn conversation messages for free cloud AI (Pollinations / Llama)
+  static List<Map<String, String>> _buildFreeAiMessages(String currentPrompt) {
+    final msgs = <Map<String, String>>[];
+    msgs.add({
+      'role': 'system',
+      'content': 'Sen Talknex Asistan adında Türkçe konuşan, düşünerek cevap veren, zeki, faydalı ve samimi bir kişisel yapay zeka asistanısın. '
+          'Soruları akıcı, mantıklı ve yardımcı olacak şekilde yanıtla. Gerektiğinde Markdown biçimlendirmesi (kalın, madde işaretleri) kullan.',
+    });
+
+    // Recent conversation history (last 6 messages)
+    final history = _messages.length > 6 ? _messages.sublist(_messages.length - 6) : _messages;
+    for (final m in history) {
+      if (m.text.trim().isEmpty) continue;
+      if (m.actionType == 'welcome' || m.actionType == 'reminder_created' || m.actionType == 'weather') continue;
+      final role = m.sender == 'ai' ? 'assistant' : 'user';
+      msgs.add({
+        'role': role,
+        'content': m.text.trim(),
+      });
+    }
+
+    // Add current user prompt
+    msgs.add({
+      'role': 'user',
+      'content': currentPrompt.trim(),
+    });
+
+    return msgs;
+  }
+
+  /// Zero-setup free cloud AI: Pollinations / Llama / Reasoning Models with multi-turn support
   static Future<String?> _callFreeCloudAi(String userPrompt) async {
     try {
-      final systemPrompt = 'Sen Talknex Asistan adında Türkçe konuşan, düşünerek cevap veren, samimi bir yapay zeka asistanısın. '
-          'Soruları zekice, samimi, faydalı ve akıcı bir şekilde yanıtla. Gerektiğinde markdown kullan.';
       final seed = Random().nextInt(999999);
+      final messages = _buildFreeAiMessages(userPrompt);
 
-      final endpoints = [
+      // 1. Try POST to Pollinations with reasoning model (openai-fast / gpt-oss)
+      try {
+        final url = Uri.parse('https://text.pollinations.ai/');
+        final res = await http.post(
+          url,
+          headers: {
+            'Content-Type': 'application/json; charset=UTF-8',
+            'User-Agent': 'Talknex-Android/1.0',
+          },
+          body: jsonEncode({
+            'messages': messages,
+            'model': 'openai-fast',
+            'seed': seed,
+          }),
+        ).timeout(const Duration(seconds: 14));
+
+        if (res.statusCode == 200) {
+          final body = utf8.decode(res.bodyBytes).trim();
+          if (body.isNotEmpty && !body.contains('Free limit reached') && !body.contains('Payment Required') && !body.contains('"error":')) {
+            return body;
+          }
+        }
+      } catch (e) {
+        debugPrint('[FREE AI] POST openai-fast error: $e');
+      }
+
+      // 2. Try POST with default model & random seed
+      try {
+        final url = Uri.parse('https://text.pollinations.ai/');
+        final res = await http.post(
+          url,
+          headers: {
+            'Content-Type': 'application/json; charset=UTF-8',
+            'User-Agent': 'Talknex-Android/1.0',
+          },
+          body: jsonEncode({
+            'messages': messages,
+            'seed': seed,
+          }),
+        ).timeout(const Duration(seconds: 14));
+
+        if (res.statusCode == 200) {
+          final body = utf8.decode(res.bodyBytes).trim();
+          if (body.isNotEmpty && !body.contains('Free limit reached') && !body.contains('Payment Required') && !body.contains('"error":')) {
+            return body;
+          }
+        }
+      } catch (e) {
+        debugPrint('[FREE AI] POST default error: $e');
+      }
+
+      // 3. Fallback to GET endpoint
+      final systemPrompt = 'Sen Talknex Asistan adında Türkçe konuşan, düşünerek ve zekice yanıtlar veren bir yapay zekasın.';
+      final getEndpoints = [
         'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?system=${Uri.encodeComponent(systemPrompt)}&seed=$seed',
-        'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?system=${Uri.encodeComponent(systemPrompt)}&model=openai&seed=$seed',
-        'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?system=${Uri.encodeComponent(systemPrompt)}&model=mistral&seed=$seed',
+        'https://text.pollinations.ai/${Uri.encodeComponent(userPrompt)}?seed=$seed',
       ];
 
-      for (final ep in endpoints) {
+      for (final ep in getEndpoints) {
         try {
           final uri = Uri.parse(ep);
           final res = await http.get(
             uri,
-            headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
-          ).timeout(const Duration(seconds: 12));
+            headers: {'User-Agent': 'Talknex-Android/1.0'},
+          ).timeout(const Duration(seconds: 10));
 
           if (res.statusCode == 200) {
             final body = utf8.decode(res.bodyBytes).trim();
@@ -405,11 +486,11 @@ class AiAssistantService {
             }
           }
         } catch (e) {
-          debugPrint('[FREE AI] Error calling endpoint: $e');
+          debugPrint('[FREE AI] GET error: $e');
         }
       }
     } catch (e) {
-      debugPrint('[FREE AI] Exception: $e');
+      debugPrint('[FREE AI] Main Exception: $e');
     }
     return null;
   }
