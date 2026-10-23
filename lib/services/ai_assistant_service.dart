@@ -668,17 +668,157 @@ class AiAssistantService {
     // 1. Learn user's name if they introduced themselves
     _checkAndLearnUserName(text);
 
-    // A. Check if user is asking to list reminders
+    // =========================================================================
+    // 1. GERÇEK YAPAY ZEKA (GEMINI VEYA GROQ) BAĞLIYSA:
+    // HİÇBİR HAZIR/ŞABLON MESAJ ÖNE GEÇMEZ. TÜM SORULARI DOĞRUDAN YAPAY ZEKA YANITLAR!
+    // =========================================================================
+    if (isRealAiConnected) {
+      _lastAiError = null;
+
+      // Kullanıcı açıkça hatırlatıcı/alarm istediyse arka planda bildirimi kur,
+      // cevabı ise yine yapay zekanın doğal zekası versin!
+      AiReminderModel? createdReminder;
+      if (_isSchedulingQuery(textLower)) {
+        final parsed = _parseReminderDetails(text);
+        if (parsed != null) {
+          final reminder = AiReminderModel(
+            id: const Uuid().v4(),
+            title: parsed['title'],
+            eventTime: parsed['eventTime'],
+            leadMinutes: parsed['leadMinutes'],
+            reminderTime: parsed['reminderTime'],
+            createdAt: DateTime.now(),
+          );
+          _reminders.add(reminder);
+          await _persistReminders();
+          _scheduleTimer(reminder);
+          createdReminder = reminder;
+        }
+      }
+
+      // Kullanıcı hava durumu soruyorsa, canlı hava verisini arka planda çekip
+      // yapay zekaya bağlam (context) olarak verelim; yapay zeka kendi aklıyla anlatsın!
+      String promptForAi = text;
+      if (_isWeatherQuery(textLower)) {
+        final city = _extractCityForWeather(text);
+        if (city != null && city.isNotEmpty) {
+          try {
+            final w = await _fetchWeatherData(city);
+            if (w != null) {
+              promptForAi = '$text\n\n[Sistem Canlı Bilgisi: ${w.location} için hava şu an ${w.temp}°C, hissedilen ${w.feelsLike}°C, nem %${w.humidity}, rüzgar ${w.windSpeed} km/s, durum: ${w.description}. Bu canlı bilgiyi kullanarak kullanıcıya samimi, akıllı ve doğal bir Türkçe ile yanıt ver.]';
+            }
+          } catch (_) {}
+        }
+      }
+
+      // Kullanıcı hatırlatıcılarını soruyorsa, aktif planlarını yapay zekaya aktar
+      if (_isListingRemindersQuery(textLower)) {
+        final active = activeReminders;
+        final listStr = active.isEmpty
+            ? 'Şu anda kayıtlı aktif bir hatırlatıcı bulunmuyor.'
+            : active.map((r) => '• ${r.title} (${r.formattedEventTimeSimple})').join('\n');
+        promptForAi = '$text\n\n[Sistem Canlı Bilgisi: Kullanıcının kayıtlı planları:\n$listStr\nBu bilgileri kullanarak kullanıcıya yardımcı ol.]';
+      }
+
+      final bool preferGroq = (_activeProvider == 'groq' && hasGroqApiKey) ||
+          (hasGroqApiKey && !hasGeminiApiKey);
+
+      if (preferGroq) {
+        // 1. Öncelik Groq (Llama 3.3 / 3.1)
+        final groqReply = await _callGroqApi(promptForAi);
+        if (groqReply != null && groqReply.isNotEmpty) {
+          return AiMessageModel(
+            id: const Uuid().v4(),
+            sender: 'ai',
+            text: groqReply,
+            timestamp: DateTime.now(),
+            reminder: createdReminder,
+            actionType: createdReminder != null ? 'reminder_created' : null,
+          );
+        }
+
+        // Groq başarısız olursa Gemini'ye geç
+        if (hasGeminiApiKey) {
+          final geminiReply = await _callGeminiApi(promptForAi);
+          if (geminiReply != null && geminiReply.isNotEmpty) {
+            return AiMessageModel(
+              id: const Uuid().v4(),
+              sender: 'ai',
+              text: geminiReply,
+              timestamp: DateTime.now(),
+              reminder: createdReminder,
+              actionType: createdReminder != null ? 'reminder_created' : null,
+            );
+          }
+        }
+      } else {
+        // 1. Öncelik Gemini (1.5 Flash / 2.0 Flash)
+        if (hasGeminiApiKey) {
+          final geminiReply = await _callGeminiApi(promptForAi);
+          if (geminiReply != null && geminiReply.isNotEmpty) {
+            return AiMessageModel(
+              id: const Uuid().v4(),
+              sender: 'ai',
+              text: geminiReply,
+              timestamp: DateTime.now(),
+              reminder: createdReminder,
+              actionType: createdReminder != null ? 'reminder_created' : null,
+            );
+          }
+        }
+
+        // Gemini başarısız olursa Groq'a geç
+        if (hasGroqApiKey) {
+          final groqReply = await _callGroqApi(promptForAi);
+          if (groqReply != null && groqReply.isNotEmpty) {
+            return AiMessageModel(
+              id: const Uuid().v4(),
+              sender: 'ai',
+              text: groqReply,
+              timestamp: DateTime.now(),
+              reminder: createdReminder,
+              actionType: createdReminder != null ? 'reminder_created' : null,
+            );
+          }
+        }
+      }
+
+      // Gerçek yapay zeka bağlı ancak API yanıt vermediyse:
+      // KESİNLİKLE hazır sahte mesaja DÜŞME! Gerçek hatayı şeffafça göster.
+      final activeProviderName = preferGroq ? 'Groq (Llama)' : 'Google Gemini';
+      final errDetail = _lastAiError != null && _lastAiError!.isNotEmpty
+          ? _lastAiError!
+          : 'Yapay zeka sunucusu yanıt vermedi veya zaman aşımı oluştu.';
+
+      return AiMessageModel(
+        id: const Uuid().v4(),
+        sender: 'ai',
+        text: '⚠️ **$activeProviderName Bağlantı Hatası**\n\n'
+            'Bağlı olan yapay zeka servisine (${preferGroq ? 'Groq LPU' : 'Gemini'}) ulaşılamadı:\n'
+            '📌 **Detay:** $errDetail\n\n'
+            '💡 **Çözüm:**\n'
+            '• Sağ üstteki ayarlar simgesinden API anahtarınızı kontrol edin.\n'
+            '• Diğer sağlayıcıyı (${preferGroq ? "Google Gemini ✨" : "Groq LPU ⚡"}) deneyebilirsiniz.',
+        timestamp: DateTime.now(),
+      );
+    }
+
+    // =========================================================================
+    // 2. YALNIZCA GERÇEK YAPAY ZEKA BAĞLI DEĞİLSE (HİÇ API ANAHTARI YOKSA):
+    // Çevrimdışı kurallar, hava kartı ve yerel şablonlar devreye girer.
+    // =========================================================================
+
+    // A. Hatırlatıcıları listeleme
     if (_isListingRemindersQuery(textLower)) {
       return _generateRemindersListResponse();
     }
 
-    // B. Check if user is asking to cancel reminders
+    // B. Hatırlatıcıları iptal etme
     if (_isCancelReminderQuery(textLower)) {
       return _handleCancelReminderQuery(textLower);
     }
 
-    // C. Check if user wants to schedule a plan / reminder (STRICT)
+    // C. Hatırlatıcı kurma
     if (_isSchedulingQuery(textLower)) {
       final parsed = _parseReminderDetails(text);
       if (parsed != null) {
@@ -716,7 +856,7 @@ class AiAssistantService {
       }
     }
 
-    // D. Check if user is asking for weather
+    // D. Hava durumu
     if (_isWeatherQuery(textLower)) {
       final weatherResponse = await _handleWeatherQuery(text);
       if (weatherResponse != null) {
@@ -724,85 +864,7 @@ class AiAssistantService {
       }
     }
 
-    // E. Generative AI Engine (Google Gemini & Groq Cloud LPU)
-    _lastAiError = null;
-    final bool preferGroq = (_activeProvider == 'groq' && hasGroqApiKey) ||
-        (hasGroqApiKey && !hasGeminiApiKey);
-
-    if (preferGroq) {
-      // 1. Try Groq (Llama 3.3 on Groq LPU)
-      final groqReply = await _callGroqApi(text);
-      if (groqReply != null && groqReply.isNotEmpty) {
-        return AiMessageModel(
-          id: const Uuid().v4(),
-          sender: 'ai',
-          text: groqReply,
-          timestamp: DateTime.now(),
-        );
-      }
-
-      // Failover to Gemini if configured
-      if (hasGeminiApiKey) {
-        final geminiReply = await _callGeminiApi(text);
-        if (geminiReply != null && geminiReply.isNotEmpty) {
-          return AiMessageModel(
-            id: const Uuid().v4(),
-            sender: 'ai',
-            text: geminiReply,
-            timestamp: DateTime.now(),
-          );
-        }
-      }
-    } else {
-      // 1. Try Gemini (Gemini 1.5 Flash / 2.0 Flash)
-      if (hasGeminiApiKey) {
-        final geminiReply = await _callGeminiApi(text);
-        if (geminiReply != null && geminiReply.isNotEmpty) {
-          return AiMessageModel(
-            id: const Uuid().v4(),
-            sender: 'ai',
-            text: geminiReply,
-            timestamp: DateTime.now(),
-          );
-        }
-      }
-
-      // Failover to Groq if configured
-      if (hasGroqApiKey) {
-        final groqReply = await _callGroqApi(text);
-        if (groqReply != null && groqReply.isNotEmpty) {
-          return AiMessageModel(
-            id: const Uuid().v4(),
-            sender: 'ai',
-            text: groqReply,
-            timestamp: DateTime.now(),
-          );
-        }
-      }
-    }
-
-    // IF USER CONNECTED REAL AI AND IT FAILED:
-    // Transparently report the diagnostic issue so the user knows why
-    if (isRealAiConnected) {
-      final activeProviderName = preferGroq ? 'Groq (Llama)' : 'Google Gemini';
-      final errDetail = _lastAiError != null && _lastAiError!.isNotEmpty
-          ? _lastAiError!
-          : 'Yapay zeka sunucusu yanıt vermedi veya zaman aşımı oluştu.';
-
-      return AiMessageModel(
-        id: const Uuid().v4(),
-        sender: 'ai',
-        text: '⚠️ **$activeProviderName Bağlantı Hatası**\n\n'
-            'Bağlı olan yapay zeka servisine erişilemedi:\n'
-            '📌 **Detay:** $errDetail\n\n'
-            '💡 **Çözüm Önerisi:**\n'
-            '• Sağ üstteki ayarlar simgesinden API anahtarınızı kontrol edin.\n'
-            '• Diğer sağlayıcıyı (${preferGroq ? "Google Gemini ✨" : "Groq LPU ⚡"}) deneyebilirsiniz.',
-        timestamp: DateTime.now(),
-      );
-    }
-
-    // 2. Direct Zero-Setup Free Cloud AI (Pollinations / Llama fallback) - Only for users without API keys!
+    // E. Ücretsiz bulut AI (Pollinations)
     final freeAiReply = await _callFreeCloudAi(text);
     if (freeAiReply != null && freeAiReply.isNotEmpty) {
       return AiMessageModel(
@@ -813,7 +875,7 @@ class AiAssistantService {
       );
     }
 
-    // F. Fallback Conversational Engine (Small Talk & Knowledge Base)
+    // F. Yerel şablon yanıtları
     final reply = _generateConversationalResponse(text);
     return AiMessageModel(
       id: const Uuid().v4(),
@@ -1094,6 +1156,11 @@ class AiAssistantService {
         'content': m.text.trim(),
       });
       lastRole = role;
+    }
+
+    // If the last added message was already user, remove it so currentPrompt takes over cleanly
+    if (lastRole == 'user' && msgs.isNotEmpty) {
+      msgs.removeLast();
     }
 
     // Append current user prompt as final user turn
