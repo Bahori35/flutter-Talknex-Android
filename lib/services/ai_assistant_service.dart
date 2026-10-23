@@ -26,6 +26,8 @@ class AiAssistantService {
   static const String _prefKeyGroqKey = 'talknex_groq_api_key_v1';
   static const String _prefKeyActiveProvider = 'talknex_active_ai_provider_v1';
   static const String _prefKeyUserName = 'talknex_ai_user_name_v1';
+  static const String _prefKeyWorkingGeminiModel = 'talknex_working_gemini_model_v1';
+  static const String _prefKeyWorkingGroqModel = 'talknex_working_groq_model_v1';
 
   static String? _userName;
   static String? get userName => _userName;
@@ -44,8 +46,13 @@ class AiAssistantService {
   static String? _workingGroqModel;
   static String? get workingGroqModel => _workingGroqModel;
 
-  static String? _lastAiError;
-  static String? get lastAiError => _lastAiError;
+  static String? _lastGeminiError;
+  static String? get lastGeminiError => _lastGeminiError;
+
+  static String? _lastGroqError;
+  static String? get lastGroqError => _lastGroqError;
+
+  static String? get lastAiError => _lastGroqError ?? _lastGeminiError;
 
   static String _activeProvider = 'auto'; // 'gemini', 'groq', or 'auto'
   static String get activeProvider => _activeProvider;
@@ -85,16 +92,21 @@ class AiAssistantService {
     return clean;
   }
 
-  static Future<void> setGeminiApiKey(String? key) async {
+  static Future<void> setGeminiApiKey(String? key, [String? model]) async {
     final prefs = await SharedPreferences.getInstance();
     if (key == null || key.trim().isEmpty) {
       _geminiApiKey = null;
       _workingGeminiModel = null;
       await prefs.remove(_prefKeyGeminiKey);
+      await prefs.remove(_prefKeyWorkingGeminiModel);
     } else {
       final cleanKey = cleanGeminiKey(key);
       _geminiApiKey = cleanKey;
       _activeProvider = 'gemini';
+      if (model != null && model.isNotEmpty) {
+        _workingGeminiModel = model;
+        await prefs.setString(_prefKeyWorkingGeminiModel, model);
+      }
       await prefs.setString(_prefKeyGeminiKey, cleanKey);
       await prefs.setString(_prefKeyActiveProvider, 'gemini');
     }
@@ -109,16 +121,21 @@ class AiAssistantService {
     return clean;
   }
 
-  static Future<void> setGroqApiKey(String? key) async {
+  static Future<void> setGroqApiKey(String? key, [String? model]) async {
     final prefs = await SharedPreferences.getInstance();
     if (key == null || key.trim().isEmpty) {
       _groqApiKey = null;
       _workingGroqModel = null;
       await prefs.remove(_prefKeyGroqKey);
+      await prefs.remove(_prefKeyWorkingGroqModel);
     } else {
       final cleanKey = cleanGroqKey(key);
       _groqApiKey = cleanKey;
       _activeProvider = 'groq';
+      if (model != null && model.isNotEmpty) {
+        _workingGroqModel = model;
+        await prefs.setString(_prefKeyWorkingGroqModel, model);
+      }
       await prefs.setString(_prefKeyGroqKey, cleanKey);
       await prefs.setString(_prefKeyActiveProvider, 'groq');
     }
@@ -130,7 +147,7 @@ class AiAssistantService {
     return res['success'] == true;
   }
 
-  /// Robust Gemini key verification with dynamic ModelService probing and model fallbacks
+  /// Robust Gemini key verification with dynamic ModelService probing and real error reporting
   static Future<Map<String, dynamic>> testGeminiApiKeyDetails(String apiKey) async {
     final cleanKey = cleanGeminiKey(apiKey);
 
@@ -149,7 +166,7 @@ class AiAssistantService {
     // 1. Probe Google's ModelService directly (/v1beta/models) to discover supported models for this exact key
     try {
       final listUrl = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?key=$cleanKey');
-      final listRes = await http.get(listUrl).timeout(const Duration(seconds: 10));
+      final listRes = await http.get(listUrl).timeout(const Duration(seconds: 12));
 
       if (listRes.statusCode == 200) {
         final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
@@ -157,16 +174,23 @@ class AiAssistantService {
           final modelsList = decoded['models'] as List?;
           String bestModel = 'gemini-1.5-flash';
           if (modelsList != null && modelsList.isNotEmpty) {
+            final valid = <String>[];
             for (final m in modelsList) {
               final name = m['name']?.toString() ?? '';
               final methods = (m['supportedGenerationMethods'] as List?)?.map((e) => e.toString()).toList() ?? [];
               if (methods.contains('generateContent')) {
                 final modelId = name.startsWith('models/') ? name.substring(7) : name;
-                if (modelId.contains('flash')) {
-                  bestModel = modelId;
-                  break;
-                }
+                valid.add(modelId);
               }
+            }
+            if (valid.contains('gemini-1.5-flash')) {
+              bestModel = 'gemini-1.5-flash';
+            } else if (valid.contains('gemini-2.0-flash')) {
+              bestModel = 'gemini-2.0-flash';
+            } else if (valid.contains('gemini-1.5-pro')) {
+              bestModel = 'gemini-1.5-pro';
+            } else if (valid.isNotEmpty) {
+              bestModel = valid.first;
             }
           }
           _workingGeminiModel = bestModel;
@@ -181,18 +205,26 @@ class AiAssistantService {
         try {
           final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
           final msg = decoded['error']?['message']?.toString() ?? '';
-          if (msg.contains('API_KEY_INVALID') || msg.contains('not valid')) {
+          if (listRes.statusCode == 400 || msg.contains('API_KEY_INVALID') || msg.contains('not valid')) {
             return {
               'success': false,
               'message': '❌ Google: API anahtarı geçersiz. Lütfen kopyaladığınız anahtarı kontrol edin.',
               'key': cleanKey
             };
           }
-          if (msg.contains('PERMISSION_DENIED') || msg.contains('SERVICE_DISABLED') || msg.contains('blocked')) {
+          if (listRes.statusCode == 403 || msg.contains('PERMISSION_DENIED') || msg.contains('SERVICE_DISABLED') || msg.contains('blocked')) {
             return {
               'success': false,
-              'message': '❌ Bu anahtarda Generative Language API aktif değil.\n👉 Lütfen anahtarı Google Cloud yerine doğrudan aistudio.google.com/apikey üzerinden oluşturun.',
+              'message': '❌ Bu anahtarda Generative Language API aktif değil (HTTP 403).\n👉 Lütfen anahtarı Google Cloud yerine doğrudan aistudio.google.com/apikey üzerinden oluşturun.',
               'key': cleanKey
+            };
+          }
+          if (listRes.statusCode == 429) {
+            return {
+              'success': true,
+              'message': '✅ Anahtar geçerli (Anlık kota sınırı tespit edildi). Kaydedildi!',
+              'key': cleanKey,
+              'model': 'gemini-1.5-flash',
             };
           }
         } catch (_) {}
@@ -201,15 +233,8 @@ class AiAssistantService {
       debugPrint('[GEMINI PROBE] Error: $e');
     }
 
-    // 2. Direct generateContent test across active Gemini model versions
-    final models = [
-      'gemini-1.5-flash',
-      'gemini-2.0-flash',
-      'gemini-1.5-flash-latest',
-      'gemini-2.5-flash',
-      'gemini-pro',
-      'gemini-1.5-pro-latest'
-    ];
+    // 2. Direct generateContent test with standard models
+    final models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash'];
     String? lastError;
 
     for (final model in models) {
@@ -236,23 +261,33 @@ class AiAssistantService {
           return {
             'success': true,
             'message': '✅ Gemini ($model) başarıyla doğrulandı! Gerçek Yapay Zeka Devrede 🚀',
-            'key': cleanKey
+            'key': cleanKey,
+            'model': model,
           };
         } else if (response.statusCode == 429) {
+          _workingGeminiModel = model;
           return {
             'success': true,
-            'message': '✅ Anahtar geçerli (Anlık kota sınırı tespit edildi). Başarıyla kaydedildi!',
-            'key': cleanKey
+            'message': '✅ Anahtar geçerli (Anlık kota sınırı tespit edildi). Kaydedildi!',
+            'key': cleanKey,
+            'model': model,
           };
         } else {
           try {
             final decoded = jsonDecode(utf8.decode(response.bodyBytes));
             final msg = decoded['error']?['message']?.toString() ?? 'Hata kodu: ${response.statusCode}';
             lastError = msg;
-            if (msg.contains('API_KEY_INVALID') || msg.contains('not valid')) {
+            if (response.statusCode == 400 && (msg.contains('API_KEY_INVALID') || msg.contains('not valid'))) {
               return {
                 'success': false,
                 'message': '❌ Google: API anahtarı geçersiz. Lütfen kopyaladığınız anahtarı kontrol edin.',
+                'key': cleanKey
+              };
+            }
+            if (response.statusCode == 403 || msg.contains('PERMISSION_DENIED') || msg.contains('blocked')) {
+              return {
+                'success': false,
+                'message': '❌ Bu anahtarda Generative Language servisi aktif değil (HTTP 403).\n👉 Lütfen anahtarı aistudio.google.com/apikey adresinden oluşturun.',
                 'key': cleanKey
               };
             }
@@ -265,18 +300,9 @@ class AiAssistantService {
       }
     }
 
-    // 3. Fallback: If it starts with standard Google AI Studio prefix 'AIzaSy', allow saving!
-    if (cleanKey.startsWith('AIzaSy')) {
-      return {
-        'success': true,
-        'message': '✅ Google Gemini anahtarı (AIzaSy) başarıyla kaydedildi! 🚀',
-        'key': cleanKey
-      };
-    }
-
     return {
       'success': false,
-      'message': '❌ Anahtar doğrulanamadı: ${lastError ?? "Bilinmeyen hata"}. Lütfen aistudio.google.com/apikey üzerinden yeni bir anahtar alıp deneyin.',
+      'message': '❌ Anahtar doğrulanamadı: ${lastError ?? "Bağlantı kurulamadı"}.\n👉 Lütfen internet bağlantınızı ve aistudio.google.com/apikey adresinden aldığınız anahtarı kontrol edin.',
       'key': cleanKey
     };
   }
@@ -304,7 +330,7 @@ class AiAssistantService {
         modelsUrl,
         headers: {
           'Authorization': 'Bearer $cleanKey',
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+          'User-Agent': 'Talknex/1.0 (Android)',
           'Accept': 'application/json',
         },
       ).timeout(const Duration(seconds: 10));
@@ -332,7 +358,7 @@ class AiAssistantService {
       } else if (modelsRes.statusCode == 401) {
         return {
           'success': false,
-          'message': '❌ Groq: Geçersiz API Anahtarı. Lütfen console.groq.com/keys üzerinden anahtarınızı kontrol edin.',
+          'message': '❌ Groq: Geçersiz API Anahtarı (HTTP 401). Lütfen console.groq.com/keys üzerinden anahtarınızı kontrol edin.',
           'key': cleanKey
         };
       }
@@ -340,14 +366,8 @@ class AiAssistantService {
       debugPrint('[GROQ PROBE] Error: $e');
     }
 
-    // 2. Direct chat completion test
-    final models = [
-      'llama-3.3-70b-versatile',
-      'llama-3.1-8b-instant',
-      'llama-3.2-3b-preview',
-      'llama-3.2-1b-preview',
-      'mixtral-8x7b-32768'
-    ];
+    // 2. Direct chat completion test with standard models
+    final models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
     String? lastError;
 
     for (final model in models) {
@@ -358,7 +378,7 @@ class AiAssistantService {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $cleanKey',
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+            'User-Agent': 'Talknex/1.0 (Android)',
             'Accept': 'application/json',
           },
           body: jsonEncode({
@@ -375,6 +395,14 @@ class AiAssistantService {
           return {
             'success': true,
             'message': '✅ Groq ($model) başarıyla doğrulandı! LPU Süper Hızı Devrede ⚡',
+            'key': cleanKey,
+            'model': model,
+          };
+        } else if (response.statusCode == 429) {
+          _workingGroqModel = model;
+          return {
+            'success': true,
+            'message': '✅ Anahtar geçerli (Anlık kota sınırı tespit edildi). Kaydedildi!',
             'key': cleanKey,
             'model': model,
           };
@@ -399,18 +427,9 @@ class AiAssistantService {
       }
     }
 
-    // Fallback: If starts with gsk_ and length >= 40, allow save
-    if (cleanKey.startsWith('gsk_') && cleanKey.length >= 40) {
-      return {
-        'success': true,
-        'message': '⚠️ Ağ testi zaman aşımına uğradı ancak anahtar formatı geçerli (gsk_). Kaydedildi!',
-        'key': cleanKey
-      };
-    }
-
     return {
       'success': false,
-      'message': '❌ Groq doğrulanamadı: ${lastError ?? "Bilinmeyen hata"}. Lütfen console.groq.com/keys üzerinden yeni bir anahtar alıp deneyin.',
+      'message': '❌ Groq doğrulanamadı: ${lastError ?? "Bağlantı kurulamadı"}.\n👉 Lütfen console.groq.com/keys üzerinden yeni bir anahtar alıp deneyin.',
       'key': cleanKey
     };
   }
@@ -439,11 +458,13 @@ class AiAssistantService {
       // Load User Name
       _userName = prefs.getString(_prefKeyUserName);
 
-      // Load Gemini API Key
+      // Load Gemini API Key & cached working model
       _geminiApiKey = prefs.getString(_prefKeyGeminiKey);
+      _workingGeminiModel = prefs.getString(_prefKeyWorkingGeminiModel);
 
-      // Load Groq API Key
+      // Load Groq API Key & cached working model
       _groqApiKey = prefs.getString(_prefKeyGroqKey);
+      _workingGroqModel = prefs.getString(_prefKeyWorkingGroqModel);
 
       // Load Active Provider
       _activeProvider = prefs.getString(_prefKeyActiveProvider) ?? 'auto';
@@ -673,7 +694,8 @@ class AiAssistantService {
     // HİÇBİR HAZIR/ŞABLON MESAJ ÖNE GEÇMEZ. TÜM SORULARI DOĞRUDAN YAPAY ZEKA YANITLAR!
     // =========================================================================
     if (isRealAiConnected) {
-      _lastAiError = null;
+      _lastGeminiError = null;
+      _lastGroqError = null;
 
       // Kullanıcı açıkça hatırlatıcı/alarm istediyse arka planda bildirimi kur,
       // cevabı ise yine yapay zekanın doğal zekası versin!
@@ -723,6 +745,9 @@ class AiAssistantService {
       final bool preferGroq = (_activeProvider == 'groq' && hasGroqApiKey) ||
           (hasGroqApiKey && !hasGeminiApiKey);
 
+      String? groqError;
+      String? geminiError;
+
       if (preferGroq) {
         // 1. Öncelik Groq (Llama 3.3 / 3.1)
         final groqReply = await _callGroqApi(promptForAi);
@@ -736,6 +761,7 @@ class AiAssistantService {
             actionType: createdReminder != null ? 'reminder_created' : null,
           );
         }
+        groqError = _lastGroqError;
 
         // Groq başarısız olursa Gemini'ye geç
         if (hasGeminiApiKey) {
@@ -750,6 +776,7 @@ class AiAssistantService {
               actionType: createdReminder != null ? 'reminder_created' : null,
             );
           }
+          geminiError = _lastGeminiError;
         }
       } else {
         // 1. Öncelik Gemini (1.5 Flash / 2.0 Flash)
@@ -765,6 +792,7 @@ class AiAssistantService {
               actionType: createdReminder != null ? 'reminder_created' : null,
             );
           }
+          geminiError = _lastGeminiError;
         }
 
         // Gemini başarısız olursa Groq'a geç
@@ -780,26 +808,44 @@ class AiAssistantService {
               actionType: createdReminder != null ? 'reminder_created' : null,
             );
           }
+          groqError = _lastGroqError;
         }
       }
 
-      // Gerçek yapay zeka bağlı ancak API yanıt vermediyse:
-      // KESİNLİKLE hazır sahte mesaja DÜŞME! Gerçek hatayı şeffafça göster.
-      final activeProviderName = preferGroq ? 'Groq (Llama)' : 'Google Gemini';
-      final errDetail = _lastAiError != null && _lastAiError!.isNotEmpty
-          ? _lastAiError!
-          : 'Yapay zeka sunucusu yanıt vermedi veya zaman aşımı oluştu.';
+      // Her iki sağlayıcı da veya seçili sağlayıcı başarısız olduysa:
+      // Hataları karıştırmadan, net ve şeffaf şekilde kullanıcıya aktar!
+      final activeProviderName = preferGroq ? 'Groq LPU (Llama)' : 'Google Gemini';
+      final primaryError = preferGroq ? groqError : geminiError;
+      final secondaryError = preferGroq ? geminiError : groqError;
+      final secondaryProviderName = preferGroq ? 'Google Gemini' : 'Groq LPU';
+      final bool hadSecondary = preferGroq ? hasGeminiApiKey : hasGroqApiKey;
+
+      final buffer = StringBuffer();
+      buffer.writeln('⚠️ **$activeProviderName Bağlantı Hatası**\n');
+      buffer.writeln('Bağlı olan yapay zeka servisine ($activeProviderName) ulaşılamadı:');
+      buffer.writeln('📌 **Detay:** ${primaryError ?? "Sunucu yanıt vermedi."}\n');
+
+      if (hadSecondary && secondaryError != null && secondaryError.isNotEmpty) {
+        buffer.writeln('Yedek servis ($secondaryProviderName) da otomatik denendi ancak yanıt alınamadı:');
+        buffer.writeln('📌 **Yedek Servis Detayı:** $secondaryError\n');
+      }
+
+      buffer.writeln('💡 **Çözüm Adımları:**');
+      buffer.writeln('• Sağ üstteki ayarlar simgesinden API anahtarınızı kontrol edin veya test edin.');
+      if (preferGroq && !hasGeminiApiKey) {
+        buffer.writeln('• Alternatif olarak aistudio.google.com/apikey üzerinden ücretsiz Gemini anahtarı ekleyebilirsiniz.');
+      } else if (!preferGroq && !hasGroqApiKey) {
+        buffer.writeln('• Alternatif olarak console.groq.com/keys üzerinden ücretsiz Groq anahtarı ekleyebilirsiniz.');
+      } else {
+        buffer.writeln('• Ayarlar menüsünden diğer sağlayıcıyı (${preferGroq ? "Google Gemini ✨" : "Groq LPU ⚡"}) seçebilirsiniz.');
+      }
 
       return AiMessageModel(
         id: const Uuid().v4(),
         sender: 'ai',
-        text: '⚠️ **$activeProviderName Bağlantı Hatası**\n\n'
-            'Bağlı olan yapay zeka servisine (${preferGroq ? 'Groq LPU' : 'Gemini'}) ulaşılamadı:\n'
-            '📌 **Detay:** $errDetail\n\n'
-            '💡 **Çözüm:**\n'
-            '• Sağ üstteki ayarlar simgesinden API anahtarınızı kontrol edin.\n'
-            '• Diğer sağlayıcıyı (${preferGroq ? "Google Gemini ✨" : "Groq LPU ⚡"}) deneyebilirsiniz.',
+        text: buffer.toString().trim(),
         timestamp: DateTime.now(),
+        actionType: 'error',
       );
     }
 
@@ -957,11 +1003,13 @@ class AiAssistantService {
   static List<Map<String, dynamic>> _buildGeminiContents(String currentPrompt) {
     final contents = <Map<String, dynamic>>[];
 
-    // Extract past non-action messages
+    // Extract past non-action messages (filter out error bubbles and system cards)
     final past = _messages.where((m) =>
       m.actionType != 'welcome' &&
       m.actionType != 'reminder_created' &&
       m.actionType != 'weather' &&
+      m.actionType != 'error' &&
+      !m.text.startsWith('⚠️') &&
       m.text.trim().isNotEmpty
     ).toList();
 
@@ -1008,14 +1056,62 @@ class AiAssistantService {
     final apiKey = _geminiApiKey?.trim();
     if (apiKey == null || apiKey.isEmpty) return null;
 
+    _lastGeminiError = null;
+
+    // If no working model cached yet, probe dynamically
+    if (_workingGeminiModel == null || _workingGeminiModel!.isEmpty) {
+      try {
+        final listUrl = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey');
+        final listRes = await http.get(listUrl).timeout(const Duration(seconds: 8));
+        if (listRes.statusCode == 200) {
+          final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
+          if (decoded is Map && decoded.containsKey('models')) {
+            final modelsList = decoded['models'] as List?;
+            final valid = <String>[];
+            if (modelsList != null) {
+              for (final m in modelsList) {
+                final name = m['name']?.toString() ?? '';
+                final methods = (m['supportedGenerationMethods'] as List?)?.map((e) => e.toString()).toList() ?? [];
+                if (methods.contains('generateContent')) {
+                  final modelId = name.startsWith('models/') ? name.substring(7) : name;
+                  valid.add(modelId);
+                }
+              }
+            }
+            if (valid.contains('gemini-1.5-flash')) {
+              _workingGeminiModel = 'gemini-1.5-flash';
+            } else if (valid.contains('gemini-2.0-flash')) {
+              _workingGeminiModel = 'gemini-2.0-flash';
+            } else if (valid.contains('gemini-1.5-pro')) {
+              _workingGeminiModel = 'gemini-1.5-pro';
+            } else if (valid.isNotEmpty) {
+              _workingGeminiModel = valid.first;
+            }
+            if (_workingGeminiModel != null) {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setString(_prefKeyWorkingGeminiModel, _workingGeminiModel!);
+            }
+          }
+        } else if (listRes.statusCode == 403) {
+          _lastGeminiError = 'Google: Bu API anahtarında Generative Language servisi aktif değil (HTTP 403 PERMISSION_DENIED). Lütfen anahtarı Google Cloud yerine aistudio.google.com/apikey adresinden oluşturun.';
+          return null;
+        } else if (listRes.statusCode == 400 || listRes.statusCode == 401) {
+          _lastGeminiError = 'Google: API anahtarı geçersiz (HTTP ${listRes.statusCode}). Lütfen kopyaladığınız anahtarı kontrol edin.';
+          return null;
+        } else if (listRes.statusCode == 429) {
+          _lastGeminiError = 'Google: Anlık kota sınırına ulaşıldı (HTTP 429). Lütfen biraz bekleyin veya Groq kullanın.';
+          return null;
+        }
+      } catch (e) {
+        debugPrint('[GEMINI DYNAMIC PROBE] Error: $e');
+      }
+    }
+
     final candidateModels = [
       if (_workingGeminiModel != null && _workingGeminiModel!.isNotEmpty) _workingGeminiModel!,
       'gemini-1.5-flash',
+      'gemini-1.5-pro',
       'gemini-2.0-flash',
-      'gemini-1.5-flash-latest',
-      'gemini-2.5-flash',
-      'gemini-pro',
-      'gemini-1.5-pro-latest'
     ];
     final models = candidateModels.toSet().toList();
     final contents = _buildGeminiContents(userPrompt);
@@ -1047,35 +1143,11 @@ class AiAssistantService {
           }
         };
 
-        var response = await http.post(
+        final response = await http.post(
           url,
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
-          },
+          headers: {'Content-Type': 'application/json'},
           body: jsonEncode(requestBody),
         ).timeout(const Duration(seconds: 22));
-
-        // Fallback for older models (like gemini-pro) that reject systemInstruction
-        if (response.statusCode == 400 && response.body.contains('systemInstruction')) {
-          final simplifiedBody = {
-            'contents': contents,
-            'generationConfig': {
-              'temperature': 0.7,
-              'maxOutputTokens': 1500,
-            }
-          };
-          response = await http.post(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': apiKey,
-              'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
-            },
-            body: jsonEncode(simplifiedBody),
-          ).timeout(const Duration(seconds: 18));
-        }
 
         if (response.statusCode == 200) {
           final decoded = jsonDecode(utf8.decode(response.bodyBytes));
@@ -1089,24 +1161,40 @@ class AiAssistantService {
                 final text = parts.map((p) => p['text']?.toString() ?? '').join();
                 if (text.trim().isNotEmpty) {
                   _workingGeminiModel = model;
-                  _lastAiError = null;
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString(_prefKeyWorkingGeminiModel, model);
+                  _lastGeminiError = null;
                   return text.trim();
                 }
               }
             }
           }
         } else {
+          String errMsg = 'HTTP ${response.statusCode}';
           try {
             final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-            final msg = decoded['error']?['message']?.toString() ?? 'Hata kodu: ${response.statusCode}';
-            _lastAiError = 'Gemini ($model): $msg (HTTP ${response.statusCode})';
-          } catch (_) {
-            _lastAiError = 'Gemini ($model): HTTP ${response.statusCode}';
+            errMsg = decoded['error']?['message']?.toString() ?? errMsg;
+          } catch (_) {}
+
+          debugPrint('[GEMINI] Model $model returned status ${response.statusCode}: $errMsg');
+
+          if (response.statusCode == 400 && (errMsg.contains('API_KEY_INVALID') || errMsg.contains('not valid'))) {
+            _lastGeminiError = 'Google: API anahtarı geçersiz (HTTP 400). Lütfen kopyaladığınız anahtarı kontrol edin.';
+            break;
           }
-          debugPrint('[GEMINI] Model $model returned status ${response.statusCode}: ${response.body}');
+          if (response.statusCode == 403 || errMsg.contains('PERMISSION_DENIED') || errMsg.contains('blocked')) {
+            _lastGeminiError = 'Google: Bu anahtarda Generative Language servisi aktif değil (HTTP 403). Lütfen anahtarı Google Cloud yerine doğrudan aistudio.google.com/apikey üzerinden oluşturun.';
+            break;
+          }
+          if (response.statusCode == 429) {
+            _lastGeminiError = 'Google: Anlık kota sınırına ulaşıldı (HTTP 429). Lütfen biraz bekleyin veya Groq kullanın.';
+            break;
+          }
+
+          _lastGeminiError = 'Gemini ($model): $errMsg (HTTP ${response.statusCode})';
         }
       } catch (e) {
-        _lastAiError = 'Gemini ($model) bağlantı hatası: $e';
+        _lastGeminiError = 'Gemini ($model) bağlantı hatası: $e';
         debugPrint('[GEMINI] Model $model error: $e');
       }
     }
@@ -1128,11 +1216,13 @@ class AiAssistantService {
           'özenle, derinlemesine ve özgün yanıtlar ver. Yanıtlarında Markdown biçimlendirmesini (kalın yazılar, emojiler, liste işaretleri) şık bir şekilde kullan.',
     });
 
-    // Extract past non-action messages
+    // Extract past non-action messages (filter out error bubbles and system cards)
     final past = _messages.where((m) =>
       m.actionType != 'welcome' &&
       m.actionType != 'reminder_created' &&
       m.actionType != 'weather' &&
+      m.actionType != 'error' &&
+      !m.text.startsWith('⚠️') &&
       m.text.trim().isNotEmpty
     ).toList();
 
@@ -1177,13 +1267,12 @@ class AiAssistantService {
     final apiKey = _groqApiKey?.trim();
     if (apiKey == null || apiKey.isEmpty) return null;
 
+    _lastGroqError = null;
+
     final candidateModels = [
       if (_workingGroqModel != null && _workingGroqModel!.isNotEmpty) _workingGroqModel!,
       'llama-3.3-70b-versatile',
       'llama-3.1-8b-instant',
-      'llama-3.2-3b-preview',
-      'llama-3.2-1b-preview',
-      'mixtral-8x7b-32768',
     ];
     final models = candidateModels.toSet().toList();
     final messages = _buildGroqMessages(userPrompt);
@@ -1196,7 +1285,7 @@ class AiAssistantService {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $apiKey',
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+            'User-Agent': 'Talknex/1.0 (Android)',
             'Accept': 'application/json',
           },
           body: jsonEncode({
@@ -1218,24 +1307,36 @@ class AiAssistantService {
                 final text = message['content'].toString().trim();
                 if (text.isNotEmpty) {
                   _workingGroqModel = model;
-                  _lastAiError = null;
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString(_prefKeyWorkingGroqModel, model);
+                  _lastGroqError = null;
                   return text;
                 }
               }
             }
           }
         } else {
+          String errMsg = 'HTTP ${response.statusCode}';
           try {
             final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-            final msg = decoded['error']?['message']?.toString() ?? 'Hata kodu: ${response.statusCode}';
-            _lastAiError = 'Groq ($model): $msg (HTTP ${response.statusCode})';
-          } catch (_) {
-            _lastAiError = 'Groq ($model): HTTP ${response.statusCode}';
+            errMsg = decoded['error']?['message']?.toString() ?? errMsg;
+          } catch (_) {}
+
+          debugPrint('[GROQ] Model $model returned status ${response.statusCode}: $errMsg');
+
+          if (response.statusCode == 401) {
+            _lastGroqError = 'Groq: Geçersiz API Anahtarı (HTTP 401). Lütfen console.groq.com/keys adresinden yeni bir anahtar alın.';
+            break;
           }
-          debugPrint('[GROQ] Model $model returned status ${response.statusCode}: ${response.body}');
+          if (response.statusCode == 429) {
+            _lastGroqError = 'Groq: Anlık istek/token sınırına ulaşıldı (HTTP 429 Rate Limit). Lütfen biraz bekleyin veya Gemini kullanın.';
+            break;
+          }
+
+          _lastGroqError = 'Groq ($model): $errMsg (HTTP ${response.statusCode})';
         }
       } catch (e) {
-        _lastAiError = 'Groq ($model) bağlantı hatası: $e';
+        _lastGroqError = 'Groq ($model) bağlantı hatası: $e';
         debugPrint('[GROQ] Model $model error: $e');
       }
     }

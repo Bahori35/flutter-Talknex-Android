@@ -481,7 +481,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                           final msg = res['message'] as String? ?? '';
 
                                           if (ok) {
-                                            await AiAssistantService.setGeminiApiKey(cleanKey);
+                                            await AiAssistantService.setGeminiApiKey(cleanKey, res['model'] as String?);
                                             setDlgState(() {
                                               isTesting = false;
                                               isSuccess = true;
@@ -689,7 +689,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                                           final msg = res['message'] as String? ?? '';
 
                                           if (ok) {
-                                            await AiAssistantService.setGroqApiKey(cleanKey);
+                                            await AiAssistantService.setGroqApiKey(cleanKey, res['model'] as String?);
                                             setDlgState(() {
                                               isTesting = false;
                                               isSuccess = true;
