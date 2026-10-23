@@ -5,7 +5,10 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -40,3 +43,16 @@ jobs:
           name: flutter-whatsapp-apk
           path: build/app/outputs/flutter-apk/app-release.apk
           retention-days: 14
+
+      - name: Release APK
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: v1.0.0-latest
+          name: Talknex Son Sürüm APK
+          body: |
+            Talknex Android APK (Doğrudan İndirme Linki)
+            Bu APK dosyasını indirerek telefonunuza doğrudan kurabilirsiniz.
+          files: build/app/outputs/flutter-apk/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

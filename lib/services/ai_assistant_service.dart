@@ -147,7 +147,155 @@ class AiAssistantService {
     return res['success'] == true;
   }
 
-  /// Robust Gemini key verification with dynamic ModelService probing and real error reporting
+  /// Discovers and live-verifies working Gemini model with real generateContent ping
+  static Future<String?> _discoverAndVerifyGeminiModel(String apiKey) async {
+    try {
+      final listUrl = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey');
+      final listRes = await http.get(listUrl).timeout(const Duration(seconds: 10));
+      if (listRes.statusCode == 200) {
+        final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
+        if (decoded is Map && decoded.containsKey('models')) {
+          final modelsList = decoded['models'] as List?;
+          final valid = <String>[];
+          if (modelsList != null) {
+            for (final m in modelsList) {
+              final name = m['name']?.toString() ?? '';
+              final methods = (m['supportedGenerationMethods'] as List?)?.map((e) => e.toString()).toList() ?? [];
+              if (methods.contains('generateContent')) {
+                final modelId = name.startsWith('models/') ? name.substring(7) : name;
+                final lower = modelId.toLowerCase();
+                // Filter out non-text/embedding models and retired models
+                if (!lower.contains('embedding') &&
+                    !lower.contains('aqa') &&
+                    !lower.contains('imagen') &&
+                    !lower.contains('gemini-2.0-flash') &&
+                    !lower.contains('gemini-1.5-pro-latest')) {
+                  valid.add(modelId);
+                }
+              }
+            }
+          }
+
+          // Prioritize active models: 2.5-flash > 2.5 > flash > pro
+          final sorted = <String>[];
+          sorted.addAll(valid.where((m) => m.contains('2.5-flash')));
+          sorted.addAll(valid.where((m) => m.contains('2.5') && !sorted.contains(m)));
+          sorted.addAll(valid.where((m) => m.contains('flash') && !sorted.contains(m)));
+          sorted.addAll(valid.where((m) => m.contains('pro') && !sorted.contains(m)));
+          sorted.addAll(valid.where((m) => !sorted.contains(m)));
+
+          // Test top candidate models with actual generateContent ping
+          for (final candidate in sorted.take(5)) {
+            for (final ver in ['v1beta', 'v1']) {
+              try {
+                final pingRes = await http.post(
+                  Uri.parse('https://generativelanguage.googleapis.com/$ver/models/$candidate:generateContent?key=$apiKey'),
+                  headers: {'Content-Type': 'application/json'},
+                  body: jsonEncode({
+                    'contents': [
+                      {
+                        'role': 'user',
+                        'parts': [{'text': 'Ping'}]
+                      }
+                    ],
+                    'generationConfig': {'maxOutputTokens': 5}
+                  }),
+                ).timeout(const Duration(seconds: 8));
+
+                if (pingRes.statusCode == 200 || pingRes.statusCode == 429) {
+                  _workingGeminiModel = candidate;
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString(_prefKeyWorkingGeminiModel, candidate);
+                  return candidate;
+                }
+              } catch (_) {}
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[GEMINI DISCOVERY] Error: $e');
+    }
+    return null;
+  }
+
+  /// Discovers and live-verifies working Groq chat model with real chat/completions ping
+  static Future<String?> _discoverAndVerifyGroqModel(String apiKey) async {
+    try {
+      final modelsUrl = Uri.parse('https://api.groq.com/openai/v1/models');
+      final modelsRes = await http.get(
+        modelsUrl,
+        headers: {
+          'Authorization': 'Bearer $apiKey',
+          'User-Agent': 'Talknex/1.0 (Android)',
+          'Accept': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (modelsRes.statusCode == 200) {
+        final decoded = jsonDecode(utf8.decode(modelsRes.bodyBytes));
+        if (decoded is Map && decoded['data'] is List) {
+          final list = (decoded['data'] as List).map((e) => e['id']?.toString() ?? '').toList();
+
+          // CRITICAL: Filter out prompt guard, whisper audio, vision, embeddings
+          final chatCandidates = list.where((id) {
+            final lower = id.toLowerCase();
+            if (lower.contains('guard')) return false;
+            if (lower.contains('whisper')) return false;
+            if (lower.contains('embed')) return false;
+            if (lower.contains('moderation')) return false;
+            if (lower.contains('tts')) return false;
+            if (lower.contains('vision') && !lower.contains('llama')) return false;
+            return true;
+          }).toList();
+
+          // Prioritize top chat models
+          final sorted = <String>[];
+          sorted.addAll(chatCandidates.where((m) => m.contains('3.3-70b') || m.contains('3.3')));
+          sorted.addAll(chatCandidates.where((m) => m.contains('3.1') && !sorted.contains(m)));
+          sorted.addAll(chatCandidates.where((m) => m.contains('llama') && !sorted.contains(m)));
+          sorted.addAll(chatCandidates.where((m) => m.contains('qwen') && !sorted.contains(m)));
+          sorted.addAll(chatCandidates.where((m) => m.contains('deepseek') && !sorted.contains(m)));
+          sorted.addAll(chatCandidates.where((m) => m.contains('gemma') && !sorted.contains(m)));
+          sorted.addAll(chatCandidates.where((m) => !sorted.contains(m)));
+
+          // Ping candidates with actual chat completion to guarantee live availability
+          for (final candidate in sorted.take(6)) {
+            try {
+              final pingRes = await http.post(
+                Uri.parse('https://api.groq.com/openai/v1/chat/completions'),
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer $apiKey',
+                  'User-Agent': 'Talknex/1.0 (Android)',
+                  'Accept': 'application/json',
+                },
+                body: jsonEncode({
+                  'model': candidate,
+                  'messages': [
+                    {'role': 'user', 'content': 'Ping'}
+                  ],
+                  'max_tokens': 5,
+                }),
+              ).timeout(const Duration(seconds: 8));
+
+              if (pingRes.statusCode == 200 || pingRes.statusCode == 429) {
+                _workingGroqModel = candidate;
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString(_prefKeyWorkingGroqModel, candidate);
+                return candidate;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[GROQ DISCOVERY] Error: $e');
+    }
+    return null;
+  }
+
+  /// Robust Gemini key verification with live model discovery & generation ping
   static Future<Map<String, dynamic>> testGeminiApiKeyDetails(String apiKey) async {
     final cleanKey = cleanGeminiKey(apiKey);
 
@@ -163,151 +311,79 @@ class AiAssistantService {
       };
     }
 
-    // 1. Probe Google's ModelService directly (/v1beta/models) to discover supported models for this exact key
+    // 1. Initial permission probe
     try {
       final listUrl = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?key=$cleanKey');
-      final listRes = await http.get(listUrl).timeout(const Duration(seconds: 12));
+      final listRes = await http.get(listUrl).timeout(const Duration(seconds: 10));
 
-      if (listRes.statusCode == 200) {
-        final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
-        if (decoded is Map && decoded.containsKey('models')) {
-          final modelsList = decoded['models'] as List?;
-          String bestModel = 'gemini-1.5-flash';
-          if (modelsList != null && modelsList.isNotEmpty) {
-            final valid = <String>[];
-            for (final m in modelsList) {
-              final name = m['name']?.toString() ?? '';
-              final methods = (m['supportedGenerationMethods'] as List?)?.map((e) => e.toString()).toList() ?? [];
-              if (methods.contains('generateContent')) {
-                final modelId = name.startsWith('models/') ? name.substring(7) : name;
-                valid.add(modelId);
-              }
-            }
-            if (valid.contains('gemini-1.5-flash')) {
-              bestModel = 'gemini-1.5-flash';
-            } else if (valid.contains('gemini-2.0-flash')) {
-              bestModel = 'gemini-2.0-flash';
-            } else if (valid.contains('gemini-1.5-pro')) {
-              bestModel = 'gemini-1.5-pro';
-            } else if (valid.isNotEmpty) {
-              bestModel = valid.first;
-            }
-          }
-          _workingGeminiModel = bestModel;
-          return {
-            'success': true,
-            'message': '✅ Gemini ($bestModel) başarıyla doğrulandı! Gerçek Yapay Zeka Devrede 🚀',
-            'key': cleanKey,
-            'model': bestModel,
-          };
-        }
-      } else {
+      if (listRes.statusCode == 400 || listRes.statusCode == 401) {
+        return {
+          'success': false,
+          'message': '❌ Google: API anahtarı geçersiz (HTTP ${listRes.statusCode}). Lütfen kopyaladığınız anahtarı kontrol edin.',
+          'key': cleanKey
+        };
+      }
+      if (listRes.statusCode == 403) {
+        return {
+          'success': false,
+          'message': '❌ Bu anahtarda Generative Language API aktif değil (HTTP 403).\n👉 Lütfen anahtarı Google Cloud yerine doğrudan aistudio.google.com/apikey adresinden "Create API Key" diyerek alın.',
+          'key': cleanKey
+        };
+      }
+    } catch (_) {}
+
+    // 2. Discover and live-verify working model
+    final verifiedModel = await _discoverAndVerifyGeminiModel(cleanKey);
+    if (verifiedModel != null) {
+      return {
+        'success': true,
+        'message': '✅ Gemini ($verifiedModel) başarıyla doğrulandı! Gerçek Yapay Zeka Devrede 🚀',
+        'key': cleanKey,
+        'model': verifiedModel,
+      };
+    }
+
+    // 3. Fallback direct ping with top candidate models
+    for (final candidate in ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash']) {
+      for (final ver in ['v1beta', 'v1']) {
         try {
-          final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
-          final msg = decoded['error']?['message']?.toString() ?? '';
-          if (listRes.statusCode == 400 || msg.contains('API_KEY_INVALID') || msg.contains('not valid')) {
-            return {
-              'success': false,
-              'message': '❌ Google: API anahtarı geçersiz. Lütfen kopyaladığınız anahtarı kontrol edin.',
-              'key': cleanKey
-            };
-          }
-          if (listRes.statusCode == 403 || msg.contains('PERMISSION_DENIED') || msg.contains('SERVICE_DISABLED') || msg.contains('blocked')) {
-            return {
-              'success': false,
-              'message': '❌ Bu anahtarda Generative Language API aktif değil (HTTP 403).\n👉 Lütfen anahtarı Google Cloud yerine doğrudan aistudio.google.com/apikey üzerinden oluşturun.',
-              'key': cleanKey
-            };
-          }
-          if (listRes.statusCode == 429) {
+          final res = await http.post(
+            Uri.parse('https://generativelanguage.googleapis.com/$ver/models/$candidate:generateContent?key=$cleanKey'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'contents': [
+                {
+                  'role': 'user',
+                  'parts': [{'text': 'Ping'}]
+                }
+              ],
+              'generationConfig': {'maxOutputTokens': 5}
+            }),
+          ).timeout(const Duration(seconds: 8));
+
+          if (res.statusCode == 200 || res.statusCode == 429) {
+            _workingGeminiModel = candidate;
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString(_prefKeyWorkingGeminiModel, candidate);
             return {
               'success': true,
-              'message': '✅ Anahtar geçerli (Anlık kota sınırı tespit edildi). Kaydedildi!',
+              'message': '✅ Gemini ($candidate) başarıyla doğrulandı! Gerçek Yapay Zeka Devrede 🚀',
               'key': cleanKey,
-              'model': 'gemini-1.5-flash',
+              'model': candidate,
             };
           }
         } catch (_) {}
-      }
-    } catch (e) {
-      debugPrint('[GEMINI PROBE] Error: $e');
-    }
-
-    // 2. Direct generateContent test with standard models
-    final models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash'];
-    String? lastError;
-
-    for (final model in models) {
-      try {
-        final url = Uri.parse(
-          'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$cleanKey',
-        );
-        final response = await http.post(
-          url,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'contents': [
-              {
-                'role': 'user',
-                'parts': [{'text': 'Ping'}]
-              }
-            ],
-            'generationConfig': {'maxOutputTokens': 10}
-          }),
-        ).timeout(const Duration(seconds: 10));
-
-        if (response.statusCode == 200) {
-          _workingGeminiModel = model;
-          return {
-            'success': true,
-            'message': '✅ Gemini ($model) başarıyla doğrulandı! Gerçek Yapay Zeka Devrede 🚀',
-            'key': cleanKey,
-            'model': model,
-          };
-        } else if (response.statusCode == 429) {
-          _workingGeminiModel = model;
-          return {
-            'success': true,
-            'message': '✅ Anahtar geçerli (Anlık kota sınırı tespit edildi). Kaydedildi!',
-            'key': cleanKey,
-            'model': model,
-          };
-        } else {
-          try {
-            final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-            final msg = decoded['error']?['message']?.toString() ?? 'Hata kodu: ${response.statusCode}';
-            lastError = msg;
-            if (response.statusCode == 400 && (msg.contains('API_KEY_INVALID') || msg.contains('not valid'))) {
-              return {
-                'success': false,
-                'message': '❌ Google: API anahtarı geçersiz. Lütfen kopyaladığınız anahtarı kontrol edin.',
-                'key': cleanKey
-              };
-            }
-            if (response.statusCode == 403 || msg.contains('PERMISSION_DENIED') || msg.contains('blocked')) {
-              return {
-                'success': false,
-                'message': '❌ Bu anahtarda Generative Language servisi aktif değil (HTTP 403).\n👉 Lütfen anahtarı aistudio.google.com/apikey adresinden oluşturun.',
-                'key': cleanKey
-              };
-            }
-          } catch (_) {
-            lastError = 'HTTP ${response.statusCode}';
-          }
-        }
-      } catch (e) {
-        lastError = e.toString();
       }
     }
 
     return {
       'success': false,
-      'message': '❌ Anahtar doğrulanamadı: ${lastError ?? "Bağlantı kurulamadı"}.\n👉 Lütfen internet bağlantınızı ve aistudio.google.com/apikey adresinden aldığınız anahtarı kontrol edin.',
+      'message': '❌ Google Gemini bağlantısı kurulamadı.\n👉 Lütfen internet bağlantınızı ve aistudio.google.com/apikey adresinden aldığınız anahtarı kontrol edin.',
       'key': cleanKey
     };
   }
 
-  /// Robust Groq key verification (Dynamic Model Discovery + Fallbacks)
+  /// Robust Groq key verification with live model discovery & chat completion ping
   static Future<Map<String, dynamic>> testGroqApiKeyDetails(String apiKey) async {
     final cleanKey = cleanGroqKey(apiKey);
 
@@ -323,7 +399,7 @@ class AiAssistantService {
       };
     }
 
-    // 1. Probe Groq's Models API to dynamically discover active models for this key
+    // 1. Initial permission probe
     try {
       final modelsUrl = Uri.parse('https://api.groq.com/openai/v1/models');
       final modelsRes = await http.get(
@@ -335,46 +411,31 @@ class AiAssistantService {
         },
       ).timeout(const Duration(seconds: 10));
 
-      if (modelsRes.statusCode == 200) {
-        final decoded = jsonDecode(utf8.decode(modelsRes.bodyBytes));
-        if (decoded is Map && decoded['data'] is List) {
-          final list = (decoded['data'] as List).map((e) => e['id']?.toString() ?? '').toList();
-          String best = 'llama-3.3-70b-versatile';
-          if (list.contains('llama-3.3-70b-versatile')) {
-            best = 'llama-3.3-70b-versatile';
-          } else if (list.contains('llama-3.1-8b-instant')) {
-            best = 'llama-3.1-8b-instant';
-          } else if (list.isNotEmpty) {
-            best = list.firstWhere((id) => id.contains('llama'), orElse: () => list.first);
-          }
-          _workingGroqModel = best;
-          return {
-            'success': true,
-            'message': '✅ Groq ($best) başarıyla doğrulandı! LPU Süper Hızı Devrede ⚡',
-            'key': cleanKey,
-            'model': best,
-          };
-        }
-      } else if (modelsRes.statusCode == 401) {
+      if (modelsRes.statusCode == 401) {
         return {
           'success': false,
           'message': '❌ Groq: Geçersiz API Anahtarı (HTTP 401). Lütfen console.groq.com/keys üzerinden anahtarınızı kontrol edin.',
           'key': cleanKey
         };
       }
-    } catch (e) {
-      debugPrint('[GROQ PROBE] Error: $e');
+    } catch (_) {}
+
+    // 2. Discover and live-verify working chat model
+    final verifiedModel = await _discoverAndVerifyGroqModel(cleanKey);
+    if (verifiedModel != null) {
+      return {
+        'success': true,
+        'message': '✅ Groq ($verifiedModel) başarıyla doğrulandı! LPU Süper Hızı Devrede ⚡',
+        'key': cleanKey,
+        'model': verifiedModel,
+      };
     }
 
-    // 2. Direct chat completion test with standard models
-    final models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
-    String? lastError;
-
-    for (final model in models) {
+    // 3. Fallback direct ping with standard models
+    for (final candidate in ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'llama3-70b-8192']) {
       try {
-        final url = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
-        final response = await http.post(
-          url,
+        final res = await http.post(
+          Uri.parse('https://api.groq.com/openai/v1/chat/completions'),
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $cleanKey',
@@ -382,54 +443,31 @@ class AiAssistantService {
             'Accept': 'application/json',
           },
           body: jsonEncode({
-            'model': model,
+            'model': candidate,
             'messages': [
               {'role': 'user', 'content': 'Ping'}
             ],
-            'max_tokens': 10,
+            'max_tokens': 5,
           }),
-        ).timeout(const Duration(seconds: 12));
+        ).timeout(const Duration(seconds: 8));
 
-        if (response.statusCode == 200) {
-          _workingGroqModel = model;
+        if (res.statusCode == 200 || res.statusCode == 429) {
+          _workingGroqModel = candidate;
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_prefKeyWorkingGroqModel, candidate);
           return {
             'success': true,
-            'message': '✅ Groq ($model) başarıyla doğrulandı! LPU Süper Hızı Devrede ⚡',
+            'message': '✅ Groq ($candidate) başarıyla doğrulandı! LPU Süper Hızı Devrede ⚡',
             'key': cleanKey,
-            'model': model,
+            'model': candidate,
           };
-        } else if (response.statusCode == 429) {
-          _workingGroqModel = model;
-          return {
-            'success': true,
-            'message': '✅ Anahtar geçerli (Anlık kota sınırı tespit edildi). Kaydedildi!',
-            'key': cleanKey,
-            'model': model,
-          };
-        } else {
-          try {
-            final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-            final msg = decoded['error']?['message']?.toString() ?? 'Hata kodu: ${response.statusCode}';
-            lastError = msg;
-            if (response.statusCode == 401) {
-              return {
-                'success': false,
-                'message': '❌ Groq: Geçersiz API Anahtarı. Lütfen console.groq.com/keys üzerinden aldığınız anahtarı kontrol edin.',
-                'key': cleanKey
-              };
-            }
-          } catch (_) {
-            lastError = 'HTTP ${response.statusCode}';
-          }
         }
-      } catch (e) {
-        lastError = e.toString();
-      }
+      } catch (_) {}
     }
 
     return {
       'success': false,
-      'message': '❌ Groq doğrulanamadı: ${lastError ?? "Bağlantı kurulamadı"}.\n👉 Lütfen console.groq.com/keys üzerinden yeni bir anahtar alıp deneyin.',
+      'message': '❌ Groq doğrulanamadı.\n👉 Lütfen console.groq.com/keys üzerinden yeni bir anahtar alıp deneyin.',
       'key': cleanKey
     };
   }
@@ -1058,62 +1096,14 @@ class AiAssistantService {
 
     _lastGeminiError = null;
 
-    // If no working model cached yet, probe dynamically
-    if (_workingGeminiModel == null || _workingGeminiModel!.isEmpty) {
-      try {
-        final listUrl = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey');
-        final listRes = await http.get(listUrl).timeout(const Duration(seconds: 8));
-        if (listRes.statusCode == 200) {
-          final decoded = jsonDecode(utf8.decode(listRes.bodyBytes));
-          if (decoded is Map && decoded.containsKey('models')) {
-            final modelsList = decoded['models'] as List?;
-            final valid = <String>[];
-            if (modelsList != null) {
-              for (final m in modelsList) {
-                final name = m['name']?.toString() ?? '';
-                final methods = (m['supportedGenerationMethods'] as List?)?.map((e) => e.toString()).toList() ?? [];
-                if (methods.contains('generateContent')) {
-                  final modelId = name.startsWith('models/') ? name.substring(7) : name;
-                  valid.add(modelId);
-                }
-              }
-            }
-            if (valid.contains('gemini-1.5-flash')) {
-              _workingGeminiModel = 'gemini-1.5-flash';
-            } else if (valid.contains('gemini-2.0-flash')) {
-              _workingGeminiModel = 'gemini-2.0-flash';
-            } else if (valid.contains('gemini-1.5-pro')) {
-              _workingGeminiModel = 'gemini-1.5-pro';
-            } else if (valid.isNotEmpty) {
-              _workingGeminiModel = valid.first;
-            }
-            if (_workingGeminiModel != null) {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setString(_prefKeyWorkingGeminiModel, _workingGeminiModel!);
-            }
-          }
-        } else if (listRes.statusCode == 403) {
-          _lastGeminiError = 'Google: Bu API anahtarında Generative Language servisi aktif değil (HTTP 403 PERMISSION_DENIED). Lütfen anahtarı Google Cloud yerine aistudio.google.com/apikey adresinden oluşturun.';
-          return null;
-        } else if (listRes.statusCode == 400 || listRes.statusCode == 401) {
-          _lastGeminiError = 'Google: API anahtarı geçersiz (HTTP ${listRes.statusCode}). Lütfen kopyaladığınız anahtarı kontrol edin.';
-          return null;
-        } else if (listRes.statusCode == 429) {
-          _lastGeminiError = 'Google: Anlık kota sınırına ulaşıldı (HTTP 429). Lütfen biraz bekleyin veya Groq kullanın.';
-          return null;
-        }
-      } catch (e) {
-        debugPrint('[GEMINI DYNAMIC PROBE] Error: $e');
-      }
+    // If no working model or if cached model was 2.0-flash (deprecated), live discover
+    if (_workingGeminiModel == null ||
+        _workingGeminiModel!.isEmpty ||
+        _workingGeminiModel!.contains('2.0-flash')) {
+      await _discoverAndVerifyGeminiModel(apiKey);
     }
 
-    final candidateModels = [
-      if (_workingGeminiModel != null && _workingGeminiModel!.isNotEmpty) _workingGeminiModel!,
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
-      'gemini-2.0-flash',
-    ];
-    final models = candidateModels.toSet().toList();
+    final candidate = _workingGeminiModel ?? 'gemini-2.5-flash';
     final contents = _buildGeminiContents(userPrompt);
 
     final nameHint = (_userName != null && _userName!.isNotEmpty)
@@ -1124,30 +1114,49 @@ class AiAssistantService {
         'Kullanıcının her türlü sorusuna (günlük hayat, yemek tarifleri, tavsiye, genel kültür, teknoloji, bilim vb.) '
         'özenle, derinlemesine ve özgün yanıtlar ver. Yanıtlarında Markdown biçimlendirmesini (kalın yazılar, emojiler, liste işaretleri) şık bir şekilde kullan.';
 
-    for (final model in models) {
+    final versions = ['v1beta', 'v1'];
+    for (final ver in versions) {
       try {
         final url = Uri.parse(
-          'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey',
+          'https://generativelanguage.googleapis.com/$ver/models/$candidate:generateContent?key=$apiKey',
         );
 
-        final requestBody = {
-          'contents': contents,
-          'systemInstruction': {
-            'parts': [
-              {'text': systemPrompt}
-            ]
-          },
-          'generationConfig': {
-            'temperature': 0.7,
-            'maxOutputTokens': 1500,
-          }
-        };
-
-        final response = await http.post(
+        // Attempt 1: with systemInstruction
+        var response = await http.post(
           url,
           headers: {'Content-Type': 'application/json'},
-          body: jsonEncode(requestBody),
+          body: jsonEncode({
+            'contents': contents,
+            'systemInstruction': {
+              'parts': [{'text': systemPrompt}]
+            },
+            'generationConfig': {
+              'temperature': 0.7,
+              'maxOutputTokens': 1500,
+            }
+          }),
         ).timeout(const Duration(seconds: 22));
+
+        // Attempt 2: If 400 error, retry without systemInstruction (include system prompt in contents)
+        if (response.statusCode == 400) {
+          final simplifiedContents = [
+            {
+              'role': 'user',
+              'parts': [{'text': '$systemPrompt\n\n[Kullanıcı]: $userPrompt'}]
+            }
+          ];
+          response = await http.post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'contents': simplifiedContents,
+              'generationConfig': {
+                'temperature': 0.7,
+                'maxOutputTokens': 1500,
+              }
+            }),
+          ).timeout(const Duration(seconds: 18));
+        }
 
         if (response.statusCode == 200) {
           final decoded = jsonDecode(utf8.decode(response.bodyBytes));
@@ -1160,9 +1169,6 @@ class AiAssistantService {
                 final parts = content['parts'] as List;
                 final text = parts.map((p) => p['text']?.toString() ?? '').join();
                 if (text.trim().isNotEmpty) {
-                  _workingGeminiModel = model;
-                  final prefs = await SharedPreferences.getInstance();
-                  await prefs.setString(_prefKeyWorkingGeminiModel, model);
                   _lastGeminiError = null;
                   return text.trim();
                 }
@@ -1176,26 +1182,19 @@ class AiAssistantService {
             errMsg = decoded['error']?['message']?.toString() ?? errMsg;
           } catch (_) {}
 
-          debugPrint('[GEMINI] Model $model returned status ${response.statusCode}: $errMsg');
+          debugPrint('[GEMINI] Model $candidate ($ver) returned ${response.statusCode}: $errMsg');
+          _lastGeminiError = 'Gemini ($candidate): $errMsg (HTTP ${response.statusCode})';
 
-          if (response.statusCode == 400 && (errMsg.contains('API_KEY_INVALID') || errMsg.contains('not valid'))) {
-            _lastGeminiError = 'Google: API anahtarı geçersiz (HTTP 400). Lütfen kopyaladığınız anahtarı kontrol edin.';
-            break;
+          // If 404, clear cached model so discovery runs fresh next time
+          if (response.statusCode == 404 || errMsg.contains('no longer available')) {
+            _workingGeminiModel = null;
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.remove(_prefKeyWorkingGeminiModel);
           }
-          if (response.statusCode == 403 || errMsg.contains('PERMISSION_DENIED') || errMsg.contains('blocked')) {
-            _lastGeminiError = 'Google: Bu anahtarda Generative Language servisi aktif değil (HTTP 403). Lütfen anahtarı Google Cloud yerine doğrudan aistudio.google.com/apikey üzerinden oluşturun.';
-            break;
-          }
-          if (response.statusCode == 429) {
-            _lastGeminiError = 'Google: Anlık kota sınırına ulaşıldı (HTTP 429). Lütfen biraz bekleyin veya Groq kullanın.';
-            break;
-          }
-
-          _lastGeminiError = 'Gemini ($model): $errMsg (HTTP ${response.statusCode})';
         }
       } catch (e) {
-        _lastGeminiError = 'Gemini ($model) bağlantı hatası: $e';
-        debugPrint('[GEMINI] Model $model error: $e');
+        _lastGeminiError = 'Gemini ($candidate) bağlantı hatası: $e';
+        debugPrint('[GEMINI] Model $candidate error: $e');
       }
     }
     return null;
@@ -1269,76 +1268,70 @@ class AiAssistantService {
 
     _lastGroqError = null;
 
-    final candidateModels = [
-      if (_workingGroqModel != null && _workingGroqModel!.isNotEmpty) _workingGroqModel!,
-      'llama-3.3-70b-versatile',
-      'llama-3.1-8b-instant',
-    ];
-    final models = candidateModels.toSet().toList();
+    // If no working model or if cached model has 'guard' (prompt guard), re-discover with live ping
+    if (_workingGroqModel == null ||
+        _workingGroqModel!.isEmpty ||
+        _workingGroqModel!.contains('guard')) {
+      await _discoverAndVerifyGroqModel(apiKey);
+    }
+
+    final candidate = _workingGroqModel ?? 'llama-3.3-70b-versatile';
     final messages = _buildGroqMessages(userPrompt);
 
-    for (final model in models) {
-      try {
-        final url = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
-        final response = await http.post(
-          url,
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $apiKey',
-            'User-Agent': 'Talknex/1.0 (Android)',
-            'Accept': 'application/json',
-          },
-          body: jsonEncode({
-            'model': model,
-            'messages': messages,
-            'temperature': 0.7,
-            'max_tokens': 1500,
-          }),
-        ).timeout(const Duration(seconds: 25));
+    try {
+      final url = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $apiKey',
+          'User-Agent': 'Talknex/1.0 (Android)',
+          'Accept': 'application/json',
+        },
+        body: jsonEncode({
+          'model': candidate,
+          'messages': messages,
+          'temperature': 0.7,
+          'max_tokens': 1500,
+        }),
+      ).timeout(const Duration(seconds: 25));
 
-        if (response.statusCode == 200) {
-          final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-          if (decoded is Map && decoded.containsKey('choices')) {
-            final choices = decoded['choices'] as List;
-            if (choices.isNotEmpty) {
-              final first = choices[0];
-              final message = first['message'];
-              if (message != null && message['content'] != null) {
-                final text = message['content'].toString().trim();
-                if (text.isNotEmpty) {
-                  _workingGroqModel = model;
-                  final prefs = await SharedPreferences.getInstance();
-                  await prefs.setString(_prefKeyWorkingGroqModel, model);
-                  _lastGroqError = null;
-                  return text;
-                }
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+        if (decoded is Map && decoded.containsKey('choices')) {
+          final choices = decoded['choices'] as List;
+          if (choices.isNotEmpty) {
+            final first = choices[0];
+            final message = first['message'];
+            if (message != null && message['content'] != null) {
+              final text = message['content'].toString().trim();
+              if (text.isNotEmpty) {
+                _lastGroqError = null;
+                return text;
               }
             }
           }
-        } else {
-          String errMsg = 'HTTP ${response.statusCode}';
-          try {
-            final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-            errMsg = decoded['error']?['message']?.toString() ?? errMsg;
-          } catch (_) {}
-
-          debugPrint('[GROQ] Model $model returned status ${response.statusCode}: $errMsg');
-
-          if (response.statusCode == 401) {
-            _lastGroqError = 'Groq: Geçersiz API Anahtarı (HTTP 401). Lütfen console.groq.com/keys adresinden yeni bir anahtar alın.';
-            break;
-          }
-          if (response.statusCode == 429) {
-            _lastGroqError = 'Groq: Anlık istek/token sınırına ulaşıldı (HTTP 429 Rate Limit). Lütfen biraz bekleyin veya Gemini kullanın.';
-            break;
-          }
-
-          _lastGroqError = 'Groq ($model): $errMsg (HTTP ${response.statusCode})';
         }
-      } catch (e) {
-        _lastGroqError = 'Groq ($model) bağlantı hatası: $e';
-        debugPrint('[GROQ] Model $model error: $e');
+      } else {
+        String errMsg = 'HTTP ${response.statusCode}';
+        try {
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+          errMsg = decoded['error']?['message']?.toString() ?? errMsg;
+        } catch (_) {}
+
+        debugPrint('[GROQ] Model $candidate returned ${response.statusCode}: $errMsg');
+        _lastGroqError = 'Groq ($candidate): $errMsg (HTTP ${response.statusCode})';
+
+        // If 404 or model does not exist, clear cached model so discovery re-runs
+        if (response.statusCode == 404 || errMsg.contains('does not exist')) {
+          _workingGroqModel = null;
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove(_prefKeyWorkingGroqModel);
+        }
       }
+    } catch (e) {
+      _lastGroqError = 'Groq ($candidate) bağlantı hatası: $e';
+      debugPrint('[GROQ] Model $candidate error: $e');
     }
     return null;
   }
